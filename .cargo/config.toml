@@ -1,0 +1,11 @@
+# Starting point; the audio-engine stream owns changes to this file.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[env]
+# Same float behaviour on x86-64 and ARM64 (docs/ARCHITECTURE.md section 3).
+CFLAGS_x86_64_pc_windows_gnu = "-ffp-contract=off"
+CXXFLAGS_x86_64_pc_windows_gnu = "-ffp-contract=off"
+CFLAGS_aarch64_apple_darwin = "-ffp-contract=off -mmacosx-version-min=13.0"
+CXXFLAGS_aarch64_apple_darwin = "-ffp-contract=off -mmacosx-version-min=13.0"
+MACOSX_DEPLOYMENT_TARGET = "13.0"

@@ -1,0 +1,27 @@
+# Build output
+/target/
+/dist/
+**/node_modules/
+app/ui/dist/
+*.pyc
+__pycache__/
+.venv/
+*.egg-info/
+
+# Never commit audio, models, or the owner's material
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.jksong
+!tests/fixtures/generated/**/*.jksong
+Models/
+models-cache/
+reference-images/
+test-songs/
+
+# Local scratch
+/scratch/
+*.log
+.DS_Store
+._*
