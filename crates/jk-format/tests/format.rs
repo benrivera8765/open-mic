@@ -203,7 +203,8 @@ fn round_trip_everything() {
     for s in &rep.stems {
         assert_eq!(s.decoded_frames, Some(FRAMES as u64));
         assert_eq!(s.md5_ok, Some(true));
-        assert_eq!(s.seeks_ok.map(|(ok, n)| ok == n && n > 0), Some(true));
+        // A 0.53 s stem still gets all 8 default seeks, spread over it (not one at frame 0).
+        assert_eq!(s.seeks_ok, Some((8, 8)));
     }
 }
 

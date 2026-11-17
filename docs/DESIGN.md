@@ -128,3 +128,56 @@ off). Record the fonts and licences in THIRD_PARTY_LICENSES.md.
 - Idle CPU/GPU low: no animation when hidden, frame rate capped, glow by compositor
   transforms, no large animated blur filters.
 - A plain, functional mode (skin off) stays available and is what tests run against.
+
+## As built (Stage 1, 2026-11-17)
+
+Where the skin (`app/ui/src/skin/`, wired in by `App.tsx` and
+`components/Jukebox.tsx`) differs from the brief above. Reasons are in DECISIONS
+D-102 to D-111.
+
+- **Frame sizes** scale proportionally to 4K instead of stopping at 72/120/180 px:
+  columns clamp(28px, 4vw, 154px), arch clamp(56px, 9vh, 194px), console
+  clamp(104px, 17.5vh, 378px), screen corner radius clamp(24px, min(11vw, 17.5vh),
+  400px), in container units with a vw/vh fallback. The key dial is 0.66 x the console
+  height (about 104 px at 1440x900).
+- **Arch geometry**: one tube centre line (column, a corner arc concentric with the
+  screen's rounded corner, then a large tangent arc to the crest); rims, glow, bubble
+  tube and masks are offsets of it.
+- **Crest**: the app badge sits on the arch apex, held by two chrome clamps with red
+  enamel rings (the column motif). The stylised-note crest ornament is only a fallback
+  when no badge is passed; scroll brackets were dropped because beside a badge they
+  could read as wings.
+- **Badge**: an elongated, round-cornered hexagonal lozenge with chrome rim, red
+  enamel field, cream pinstripe, the name in Pacifico with a swash underline, and one
+  four-point star.
+- **Light drift**: a Web Animations transform on gradient strips inside masked regions,
+  one palette cycle per 40 s, advanced in steps 12 times a second (not every frame); it
+  flows from the crest outward and down the columns. The two light strips inside the
+  screen are **static**: nothing but the ticker moves inside the screen.
+- **Materials**: static art is pre-drawn SVG shown as images, and the cabinet is a
+  procedurally generated walnut tile; the burl front was dropped (it read as marble).
+- **Bubbles**: one full-window canvas, at most 30 fps and 60 bubbles, prewarmed so the
+  tubes start full, clusters of 3-5. They also stop while the native window is
+  minimised, not only when the page is hidden.
+- **Console**: transport plates (restart, back 5 s, play/pause lit while playing,
+  forward 5 s) over a seek bar and time; the key dial in the centre; vertical Guide,
+  Backing and Master faders and a clip lamp at the right; grille and medallion wings.
+  Backing on/off, drums, band level, output device and export stay in the Mixer
+  panel. Navigation is a row of plates along the top of the screen.
+- **Key dial**: 270-degree sweep, one detent per semitone, -/+ plates, drag, wheel and
+  keys (arrows, `[` `]`, `+` `-`, PageUp/PageDown = 2, Home/End, `0` or double-click =
+  original key). It commits 160 ms after the hand stops (each key change rebuilds the
+  pitch shifter); the app-wide key shortcuts act at once.
+- **Library**: title-strip cards in a chrome rack, 2 columns on a laptop, more on 4K,
+  1 when narrow; a drawn record stands in for missing cover art.
+- **Stage marker**: a slim solid needle with a small triangular head in the marker
+  colour, default mint `#7dffd8` (not a chrome needle with a pink glow), so it stands
+  out against the pink sung letters. Upcoming letters are cream `#f6efd9`.
+- **Fonts**: Oswald (display: plates, labels, title strips), Atkinson Hyperlegible Next
+  (lyrics, weight 700 in the ticker, ligatures and contextual alternates off) and
+  Pacifico (badge only), all SIL OFL 1.1, bundled unmodified.
+- **Transport icons** are drawn SVG, not Unicode media symbols (WebKit showed those as
+  colour emoji).
+- **Full screen** keeps the frame and shows the stage alone in the screen.
+- Not yet measured in Safari/WKWebView on a Mac: drift, bubbles and their CPU cost
+  need the owner's MacBook (compare with motion "reduce").

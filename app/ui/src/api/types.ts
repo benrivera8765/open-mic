@@ -264,6 +264,15 @@ export interface ExportProgressEvent {
 export interface ExportDoneEvent {
   job_id: string;
   path: string;
+  /**
+   * Gain the export applied to the whole file, in dB (0 or negative). Non-zero only for
+   * `flac24` when the rendered mix peaked above full scale: a 24-bit file cannot hold
+   * that, so it was lowered by this much to avoid clipping (WORK_ORDER 5: never hidden,
+   * the UI must say so). `wav32f` is never scaled. Missing from an older core = 0.
+   */
+  applied_gain_db?: number;
+  /** Largest |sample| of the rendered mix before any gain (linear, 1.0 = full scale). */
+  peak?: number;
 }
 export interface ExportFailedEvent {
   job_id: string;

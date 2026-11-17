@@ -63,6 +63,9 @@ pub struct StemReport {
     pub md5_ok: Option<bool>,
     /// (seeks that landed on the right samples, seeks tried).
     pub seeks_ok: Option<(usize, usize)>,
+    /// Frames compared with the linear decode over all seeks (one second after each
+    /// seek target, less only where the stream ends sooner).
+    pub seek_frames_compared: Option<u64>,
     /// Largest |sample| after applying the gain.
     pub decoded_peak: Option<f64>,
 }
@@ -436,6 +439,13 @@ fn check_manifest_schema(v: &Value, song: &SongFile, r: &mut VerifyReport) {
 
 /// Full decode of one stem: frame count, MD5, and random-access seeks compared with
 /// the linear decode (proves seeking is sample-accurate with this file's seek table).
+///
+/// Each seek is compared over one second of audio, many FLAC frames: a decoder can get
+/// the first frame after a seek right and the later ones wrong (symphonia-bundle-flac
+/// 0.6.1 did, see `decode::StemDecoder::seek`), so a few frames prove nothing. The seeks
+/// reuse the decoder that has just read the whole stream and alternate between the two
+/// ends of the stream, so each one starts from a different decoder state (the first goes
+/// back to frame 0 from the end).
 #[cfg(feature = "symphonia")]
 fn decode_check(
     song: &SongFile,
@@ -446,7 +456,6 @@ fn decode_check(
     r: &mut VerifyReport,
 ) {
     use crate::decode::StemDecoder;
-    const PROBE: usize = 64; // frames compared at each seek target
     let who = format!("stem '{}'", stem.role);
     let open = || song.chunk_reader(&stem.chunk).and_then(|rd| StemDecoder::new(rd, true));
     let mut dec = match open() {
@@ -457,12 +466,22 @@ fn decode_check(
         }
     };
     let ch = dec.channels;
+    // Frames compared at each seek target: one second.
+    let probe = (dec.sample_rate as usize).max(1);
     // Seek targets spread over the stream, at odd offsets so they fall inside blocks.
+    // The last target leaves a second to compare, or half the stream when it is shorter
+    // than two seconds (otherwise every target of a stream up to 1 s long collapses to
+    // frame 0 and only one seek is checked); targets near the end compare to the end.
+    let span = expected_frames.saturating_sub((probe as u64).min(expected_frames / 2));
     let mut targets: Vec<u64> = (0..seeks as u64)
-        .map(|i| if seeks == 1 { 0 } else { (expected_frames.saturating_sub(PROBE as u64)) * i / (seeks as u64 - 1) })
+        .map(|i| if seeks == 1 { 0 } else { span * i / (seeks as u64 - 1) })
         .map(|t| if t > 0 && t % 2 == 0 { t - 1 } else { t })
         .collect();
     targets.dedup();
+    // Visit order: first, last, second, second to last, ... (backward and forward jumps).
+    let order: Vec<usize> = (0..targets.len())
+        .map(|k| if k % 2 == 0 { k / 2 } else { targets.len() - 1 - k / 2 })
+        .collect();
     let mut captured: Vec<Vec<i32>> = vec![Vec::new(); targets.len()];
     let mut block = Vec::new();
     let mut frames = 0u64;
@@ -479,7 +498,7 @@ fn decode_check(
                     peak = peak.max((s as i64).abs());
                 }
                 for (t, cap) in targets.iter().zip(captured.iter_mut()) {
-                    let want = PROBE.min((expected_frames - t.min(&expected_frames)) as usize);
+                    let want = probe.min((expected_frames - t.min(&expected_frames)) as usize);
                     let have = cap.len() / ch;
                     if have >= want {
                         continue;
@@ -513,14 +532,17 @@ fn decode_check(
         r.errors.push(format!("{who}: decoder reports {} ch {} Hz", dec.channels, dec.sample_rate));
     }
 
-    // Seeks, each from a fresh position, compared frame for frame.
+    // Seeks, each from a different position, compared frame for frame.
     let mut ok = 0usize;
     let mut tried = 0usize;
-    for (t, cap) in targets.iter().zip(&captured) {
+    let mut compared = 0u64;
+    for &k in &order {
+        let (t, cap) = (&targets[k], &captured[k]);
         if cap.is_empty() {
             continue;
         }
         tried += 1;
+        compared += (cap.len() / ch) as u64;
         let result = (|| -> crate::Result<Vec<i32>> {
             let landed = dec.seek(*t)?;
             if landed > *t {
@@ -545,4 +567,5 @@ fn decode_check(
         }
     }
     sr.seeks_ok = Some((ok, tried));
+    sr.seek_frames_compared = Some(compared);
 }

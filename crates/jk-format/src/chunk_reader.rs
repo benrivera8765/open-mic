@@ -29,6 +29,12 @@ impl ChunkReader {
         ChunkReader { file, start, len, pos: 0 }
     }
 
+    /// Another reader over the same chunk of the same open file (a duplicated handle),
+    /// positioned at the chunk start. Independent of `self`: positional reads only.
+    pub fn reopen(&self) -> io::Result<ChunkReader> {
+        Ok(ChunkReader { file: self.file.try_clone()?, start: self.start, len: self.len, pos: 0 })
+    }
+
     /// Chunk length in bytes.
     pub fn len(&self) -> u64 {
         self.len

@@ -7,10 +7,21 @@ events (`listen`). The UI never handles audio samples. TypeScript types live in
 the same API in the browser so the UI can be developed and tested without Rust.
 
 Conventions: command names are `snake_case`; arguments and results are JSON objects
-with `snake_case` keys. Times are seconds (number). Errors reject the promise with
-`{ code: string, message: string }` where `message` is plain language for the user.
-A song is identified by `song_id`: its path relative to the Library folder, with `/`
-separators (stable across drive letters and both OSes).
+with `snake_case` keys. Every Rust command is declared
+`#[tauri::command(rename_all = "snake_case")]` (otherwise Tauri expects camelCase
+argument names) and is `async`, running on Tauri's blocking pool, not the main thread.
+Where this document writes an object as a positional parameter, the argument name it
+travels under is given (for example `metadata_save(song_id, metadata)`); the UI keeps
+those names in one place (`ARG_NAMES` in `app/ui/src/api/client.ts`). Times are seconds
+(number). Errors reject the promise with `{ code: string, message: string }` where
+`message` is plain language for the user. A song is identified by `song_id`: its path
+relative to the Library folder, with `/` separators (stable across drive letters and
+both OSes); an id with an empty, `.` or `..` component, a `\`, a `:` or a NUL, or
+not naming a `.jksong` file, is refused with `not_found`.
+
+Version 1 grew while Stage 1 was built: fields, commands and events marked **(added)**
+are implemented by the core; the UI may use them when present. Section 11 lists them
+all. Readers must ignore fields they do not know.
 
 ## 1. App and capabilities
 
@@ -20,22 +31,44 @@ separators (stable across drive letters and both OSes).
 interface AppInfo {
   name: string; version: string;                  // from branding / package info
   platform: "windows" | "macos";
-  os_version: string;                              // "Windows 11 26200", "macOS 13.6.9"
+  os_version: string;                              // "Windows 11 26200", "macOS 13.6.9 (<build>)"
   portable: boolean; root: string | null;          // root shown for information only
   translocated: boolean;                           // macOS App Translocation detected
   paths: { library: string; recordings: string; exports: string; settings: string; models: string | null };
   capabilities: {
-    studio: { available: boolean; reasons: string[]; gpu: string | null; vram_mb: number | null };
+    studio: { available: boolean; reasons: string[]; gpu: string | null; vram_mb: number | null;
+              checking: boolean };                 // (added) true until the background probe answers
     recorder: { available: boolean; reason: string | null;
-                permission: "granted" | "denied" | "not_determined" | "not_required" };
+                permission: "granted" | "denied" | "not_determined" | "not_required";
+                permission_explanation: string | null;  // (added) macOS: shown before the "Screen Recording" prompt
+                settings_url: string | null;            // (added) macOS: where the user switches it on
+                backend: string };                      // (added) "WASAPI loopback" | "ScreenCaptureKit"
     exclusive_mode: boolean;                       // Windows only
   };
+  // (added)
+  identifier: string;                              // bundle identifier from branding.json
+  mode: "portable" | "dev" | "user" | "translocated";   // where data lives (ARCHITECTURE 8)
+  mode_reason: string;                             // why that mode was chosen, plain text
+  webview_version: string;                         // WebView2 runtime (Windows) or WebKit (macOS) version
+  translocation_help: string | null;               // set only in mode "translocated": text to show before root_choose
 }
 ```
 
 `studio.available` is false on macOS, when the Studio runtime is missing next to
 the app, or when the Studio probe says the computer cannot run it. `reasons` are
-shown as they are.
+shown as they are. The probe runs once in the background after start-up; until it
+answers, `checking` is true, `available` false and the reason says the check is still
+running.
+
+`root_choose() -> { ok: boolean; root: string | null; message: string }` **(added)**,
+macOS translocation only (WORK_ORDER trap 2): shows a folder picker for the stick's
+main folder (the one holding `Library`), remembers it in
+`~/Library/Application Support/<identifier>/root.txt` and restarts the app. Rejects
+with `not_needed` when the app is not translocated.
+
+Internal commands, not for screens: `ping(text) -> { echo, uptimeMs }` (Stage 0 IPC
+check) and `smoke_report(report)` (only accepted under `--smoke-test`; camelCase
+payload kept from Stage 0).
 
 ## 2. Library
 
@@ -52,10 +85,16 @@ interface SongSummary {
 }
 ```
 
-`song_cover(song_id, max_px: number) -> { data_url: string | null }` (JPEG/PNG
-thumbnail, cached in memory).
+`song_cover(song_id, max_px?: number) -> { data_url: string | null }` (JPEG/PNG
+thumbnail, cached in memory; `max_px` defaults to 256).
 
-Event `library://changed` (no payload) when files appear, disappear or change.
+The scan is recursive, skips dotfiles, macOS `._*` files and unfinished `*.tmp-*`
+writes, and caches summaries by (size, modification time). `free_bytes` /
+`total_bytes` are for the volume holding the Library.
+
+Event `library://changed` (no payload) when files appear, disappear or change
+(including a folder moved away); a burst of changes gives one event about 400 ms after
+its first change.
 
 ## 3. Loading and playback
 
@@ -77,11 +116,18 @@ interface SongSettings {
 }
 ```
 
+`stems[].role` is `lead_vocal`, `backing_vocals`, `drums`, `other` or a newer role;
+newer roles are played per SONG_FORMAT's forward-compatibility rule.
+
 - `player_play()`, `player_pause()`, `player_toggle()`, `player_stop()`
 - `player_seek(position_s: number)`
-- `player_set(changes: Partial<SongSettings>)` - applies live (click-free) and saves
-  to the song file's settings slot (debounced about 1 s, flushed on song change and
-  exit).
+- `player_set(changes: Partial<SongSettings>) -> SongSettings` - applies live
+  (click-free) and saves to the song file's settings slot (debounced about 1 s, flushed
+  on song change and exit). Returns the effective settings after the change. Values are
+  clamped: `semitones` -12..12 (whole numbers), `guide_vocal` 0..1, `backing_level` and
+  `levels.*` 0..2 (+6 dB), `lyrics_offset_ms` -10000..10000; an unknown key or a wrongly
+  typed value rejects with `bad_request`; with no song loaded it rejects with
+  `not_loaded`. A change while paused is heard from the first frame after play.
 - `player_set_master(volume: number)` - 0..1, app setting, not saved in the song.
 - `player_state() -> PlayerState`
 
@@ -91,18 +137,31 @@ interface PlayerState {
   song_id: string | null; position_s: number; duration_s: number;
   device: { name: string; sample_rate: number; channels: number; exclusive: boolean; latency_ms: number } | null;
   underruns: number; error: string | null;
-  key_label: string | null;                        // "A major -> B major (+2)"
+  key_label: string | null;                        // "A major → B major (+2)" (arrow as in WORK_ORDER 4.5)
+  // (added)
+  clipped: boolean;          // output went above full scale since the last load / mix / master change (nothing limits it)
+  device_starved: number;    // WASAPI device-side starvation events (OS scheduling glitches)
+  output_peak_db: number[];  // per channel, last ~0.3 s, master included, dBFS; -120 = silence
 }
 ```
 
+`key_label` is "+2 semitones" / "original key" when the song has no detected key.
+`device.exclusive` is the mode actually open (exclusive may have fallen back to
+shared). `device` is null when no output device exists; `player_play` then rejects
+with `no_device`.
+
 Events:
 
-- `playback://clock` about 30 times per second while playing (and once on every
-  state change): `{ position_s: number; playing: boolean; seq: number }`.
+- `playback://clock` about 30 times per second while playing (absolute 33.3 ms
+  deadlines; and on every state change, checked 4 times a second while not playing):
+  `{ position_s: number; playing: boolean; seq: number }`.
   `position_s` is the song time of the sample now leaving the DAC (device latency
-  already subtracted). The UI interpolates between events with `performance.now()`
-  and re-anchors on each event (ARCHITECTURE section 4); the lyric offsets are applied
-  by the UI: `lyric_time = position_s - (song.lyrics_offset_ms + device_offset_ms) / 1000`.
+  already subtracted), extrapolated from the engine's last device callback to the
+  moment the event is sent (at most 100 ms). The UI interpolates between events with
+  `performance.now()` and re-anchors on each event (ARCHITECTURE section 4); the lyric
+  offsets are applied by the UI:
+  `lyric_time = position_s - (song.lyrics_offset_ms + device_offset_ms) / 1000`, where
+  `device_offset_ms` is `settings.audio.device_offsets_ms[device_id ?? "default"]`.
 - `playback://state`: a full `PlayerState`.
 - `playback://error`: `{ code, message }` (device lost, file unreadable...).
 
@@ -111,8 +170,13 @@ Events:
 `devices_list() -> { devices: Device[] }` with
 `Device { id: string; name: string; is_default: boolean; sample_rate: number; channels: number; exclusive_capable: boolean }`.
 
-`device_set(id: string | null, exclusive: boolean)` - null = system default. Saved in
-app settings. Changing device during playback pauses, switches, and resumes.
+`device_set(id: string | null, exclusive?: boolean)` - null (or "") = system default;
+`exclusive` defaults to false. Saved in app settings. Changing device during playback
+pauses, switches, and resumes. If the device refuses exclusive mode it opens in shared
+mode, the choice is still saved, and the call rejects with `exclusive_unavailable` so
+the UI can say so; any other failure reopens the previous device and is not saved.
+The ids `null` and `null:<rate>` name a silent device that consumes audio in real time
+(tests and the headless self-check; not listed by `devices_list`).
 
 ## 5. App settings
 
@@ -129,18 +193,37 @@ interface AppSettings {
     library_sort: "title" | "artist" | "recent" | "key"; fullscreen_stage: boolean;
   };
   audio: { device_id: string | null; exclusive: boolean; master_volume: number;
-           device_offsets_ms: Record<string, number> };   // Bluetooth latency per device id
+           device_offsets_ms: Record<string, number> };   // Bluetooth latency per device id ("default" = system default)
 }
 ```
+
+Defaults (core and UI agree): `skin` true, `bubbles` true, `motion` "system" (follows
+the OS reduce-motion preference), `lyrics_text_size` 56, `marker_position` 0.33,
+`colors` sung `#ff3d8b`, upcoming `#f6efd9`, marker `#7dffd8`, `library_sort` "title",
+`fullscreen_stage` false; `device_id` null, `exclusive` false, `master_volume` 1.0
+(unity), `device_offsets_ms` {}. Numbers are clamped (`lyrics_text_size` 12..400,
+`marker_position` 0.05..0.95, `master_volume` 0..1, offsets -5000..5000 ms). A value
+of the wrong type, or an enum value this version does not know, falls back to its
+default on its own; unknown keys are kept, so a newer app sharing the stick loses
+nothing. Saves are debounced about 300 ms; an unreadable file is kept as
+`settings.json.bad`. Prefer `device_set` for device changes (it handles refusals).
 
 ## 6. Sync editor and metadata
 
 - `lyrics_save(song_id, lyrics: Lyrics)` - stores `lyrics_override` in the song's slot.
-- `lyrics_reset(song_id)` - removes the override.
-- `metadata_save(song_id, { title?, artist?, album? })` - stores `metadata_override`.
-- `studio_realign(song_id, text: string, anchors: { line: number; start: number }[]) -> Lyrics`
+- `lyrics_reset(song_id)` - removes the override. There is no command that returns
+  the original lyrics; the UI reloads the song (`song_load`) to get them.
+- `metadata_save(song_id, metadata: { title?, artist?, album? })` - stores
+  `metadata_override`. The object travels as `metadata`; the core also accepts it as
+  `changes` or as top-level `title` / `artist` / `album`.
+- `studio_realign(song_id, text: string, anchors?: { line: number; start: number }[]) -> Lyrics`
   (Windows with the Studio only; `line` is the 0-based index into the `lines` array of
-  the lyrics produced from `text`).
+  the lyrics produced from `text`). The result is also stored as the song's
+  `lyrics_override`.
+
+A pending `player_set` for the song is written first. When an edit no longer fits the
+settings slot, the core rewrites the whole song file atomically (the engine releases
+the song meanwhile).
 
 ## 7. Export backing track
 
@@ -149,16 +232,37 @@ interface AppSettings {
 Renders the current key and mix (the song's settings, guide vocal included at its
 current level) offline with the same DSP as playback, at the song's sample rate, to
 `<root>/Exports/<artist> - <title> (<key>).flac|wav`. Events
-`export://progress { job_id, progress }`, `export://done { job_id, path }`,
+`export://progress { job_id, progress }`,
+`export://done { job_id, path, applied_gain_db, peak }`,
 `export://failed { job_id, code, message }`.
+
+- `applied_gain_db` (number, dB, 0 or negative): the gain applied to the whole file.
+  `wav32f` is never scaled (always 0). A float render can exceed full scale and a
+  24-bit FLAC cannot hold that, so a `flac24` export whose render peaked above full
+  scale is lowered by one constant, just enough to fit (no limiting, no normalising),
+  and this says by how much. WORK_ORDER 5 forbids hidden processing: whenever it is
+  below 0 the UI tells the user, e.g. "The mix peaked above full scale, so the FLAC
+  file was lowered by 5.8 dB to avoid clipping. Choose 32-bit float WAV to keep the
+  exact level."
+- `peak` (number): the render's largest |sample| before any gain (linear, 1.0 = full
+  scale), for logs and diagnostics.
 
 ## 8. Recorder
 
-- `recorder_status() -> RecorderStatus`
-- `recorder_start()`, `recorder_stop() -> Recording`
-- `recorder_request_permission()` (macOS: shows the system prompt after the UI has
-  explained why "Screen Recording" is asked for)
-- `recordings_list() -> { recordings: Recording[] }`
+- `recorder_status() -> RecorderStatus` (the level thread's latest reading; polling
+  does not reset the meter)
+- `recorder_start() -> RecorderStatus` (returns once the OS stream runs, up to 20 s;
+  rejects with `busy` while a recording runs), `recorder_stop() -> Recording`
+- `recorder_request_permission() -> { permission }` (macOS: shows the system prompt
+  after the UI has shown `capabilities.recorder.permission_explanation`; returns the
+  resulting permission state)
+- `recordings_list() -> { recordings: Recording[] }` (newest first)
+
+Recordings are `<root>/Recordings/Recording <local time>.wav` (32-bit float WAV, RF64
+above 4 GiB). The recording spans the `recorder_start` and `recorder_stop` calls:
+silence the OS does not deliver is filled from timestamps, so the length matches the
+wall clock. `elapsed_s` is wall time since start. `clipped` for a finished recording is
+kept in `Settings/recordings-index.json`, since a WAV header cannot hold it.
 
 ```ts
 interface RecorderStatus {
@@ -173,28 +277,81 @@ Event `recorder://level` about 20 times per second while recording: a `RecorderS
 
 ## 9. Studio (Windows with a capable GPU)
 
-- `studio_status() -> { available: boolean; reasons: string[]; running: boolean; models_present: boolean; queue: StudioJob[] }`
+- `studio_status() -> StudioStatus`
 - `studio_inspect(path: string) -> InspectResult` (STUDIO_PROTOCOL section 5)
-- `studio_lyrics_lookup({ artist, title, album, duration_s }) -> { results: LookupResult[] }`
-- `studio_submit({ input: string; preset: "full" | "clean"; language: string; metadata: {...}; lyrics: {...} }) -> { job_id }`
+- `studio_lyrics_lookup(query: { artist, title, album, duration_s }) -> { results: LookupResult[] }`
+  (the object travels as `query`; the core also accepts its fields at top level)
+- `studio_submit(job: { input: string; preset: "full" | "clean"; language: string; metadata: {...}; lyrics: {...} }) -> { job_id }`
+  (the object travels as `job`; the core also accepts its fields at top level, with
+  defaults `preset` "full", `language` "en", `lyrics` `{ mode: "auto" }`). Job ids are
+  chosen by the app.
 - `studio_cancel(job_id)`
-- `studio_models_status()`, `studio_models_download()`
+- `studio_clear_finished()` **(added)** - removes done, failed and cancelled jobs from
+  the queue.
+- `studio_models_status(preset?)`, `studio_models_download(preset?)` - `preset`
+  defaults to "full"; the results are the Studio's `models.status` /
+  `models.download` results (STUDIO_PROTOCOL section 4) without the envelope.
 - `pick_files() -> string[]` (native file dialog: audio and video types) and drag-and-drop
   of files onto the window (Tauri drag-drop event `studio://dropped { paths }`).
 
 ```ts
+interface StudioStatus { available: boolean; reasons: string[]; running: boolean; models_present: boolean;
+  queue: StudioJob[];
+  checking: boolean }                              // (added) as capabilities.studio.checking
 interface StudioJob { job_id: string; input_name: string; state: "queued" | "running" | "done" | "failed" | "cancelled";
-  stage: string | null; overall: number; message: string | null; output_song_id: string | null; error: string | null }
+  stage: string | null; overall: number; message: string | null; output_song_id: string | null; error: string | null;
+  stage_progress: number | null;                   // (added) progress of the current stage, 0..1
+  error_code: string | null }                      // (added) e.g. "studio_crashed", "decode_failed"
 ```
 
-Events: `studio://job` (a `StudioJob` on every change), `studio://models { name, done_bytes, total_bytes }`.
+Events: `studio://job` (a `StudioJob` on every change), `studio://models { name, done_bytes, total_bytes }`,
+`studio://status` **(added)**: a full `StudioStatus` when availability or the running
+state changes (per-job changes come as `studio://job`).
+
+The Studio process is started on demand and stopped after 10 minutes idle. A Studio
+that does not answer is a `timeout` error, never a hang (60 s for start-up and the
+first probe). If it crashes, the running job fails with `error_code`
+"studio_crashed" and the waiting jobs are sent to a restarted Studio; after 3 crashes
+within 10 minutes the waiting jobs fail with a plain explanation (also
+"studio_crashed") instead of restarting in a loop.
 
 ## 10. Self-check (WORK_ORDER 4.10)
 
-`selfcheck_run() -> { report_path: string; passed: boolean; items: { name: string; ok: boolean; detail: string }[] }`
+`selfcheck_run(user_agent?: string, silent?: boolean) -> { report_path: string; passed: boolean; items: { name: string; ok: boolean; detail: string }[] }`
 
 Plays a test tone, loads and renders the bundled test song, shifts its key, checks the
 recorder permission and makes a 3-second capture, and records OS version, web engine
-version (the UI passes `navigator.userAgent`), memory and output device format. Writes
-a plain-text report to `<root>/Settings/selfcheck-<date>.txt`. The app also accepts
-`--selfcheck` on the command line (runs it headless-ish and exits 0/1), for CI.
+version (the UI passes `navigator.userAgent` as `user_agent`), memory and output
+device format. Items, in order: System, Web engine, Memory, Output device, Test tone,
+Recorder, Demo song, Key change. The test tone peaks at exactly -60 dBFS;
+`silent: true` **(added)** plays digital silence instead (use it whenever people are
+around). The user's song is unloaded during the check and reloaded at the same
+position afterwards. Writes a plain-text report to
+`<root>/Settings/selfcheck-<local time>.txt`. The app also accepts
+`--selfcheck [--silent]` on the command line (hidden window, prints the items, exits
+0 when all pass, else 1), for CI.
+
+`selfcheck_user_agent(user_agent)` **(added, internal)**: in `--selfcheck` runs the
+page reports `navigator.userAgent` through this command; screens do not call it.
+
+## 11. Additions to version 1 (Stage 1, 2026-11-17)
+
+Everything below is implemented by the core (`app/src-tauri`) and is optional for a
+reader: the UI uses a field when present and degrades when it is absent.
+
+| Section | Addition |
+|---|---|
+| Conventions | Argument names for object parameters: `metadata_save(song_id, metadata)`, `export_backing(song_id, options: { format })`, `studio_lyrics_lookup(query)`, `studio_submit(job)`, `selfcheck_run(user_agent, silent)`. The core also accepts the flat forms noted in each section. |
+| 1 | `AppInfo.identifier`, `mode`, `mode_reason`, `webview_version`, `translocation_help`; `capabilities.studio.checking`; `capabilities.recorder.permission_explanation`, `settings_url`, `backend`. Command `root_choose()`. Internal: `ping`, `smoke_report`. |
+| 3 | `player_set` returns the effective `SongSettings`. `PlayerState.clipped`, `device_starved`, `output_peak_db`. `key_label` uses "→". |
+| 4 | `device_set`'s `exclusive` is optional (false); refusal of exclusive mode rejects with `exclusive_unavailable` after opening shared. |
+| 7 | `export_cancel(job_id)`. `export_backing` takes the format as `format` or inside `options`. `export://done` also carries `applied_gain_db` (negative when a Flac24 export was turned down to avoid clipping; 0 otherwise) and `peak` (largest absolute sample of the render before any export gain, linear). |
+| 8 | `recorder_start` returns a `RecorderStatus`; `recorder_request_permission` returns `{ permission }`. |
+| 9 | `StudioStatus.checking`; `StudioJob.stage_progress`, `error_code`; `studio_clear_finished()`; `studio_models_status(preset?)` / `studio_models_download(preset?)`; event `studio://status`. |
+| 10 | `selfcheck_run`'s `silent`; internal `selfcheck_user_agent`. |
+
+The UI also uses the Tauri window API directly, outside this contract: full screen
+(`setFullscreen`, needs `core:window:allow-set-fullscreen` in
+`app/src-tauri/capabilities/default.json`) and the minimised state (`isMinimized` on
+resize, in `core:default`), which pauses the skin's animation because a web view does
+not always report a minimised window as a hidden page.

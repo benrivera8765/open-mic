@@ -22,11 +22,21 @@ import type {
   StudioStatus,
 } from "../api/types";
 import { clampKey } from "../lib/keys";
+import { exportGainNotice } from "../lib/format";
 import { PlaybackClock } from "../lib/clock";
 import { Store, useSelector } from "./store";
 
 export type Screen = "library" | "stage" | "sync" | "recorder" | "studio" | "settings";
 export type Overlay = null | "help" | "selfcheck";
+
+/** One "Export backing track" job as the UI shows it. */
+export interface ExportJob {
+  progress: number;
+  path: string | null;
+  error: string | null;
+  /** Set when the core scaled the file down to avoid clipping (`applied_gain_db` < 0). */
+  notice: string | null;
+}
 
 export interface Toast {
   id: number;
@@ -59,7 +69,7 @@ export interface AppState {
   /** Bumped when the library search box should take focus (Ctrl/Cmd+F). */
   searchFocus: number;
   /** Export jobs by id. */
-  exports: Record<string, { progress: number; path: string | null; error: string | null }>;
+  exports: Record<string, ExportJob>;
   /** The sync editor's tap-along owns Space/Enter/Esc while true. */
   tapMode: boolean;
 }
@@ -121,10 +131,10 @@ export function getApiSync(): Api {
 // ---------------------------------------------------------------------------
 
 let toastId = 1;
-export function toast(text: string, kind: Toast["kind"] = "info"): void {
+export function toast(text: string, kind: Toast["kind"] = "info", durationMs?: number): void {
   const id = toastId++;
   store.set((s) => ({ toasts: [...s.toasts.slice(-3), { id, kind, text }] }));
-  setTimeout(() => dismissToast(id), kind === "error" ? 9000 : 4000);
+  setTimeout(() => dismissToast(id), durationMs ?? (kind === "error" ? 9000 : 4000));
 }
 export function dismissToast(id: number): void {
   store.set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
@@ -178,14 +188,18 @@ export async function init(theApi: Api): Promise<void> {
   api.on("studio://dropped", ({ paths }) => addToStudio(paths));
   api.on("studio://status", (st) => store.set({ studio: st }));
   api.on("export://progress", ({ job_id, progress }) =>
-    store.set((s) => ({ exports: { ...s.exports, [job_id]: { progress, path: null, error: null } } })),
+    store.set((s) => ({ exports: { ...s.exports, [job_id]: { progress, path: null, error: null, notice: null } } })),
   );
-  api.on("export://done", ({ job_id, path }) => {
-    store.set((s) => ({ exports: { ...s.exports, [job_id]: { progress: 1, path, error: null } } }));
-    toast(`Backing track saved: ${path}`);
+  api.on("export://done", ({ job_id, path, applied_gain_db }) => {
+    // A FLAC export that had to be lowered to avoid clipping says so, plainly, both in a
+    // toast and next to the saved path in the mixer (WORK_ORDER 5: no hidden processing).
+    const notice = exportGainNotice(applied_gain_db, path);
+    store.set((s) => ({ exports: { ...s.exports, [job_id]: { progress: 1, path, error: null, notice } } }));
+    if (notice) toast(`Exported: ${path}. ${notice}`, "info", 15000);
+    else toast(`Backing track saved: ${path}`);
   });
   api.on("export://failed", ({ job_id, message }) => {
-    store.set((s) => ({ exports: { ...s.exports, [job_id]: { progress: 0, path: null, error: message } } }));
+    store.set((s) => ({ exports: { ...s.exports, [job_id]: { progress: 0, path: null, error: message, notice: null } } }));
     toast(message, "error");
   });
 
@@ -496,7 +510,7 @@ export async function exportBacking(format: "flac24" | "wav32f"): Promise<void> 
   const song = store.get().song;
   if (!api || !song) return;
   const r = await attempt(api.exportBacking(song.summary.song_id, format), "Export failed");
-  if (r) store.set((s) => ({ exports: { ...s.exports, [r.job_id]: { progress: 0, path: null, error: null } } }));
+  if (r) store.set((s) => ({ exports: { ...s.exports, [r.job_id]: { progress: 0, path: null, error: null, notice: null } } }));
 }
 
 // ---------------------------------------------------------------------------

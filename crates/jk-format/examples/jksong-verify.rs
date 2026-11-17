@@ -104,7 +104,7 @@ fn main() -> ExitCode {
     }
     for s in &rep.stems {
         println!(
-            "stem {:<15} {:>9} bytes  gain {:<10.6} {} Hz {} ch {} bit  frames {} (decoded {:?})  md5 {:?}  seektable {:?} points, max gap {:?} s  seeks ok {:?}  peak {:?}",
+            "stem {:<15} {:>9} bytes  gain {:<10.6} {} Hz {} ch {} bit  frames {} (decoded {:?})  md5 {:?}  seektable {:?} points, max gap {:?} s  seeks ok {:?} ({:?} frames compared)  peak {:?}",
             s.role,
             s.bytes,
             s.gain,
@@ -117,6 +117,7 @@ fn main() -> ExitCode {
             s.seek_points,
             s.max_seek_gap_seconds.map(|g| (g * 1000.0).round() / 1000.0),
             s.seeks_ok,
+            s.seek_frames_compared,
             s.decoded_peak.map(|p| (p * 1e6).round() / 1e6)
         );
     }
