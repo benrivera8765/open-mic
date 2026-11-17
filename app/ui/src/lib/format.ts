@@ -46,6 +46,23 @@ export function formatDb(db: number): string {
   return `${db.toFixed(1)} dB`;
 }
 
+/**
+ * The plain-language note for an export the core had to scale down (`export://done`
+ * `applied_gain_db` < 0: a FLAC export whose mix peaked above full scale). Null when the
+ * file holds the mix at its exact level. WORK_ORDER 5: no hidden processing.
+ */
+export function exportGainNotice(appliedGainDb: number | undefined, path: string): string | null {
+  if (appliedGainDb === undefined || !Number.isFinite(appliedGainDb) || appliedGainDb >= 0) return null;
+  const cut = -appliedGainDb;
+  // 1 decimal normally; small cuts must not round to "0.0 dB".
+  const amount = cut >= 0.095 ? `${cut.toFixed(1)} dB` : cut >= 0.005 ? `${cut.toFixed(2)} dB` : "less than 0.01 dB";
+  const flac = /\.flac$/i.test(path);
+  return (
+    `The mix peaked above full scale, so the ${flac ? "FLAC " : ""}file was lowered by ${amount} to avoid clipping.` +
+    (flac ? " Choose 32-bit float WAV to keep the exact level." : "")
+  );
+}
+
 /** "+40 ms", "-15 ms", "0 ms" */
 export function formatOffset(ms: number): string {
   const r = Math.round(ms);

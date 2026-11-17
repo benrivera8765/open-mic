@@ -12,6 +12,8 @@
 //   ?empty=1               empty library
 //   ?many=200              add generated filler songs (library performance)
 //   ?skin=0                start with the plain look (settings.ui.skin off)
+//   ?exportpeak=1.95       peak of the simulated export render (linear; above full scale
+//                          a FLAC export reports the gain it applied, like the real core)
 // Handled by the UI (App.tsx `mockStartup`), not here:
 //   ?song=N&at=SECONDS     load playable song N (0-based) at a position, paused
 //   &play=1                ...and start playing
@@ -64,6 +66,12 @@ export interface MockOptions {
   skin: boolean;
   /** Simulated IPC latency for commands, ms. */
   latencyMs: number;
+  /**
+   * Peak (linear) of the simulated export render. Like jk-engine's export, a `flac24`
+   * export above 24-bit full scale is scaled down and reports `applied_gain_db`;
+   * `wav32f` is never scaled.
+   */
+  exportPeak: number;
   /** Clock source (ms); injectable for tests. */
   now: () => number;
   /** Timer functions; injectable for tests. */
@@ -80,6 +88,7 @@ const DEFAULT_OPTIONS: MockOptions = {
   many: 0,
   skin: true,
   latencyMs: 3,
+  exportPeak: 0.89,
   now: () => performance.now(),
   setInterval: (f, ms) => setInterval(f, ms),
   clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
@@ -171,6 +180,8 @@ export class MockApi implements Api {
     if (q.get("skin") === "0") o.skin = false;
     const many = Number(q.get("many"));
     if (many > 0) o.many = Math.min(2000, Math.floor(many));
+    const peak = Number(q.get("exportpeak"));
+    if (peak > 0 && Number.isFinite(peak)) o.exportPeak = peak;
     return o;
   }
 
@@ -501,7 +512,17 @@ export class MockApi implements Api {
         this.o.clearInterval(h);
         const sum = this.summaryOf(s);
         const key = keyLabel(sum.key, s.settings.semitones, "->", true);
-        this.emit("export://done", { job_id, path: `Exports/${sum.artist} - ${sum.title} (${key}).${format === "flac24" ? "flac" : "wav"}` });
+        // Same rule as jk-engine's export: a 24-bit FLAC cannot hold a mix above full
+        // scale, so it is scaled by one constant just enough to fit, and says so.
+        const peak = this.o.exportPeak;
+        const fullScale24 = 8_388_607 / 8_388_608;
+        const applied_gain_db = format === "flac24" && peak > fullScale24 ? 20 * Math.log10(fullScale24 / peak) : 0;
+        this.emit("export://done", {
+          job_id,
+          path: `Exports/${sum.artist} - ${sum.title} (${key}).${format === "flac24" ? "flac" : "wav"}`,
+          applied_gain_db,
+          peak,
+        });
       }
     }, 120);
     return this.reply({ job_id });

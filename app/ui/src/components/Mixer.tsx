@@ -96,7 +96,16 @@ function ExportBacking() {
       </div>
       {jobs.map(([id, j]) => (
         <div key={id} class="mixer__export-job">
-          {j.error ? <Note kind="error">{j.error}</Note> : j.path ? <Note>Saved: {j.path}</Note> : <Progress value={j.progress} label="Export progress" />}
+          {j.error ? (
+            <Note kind="error">{j.error}</Note>
+          ) : j.path ? (
+            <>
+              <Note>Saved: {j.path}</Note>
+              {j.notice && <Note kind="warn">{j.notice}</Note>}
+            </>
+          ) : (
+            <Progress value={j.progress} label="Export progress" />
+          )}
         </div>
       ))}
     </div>
