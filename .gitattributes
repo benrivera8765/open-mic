@@ -10,3 +10,5 @@
 *.jksong binary
 *.flac binary
 *.wav binary
+*.f32 binary
+*.bin binary

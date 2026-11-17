@@ -1,0 +1,25 @@
+[package]
+name = "jk-engine"
+description = "Jukeoke real-time player: FLAC stem readers, render-ahead worker, device output (WASAPI / Core Audio), playback clock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+jk-dsp = { path = "../jk-dsp" }
+symphonia = { version = "0.6", default-features = false, features = ["flac"] }
+rtrb = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.27"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# 0.16, not 0.17+: newer cpal links macOS 14.2+ APIs (see src/output/coreaudio_out.rs).
+cpal = "0.16"
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = ["Win32_Foundation", "Win32_System_Threading"]

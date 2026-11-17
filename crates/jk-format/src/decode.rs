@@ -1,0 +1,129 @@
+//! Decoding stem chunks with symphonia (feature `symphonia`, on by default).
+//!
+//! This is a small, allocation-tolerant helper for tools and tests (verification,
+//! conformance, offline checks). The real-time engine builds its own reader on the same
+//! [`ChunkReader`] + `MediaSource` adapter.
+
+use symphonia_bundle_flac::{FlacDecoder, FlacReader};
+use symphonia_core::codecs::CodecParameters;
+use symphonia_core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
+use symphonia_core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
+use symphonia_core::io::{MediaSourceStream, MediaSourceStreamOptions};
+use symphonia_core::units::Timestamp;
+
+use crate::chunk_reader::ChunkReader;
+use crate::error::{FormatError, Result};
+use crate::song::SongFile;
+
+/// Full scale of a 24-bit sample: the true float is `integer / 8388608 * gain`.
+pub const FULL_SCALE_24: f64 = 8_388_608.0;
+
+fn dec_err(e: symphonia_core::errors::Error) -> FormatError {
+    FormatError::damaged(format!("FLAC stream: {e}"))
+}
+
+/// Decodes one FLAC stem chunk packet by packet, yielding the true integer sample
+/// values (for 24-bit stems: -8388608..=8388607), interleaved.
+pub struct StemDecoder {
+    reader: FlacReader<'static>,
+    decoder: FlacDecoder,
+    track_id: u32,
+    pub sample_rate: u32,
+    pub channels: usize,
+    pub bits_per_sample: u32,
+    /// Total frames from STREAMINFO, if known.
+    pub total_frames: Option<u64>,
+    shift: u32,
+    scratch: Vec<i32>,
+}
+
+impl StemDecoder {
+    /// Opens the FLAC stream in `reader`. With `verify_md5`, [`StemDecoder::finish`]
+    /// compares the decoded audio with the STREAMINFO MD5.
+    pub fn new(reader: ChunkReader, verify_md5: bool) -> Result<StemDecoder> {
+        let mss = MediaSourceStream::new(Box::new(reader), MediaSourceStreamOptions::default());
+        let reader = FlacReader::try_new(mss, FormatOptions::default()).map_err(dec_err)?;
+        let track = reader.tracks().first().ok_or_else(|| FormatError::damaged("FLAC stream has no track"))?;
+        let track_id = track.id;
+        let total_frames = track.num_frames;
+        let Some(CodecParameters::Audio(params)) = track.codec_params.clone() else {
+            return Err(FormatError::damaged("FLAC stream has no audio parameters"));
+        };
+        let mut opts = AudioDecoderOptions::default();
+        opts.verify = verify_md5;
+        let decoder = FlacDecoder::try_new(&params, &opts).map_err(dec_err)?;
+        let p = decoder.codec_params();
+        let sample_rate = p.sample_rate.unwrap_or(0);
+        let channels = p.channels.as_ref().map(|c| c.count()).unwrap_or(0);
+        let bits_per_sample = p.bits_per_sample.unwrap_or(0);
+        if !(1..=32).contains(&bits_per_sample) || channels == 0 {
+            return Err(FormatError::damaged("FLAC stream has invalid bits per sample or channels"));
+        }
+        Ok(StemDecoder {
+            reader,
+            decoder,
+            track_id,
+            sample_rate,
+            channels,
+            bits_per_sample,
+            total_frames,
+            // The decoder left-justifies samples in i32; shift back to the true value.
+            shift: 32 - bits_per_sample,
+            scratch: Vec::new(),
+        })
+    }
+
+    /// Decodes the next packet. Replaces `out` with its interleaved integer samples and
+    /// returns (first frame index of the packet, frames). `None` at the end.
+    pub fn next_block(&mut self, out: &mut Vec<i32>) -> Result<Option<(u64, usize)>> {
+        loop {
+            let Some(packet) = self.reader.next_packet().map_err(dec_err)? else { return Ok(None) };
+            if packet.track_id != self.track_id {
+                continue;
+            }
+            let ts = packet.pts.get().max(0) as u64;
+            let buf = self.decoder.decode(&packet).map_err(dec_err)?;
+            let frames = buf.frames();
+            buf.copy_to_vec_interleaved::<i32>(&mut self.scratch);
+            out.clear();
+            out.extend(self.scratch.iter().map(|&s| s >> self.shift));
+            return Ok(Some((ts, frames)));
+        }
+    }
+
+    /// Seeks so that the next block contains `frame`; returns the first frame index of
+    /// the packet the reader landed on. Sample-accurate positioning is done by the
+    /// caller by skipping `frame - returned` frames of the next block.
+    pub fn seek(&mut self, frame: u64) -> Result<u64> {
+        let to = SeekTo::Timestamp { ts: Timestamp::new(frame as i64), track_id: self.track_id };
+        let r = self.reader.seek(SeekMode::Accurate, to).map_err(dec_err)?;
+        self.decoder.reset();
+        Ok(r.actual_ts.get().max(0) as u64)
+    }
+
+    /// `Some(true)` when the decoded audio matched the STREAMINFO MD5, `Some(false)` when
+    /// not, `None` when verification was off or the stream has no MD5. Only meaningful
+    /// after decoding the whole stream from the start without seeking.
+    pub fn finish(&mut self) -> Option<bool> {
+        self.decoder.finalize().verify_ok
+    }
+}
+
+/// Decodes a whole stem into planar `f32` (`[channel][frame]`), applying the stored
+/// gain. Loads the whole stem into memory: for tools and tests, not for playback.
+pub fn decode_stem_f32(song: &SongFile, role: &str) -> Result<Vec<Vec<f32>>> {
+    let (stem, reader) = song.stem_reader(role)?;
+    let mut dec = StemDecoder::new(reader, false)?;
+    // 24-bit stems (the only kind v1.0 writers produce): integer / 8388608 * gain.
+    let scale = stem.gain / 2f64.powi(dec.bits_per_sample as i32 - 1);
+    let mut planes = vec![Vec::new(); dec.channels];
+    let mut block = Vec::new();
+    while let Some((_, frames)) = dec.next_block(&mut block)? {
+        for f in 0..frames {
+            for (c, plane) in planes.iter_mut().enumerate() {
+                plane.push((block[f * dec.channels + c] as f64 * scale) as f32);
+            }
+        }
+    }
+    Ok(planes)
+}

@@ -1,11 +1,26 @@
-# Starting point; the audio-engine stream owns changes to this file.
+# Cargo configuration for the whole workspace (owned by the audio-engine stream).
+#
+# Windows: the toolchain is x86_64-pc-windows-gnu with WinLibs GCC (DECISIONS D-10).
+# The executables must depend only on DLLs that ship with Windows:
+#   * `+crt-static` makes rustc link the GCC runtime pieces it uses (libgcc, libgcc_eh,
+#     winpthread) from static archives;
+#   * C++ code: crates/jk-rubberband/build.rs stops `cc` from adding a dynamic `-lstdc++`
+#     and links `libstdc++.a` statically instead. Any other crate that compiles C++ must do
+#     the same.
+# Verified 2026-11-17: `objdump -p target/release/jukeoke-cli.exe | grep "DLL Name"` lists
+# only KERNEL32, msvcrt, ntdll, bcryptprimitives, api-ms-win-core-synch-l1-2-0, avrt,
+# combase, ole32, oleaut32 and propsys (no libstdc++-6, libgcc_s_seh-1, libwinpthread-1).
 [target.x86_64-pc-windows-gnu]
 rustflags = ["-C", "target-feature=+crt-static"]
 
 [env]
-# Same float behaviour on x86-64 and ARM64 (docs/ARCHITECTURE.md section 3).
+# Same float behaviour on x86-64 and ARM64 (docs/ARCHITECTURE.md section 3): never let the
+# C/C++ compiler fuse multiply-adds, never use fast-math. jk-rubberband's build.rs also sets
+# these flags itself. Do not add -mavx/-mfma/-march=native for MinGW builds: MinGW GCC cannot
+# align the stack for 256-bit AVX spills (GCC bug 54412) and such code crashes.
 CFLAGS_x86_64_pc_windows_gnu = "-ffp-contract=off"
 CXXFLAGS_x86_64_pc_windows_gnu = "-ffp-contract=off"
 CFLAGS_aarch64_apple_darwin = "-ffp-contract=off -mmacosx-version-min=13.0"
 CXXFLAGS_aarch64_apple_darwin = "-ffp-contract=off -mmacosx-version-min=13.0"
+# The owner's Mac runs macOS 13.6.9 (WORK_ORDER section 4.10).
 MACOSX_DEPLOYMENT_TARGET = "13.0"

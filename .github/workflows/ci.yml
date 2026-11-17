@@ -1,0 +1,226 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# CI for Jukeoke.
+#
+#   windows        Windows Server 2025 with the same toolchain as the dev PC
+#                  (Rust x86_64-pc-windows-gnu + WinLibs GCC 16.2 MSVCRT):
+#                  UI build + tests, cargo test --workspace, Studio tests
+#                  without GPU, portable app build + portable-mode smoke test.
+#   macos          The OLDEST Apple Silicon image GitHub hosts (macos-15 since
+#                  macos-14 was retired on 2026-11-02; docs/MAC.md has the
+#                  sources), everything compiled for macOS 13.0: crate tests,
+#                  app build + ad-hoc signature + minimum-macOS check of every
+#                  binary (scripts/build-mac.sh, the same script the owner runs
+#                  on the MacBook), launch from an exFAT disk image in
+#                  self-check mode, and a first ScreenCaptureKit capture.
+#   compare-renders  Offline renders from both platforms must match within
+#                  float tolerance (WORK_ORDER section 9).
+#
+# Parts of the project that do not exist yet are skipped with a notice, never
+# with an obscure failure. Nothing here publishes anything; the token is
+# read-only.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  windows:
+    name: Windows x64 (GNU toolchain)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Toolchain (Rust GNU host + WinLibs GCC 16.2, as on the dev PC)
+        run: bash scripts/ci-setup-windows-gnu.sh
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: windows-gnu-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: windows-gnu-
+
+      - name: Node.js (only if the UI exists)
+        if: hashFiles('app/ui/package.json') != ''
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: uv (only if the Studio exists)
+        if: hashFiles('studio/pyproject.toml') != ''
+        # setup-uv publishes no floating major tags (there is no "v10" tag or
+        # branch, checked 2026-11-17), so it must be pinned to a full release.
+        # An unresolvable action ref fails the whole job at "Set up job".
+        uses: astral-sh/setup-uv@v10.3.3
+
+      - name: UI - npm ci, build, test
+        run: bash scripts/ci-ui.sh
+
+      - name: Rust - cargo test --workspace
+        run: bash scripts/ci-test-crates.sh --workspace
+
+      - name: Studio - pytest -m "not gpu"
+        run: bash scripts/ci-studio.sh
+
+      - name: Portable Windows app - build + portable-mode smoke test
+        run: bash scripts/ci-build-app-windows.sh dist/Windows
+
+      - name: Offline render for the cross-platform comparison
+        run: bash scripts/ci-render.sh ci-out/render-windows
+
+      - name: Collect results
+        if: always()
+        run: |
+          mkdir -p ci-out
+          if [ -d dist/Windows ]; then cp -r dist/Windows ci-out/dist-Windows; fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-results
+          path: ci-out/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  macos:
+    name: macOS 15 arm64, built for macOS 13.0
+    # Oldest Apple Silicon image available (macos-14 retired 2026-11-02).
+    # Re-check docs/MAC.md section 1 when GitHub changes its image list.
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      JK_NONINTERACTIVE: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Runner environment
+        run: |
+          sw_vers
+          uname -m
+          echo "developer dir: $(xcode-select -p)"
+          xcodebuild -version
+          echo "macOS SDK: $(xcrun --show-sdk-version)"
+          csrutil status || true
+
+      - name: Rust (stable, aarch64-apple-darwin)
+        run: |
+          rustup toolchain install stable --profile minimal --target aarch64-apple-darwin
+          rustup default stable
+          rustc -vV
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: macos15-arm64-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: macos15-arm64-
+
+      - name: Node.js (only if the UI exists)
+        if: hashFiles('app/ui/package.json') != ''
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Rust - tests of the crates (DSP, format, recorder ...)
+        run: bash scripts/ci-test-crates.sh
+
+      - name: Build, ad-hoc sign, minimum-macOS check (scripts/build-mac.sh)
+        run: bash scripts/build-mac.sh
+
+      - name: Rust - app crate tests
+        run: |
+          if [ -f app/src-tauri/Cargo.toml ]; then
+            pkg="$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app/src-tauri/Cargo.toml | head -n 1)"
+            cargo test -p "$pkg"
+          else
+            echo "::notice::app/src-tauri not present yet; skipping the app crate tests"
+          fi
+
+      - name: Launch from an exFAT disk image (self-check)
+        run: |
+          name="$(sed -n 's/^[[:space:]]*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' branding.json | head -n 1)"
+          app="dist/Mac/$name.app"
+          [ -d "$app" ] || app=""
+          bash scripts/ci-exfat-launch.sh "$app" ci-out/exfat
+
+      - name: First ScreenCaptureKit capture (sck_probe)
+        run: bash scripts/ci-sck-probe.sh ci-out/sck
+
+      - name: Offline render for the cross-platform comparison
+        run: bash scripts/ci-render.sh ci-out/render-macos
+
+      - name: Package the Mac build (ditto zip keeps permissions and signature)
+        if: always()
+        run: |
+          mkdir -p ci-out
+          for app in dist/Mac/*.app; do
+            [ -d "$app" ] || continue
+            ditto -c -k --keepParent "$app" "ci-out/$(basename "$app" .app)-mac-arm64.zip"
+          done
+          if [ -d dist/Mac/Tools ]; then ditto -c -k --keepParent dist/Mac/Tools ci-out/mac-tools.zip; fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-results
+          path: ci-out/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  compare-renders:
+    name: Same audio on Windows and macOS
+    needs: [windows, macos]
+    if: always() && needs.windows.result != 'cancelled' && needs.macos.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download the Windows results
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-results
+          path: results/windows
+
+      - name: Download the macOS results
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: macos-results
+          path: results/macos
+
+      - name: Compare renders sample by sample
+        run: bash scripts/ci-compare-renders.sh results/windows/render-windows results/macos/render-macos

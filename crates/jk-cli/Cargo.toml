@@ -1,0 +1,19 @@
+[package]
+name = "jk-cli"
+description = "jukeoke-cli: test fixtures, offline render, device playback test and DSP benchmarks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "jukeoke-cli"
+path = "src/main.rs"
+
+[dependencies]
+jk-dsp = { path = "../jk-dsp" }
+jk-engine = { path = "../jk-engine" }
+jk-rubberband = { path = "../jk-rubberband" }
+clap = { version = "4.5", features = ["derive"] }
+hound = "3.5"

@@ -1,0 +1,31 @@
+{
+  "name": "jukeoke-ui",
+  "private": true,
+  "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
+  "description": "Web UI of the Jukeoke desktop app (Preact + TypeScript, rendered by Tauri's system web view).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit -p . && tsc --noEmit -p tsconfig.node.json && vite build && node scripts/check-dist-syntax.mjs",
+    "check-syntax": "node scripts/check-dist-syntax.mjs",
+    "test": "vitest run",
+    "tauri": "cd .. && tauri",
+    "app:dev": "cd .. && tauri dev -- --no-default-features",
+    "icons": "tauri icon ../src-tauri/icons/source/app-icon.svg -o ../src-tauri/icons && node scripts/prune-icons.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.12.5",
+    "preact": "10.29.8"
+  },
+  "devDependencies": {
+    "@babel/core": "7.29.13",
+    "@preact/preset-vite": "2.10.6",
+    "@tauri-apps/cli": "2.12.5",
+    "@types/node": "25.9.9",
+    "acorn": "8.19.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.8",
+    "vitest": "5.1.0"
+  }
+}

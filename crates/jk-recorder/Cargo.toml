@@ -1,0 +1,35 @@
+[package]
+name = "jk-recorder"
+description = "Jukeoke system-audio recorder: ScreenCaptureKit (macOS 13+) and WASAPI loopback (Windows), lossless 32-bit float WAV / RF64"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+# The macOS backend is written against the objc2 family of crates. Every API used
+# exists on macOS 13.0 (the owner's MacBook runs 13.6.9); see docs/MAC.md, section
+# "ScreenCaptureKit on macOS 13". Versions are pinned to the current releases as of
+# 2026-11-17 so `cargo check --target aarch64-apple-darwin -p jk-recorder` on Windows
+# type-checks exactly what CI and scripts/build-mac.sh will compile.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+block2 = "0.6.2"
+dispatch2 = "0.3.1"
+objc2-foundation = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-screen-capture-kit = "0.3.2"
+objc2-core-media = "0.3.2"
+objc2-core-audio-types = "0.3.2"
+objc2-core-audio = "0.3.2"
+objc2-core-graphics = "0.3.2"
+
+[[example]]
+# macOS self-check: permission state + a 3-second capture. Builds (as a stub that
+# explains itself) on every platform so `cargo build --examples` never breaks.
+name = "sck_probe"
+path = "examples/sck_probe.rs"
+test = true   # run its unit tests (tone-frequency estimator) with `cargo test`

@@ -1,0 +1,22 @@
+{
+  // Type-checking only: Vite does the actual transpiling (and the lowering to the
+  // browser baseline in vite.config.ts). ES2022 is the newest language level the
+  // macOS 13 baseline (Safari 16.4) fully supports.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "types": ["vite/client"]
+  },
+  "include": ["src"]
+}
