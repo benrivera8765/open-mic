@@ -1,0 +1,16 @@
+[package]
+name = "jk-dsp"
+description = "Deterministic DSP graph for Jukeoke: stem mix, pitch bus (Rubber Band R3), latency-matched drum bus, output resampler, offline renderer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+jk-rubberband = { path = "../jk-rubberband" }
+rubato = "5.1"
+libm = "0.2.16"
+
+[dev-dependencies]
+sha2 = "0.11"

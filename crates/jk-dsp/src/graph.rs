@@ -1,0 +1,497 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! The song-rate signal graph (docs/ARCHITECTURE.md section 4):
+//!
+//! ```text
+//!  lead x guide ----\
+//!  backing x level --+--> PITCH BUS --+--> [bypass: delay L] ------------\
+//!  other x level ----/                +--> [Rubber Band R3 @ key, aligned to L] --+--> out
+//!  drums x level ------> DRUM BUS --> [delay L] (or into the pitch bus with "shift drums")
+//! ```
+//!
+//! * **One latency L for every path.** Output frame `u` of every path corresponds to input
+//!   frame `u` delayed by exactly `L = longest_fft * 9/8` frames (4608 at 44.1/48 kHz). The
+//!   drums, the bypass and the shifted band therefore line up to the sample (verified by
+//!   the impulse tests), and the playback clock subtracts `L`.
+//! * **0 semitones is bit-transparent:** the output is the plain mix
+//!   `(lead*g + backing*g + other*g) + drums*g`, delayed by `L`. Rubber Band is not running.
+//! * **Key change = prime + crossfade.** Each Rubber Band instance runs at one fixed pitch
+//!   (its latency depends on the pitch). A change requested when input frame `t` is next
+//!   starts a fresh instance at the new pitch, primed with the real audio of the
+//!   `prime_len` frames before `t`, and fed alongside the old path from then on. The output
+//!   crossfades (equal power, 40 ms) from the old path to the new one starting at output
+//!   frame `t`, i.e. `L` later, when the new path's output is ready. Priming therefore costs
+//!   only `prime_len` frames of Rubber Band work in one block (an earlier version primed
+//!   `L + prime_len` frames to crossfade at once and produced 69 ms blocks under CPU load).
+//!   A change requested while a transition runs waits for it to finish (only the latest
+//!   request is kept).
+//! * Deterministic: no threads, no I/O, no clocks, no allocation after construction.
+//!   Gains ramp per sample and crossfades are counted in samples, so the result does not
+//!   depend on block size (checked by the tests).
+
+use crate::params::{MixParams, Stem, StemBlock, CHANNELS};
+use crate::ring::AbsRing;
+use crate::shifter::{r3_longest_fft, ShiftPath};
+use crate::smooth::{EqualPowerTable, GainRamp};
+
+/// Construction parameters for [`PitchGraph`].
+#[derive(Clone, Copy, Debug)]
+pub struct GraphConfig {
+    /// The song's sample rate (the graph runs at the song rate; resampling to the device
+    /// rate happens after it, and only if the rates differ).
+    pub sample_rate: u32,
+    /// Largest block passed to [`PitchGraph::process`].
+    pub max_block: usize,
+    /// Key-change crossfade length.
+    pub crossfade_ms: f64,
+    /// Gain-change ramp length.
+    pub gain_ramp_ms: f64,
+}
+
+impl GraphConfig {
+    pub fn new(sample_rate: u32) -> Self {
+        GraphConfig { sample_rate, max_block: 1024, crossfade_ms: 40.0, gain_ramp_ms: 20.0 }
+    }
+}
+
+/// Counters for diagnostics and tests.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GraphStats {
+    /// Frames for which Rubber Band's output was not ready and silence was used instead.
+    /// Must stay 0; non-zero means `L` is too small for this configuration.
+    pub shift_shortfall_frames: u64,
+    /// Number of key/route transitions started.
+    pub transitions: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Route {
+    Bypass,
+    Shift(usize),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Crossfade {
+    from: Route,
+    to: Route,
+    /// Absolute output frame where the crossfade starts (fade position 0).
+    start: u64,
+}
+
+/// Errors from the DSP crate.
+#[derive(Debug)]
+pub enum DspError {
+    RubberBand(jk_rubberband::Error),
+    Resampler(String),
+    Invalid(&'static str),
+}
+
+impl std::fmt::Display for DspError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DspError::RubberBand(e) => write!(f, "{e}"),
+            DspError::Resampler(e) => write!(f, "resampler: {e}"),
+            DspError::Invalid(e) => write!(f, "invalid input: {e}"),
+        }
+    }
+}
+impl std::error::Error for DspError {}
+
+impl From<jk_rubberband::Error> for DspError {
+    fn from(e: jk_rubberband::Error) -> Self {
+        DspError::RubberBand(e)
+    }
+}
+
+/// See the module documentation.
+pub struct PitchGraph {
+    cfg: GraphConfig,
+    latency: usize,
+    prime_len: usize,
+    /// Absolute index of the next input frame.
+    in_pos: u64,
+    /// Absolute index of stream frame 0 (history below it reads as silence).
+    base: u64,
+    hist_bus: AbsRing,
+    hist_drums: AbsRing,
+    paths: [ShiftPath; 2],
+    current: Route,
+    xfade: Option<Crossfade>,
+    table: EqualPowerTable,
+    gains: [GainRamp; 4],
+    params: MixParams,
+    // Scratch, allocated once.
+    bus: [Vec<f32>; CHANNELS],
+    drums: [Vec<f32>; CHANNELS],
+    a: [Vec<f32>; CHANNELS],
+    b: [Vec<f32>; CHANNELS],
+    stats: GraphStats,
+}
+
+impl PitchGraph {
+    pub fn new(cfg: GraphConfig, params: MixParams) -> Result<Self, DspError> {
+        if cfg.max_block == 0 || cfg.max_block > 8192 {
+            return Err(DspError::Invalid("max_block must be 1..=8192"));
+        }
+        let fft = r3_longest_fft(cfg.sample_rate);
+        // Measured worst-case output lag of R3 (HighQuality) is about fft - 55 samples, plus
+        // the transient trim (at most about +0.01 * fft) and up to RB_QUANTUM - 1 frames of
+        // input buffering in the shift path; fft/8 covers it. See the `probe` example and
+        // the `no_shortfall` test.
+        let latency = fft + fft / 8;
+        // Real audio fed to a fresh instance before the frame where its output is first
+        // used: twice Rubber Band's preferred start pad (fft/2 at pitch scale 1).
+        let prime_len = fft;
+        let cap = (latency + prime_len + 2 * cfg.max_block + fft).next_power_of_two();
+        let base = cap as u64;
+        let mk = |n| -> [Vec<f32>; CHANNELS] { [vec![0.0; n], vec![0.0; n]] };
+        let ramp = ((cfg.gain_ramp_ms * cfg.sample_rate as f64 / 1000.0).round() as u32).max(1);
+        let xfade_len = ((cfg.crossfade_ms * cfg.sample_rate as f64 / 1000.0).round() as usize).max(1);
+        let params = params.clamped();
+        let g = params.stem_gains();
+        let mut graph = PitchGraph {
+            cfg,
+            latency,
+            prime_len,
+            in_pos: base,
+            base,
+            hist_bus: AbsRing::new(CHANNELS, cap, base),
+            hist_drums: AbsRing::new(CHANNELS, cap, base),
+            paths: [
+                ShiftPath::new(cfg.sample_rate, cap)?,
+                ShiftPath::new(cfg.sample_rate, cap)?,
+            ],
+            current: Route::Bypass,
+            xfade: None,
+            table: EqualPowerTable::new(xfade_len),
+            gains: [
+                GainRamp::new(g[0], ramp),
+                GainRamp::new(g[1], ramp),
+                GainRamp::new(g[2], ramp),
+                GainRamp::new(g[3], ramp),
+            ],
+            params,
+            bus: mk(cfg.max_block),
+            drums: mk(cfg.max_block),
+            a: mk(cfg.max_block),
+            b: mk(cfg.max_block),
+            stats: GraphStats::default(),
+        };
+        graph.reset();
+        Ok(graph)
+    }
+
+    pub fn config(&self) -> &GraphConfig {
+        &self.cfg
+    }
+
+    /// Total latency of every path, in song frames. Output frame `n` of [`process`]
+    /// (counting from the first call after `new`/`reset`) is input frame `n - latency`.
+    pub fn latency(&self) -> usize {
+        self.latency
+    }
+
+    /// Frames of real audio fed to a new Rubber Band instance before the frame where its
+    /// output is first used.
+    pub fn prime_len(&self) -> usize {
+        self.prime_len
+    }
+
+    pub fn crossfade_len(&self) -> usize {
+        self.table.len()
+    }
+
+    pub fn stats(&self) -> GraphStats {
+        self.stats
+    }
+
+    pub fn params(&self) -> MixParams {
+        self.params
+    }
+
+    /// Frames processed since the last reset.
+    pub fn frames_processed(&self) -> u64 {
+        self.in_pos - self.base
+    }
+
+    /// The key currently heard at the output (the target of a running crossfade counts
+    /// once the crossfade is more than half way).
+    pub fn audible_semitones(&self) -> i32 {
+        let u = self.in_pos - self.latency as u64;
+        let route = match self.xfade {
+            Some(x) if u >= x.start + self.table.len() as u64 / 2 => x.to,
+            Some(x) => x.from,
+            None => self.current,
+        };
+        match route {
+            Route::Bypass => 0,
+            Route::Shift(s) => self.paths[s].semitones,
+        }
+    }
+
+    pub fn is_crossfading(&self) -> bool {
+        self.xfade.is_some()
+    }
+
+    /// Forget all audio (seek / song change). Gains jump to their targets; if the key is
+    /// not 0 the shifter is restarted with silence as its history (Rubber Band's own
+    /// zero "start pad"). For a click-free seek, feed some real audio from before the
+    /// seek point and discard the first `latency + preroll` output frames.
+    pub fn reset(&mut self) {
+        self.in_pos = self.base;
+        self.hist_bus.clear(self.base);
+        self.hist_drums.clear(self.base);
+        let g = self.params.stem_gains();
+        for (ramp, v) in self.gains.iter_mut().zip(g) {
+            ramp.snap(v);
+        }
+        self.xfade = None;
+        self.current = Route::Bypass;
+        if self.params.semitones != 0 {
+            let from = self.in_pos - (self.latency + self.prime_len) as u64;
+            self.paths[0].restart(self.params.semitones, self.params.shift_drums, from);
+            self.prime_path(0, from, self.in_pos);
+            self.current = Route::Shift(0);
+        }
+    }
+
+    /// Set every parameter. Gains start ramping at the next input frame `t`; a key or
+    /// routing change crossfades starting at output frame `t`, so both are heard
+    /// `latency()` frames later.
+    pub fn set_params(&mut self, params: &MixParams) {
+        self.set_gains(params);
+        self.set_route(params.semitones, params.shift_drums);
+    }
+
+    /// Stem gains only (guide, backing, other, drums).
+    pub fn set_gains(&mut self, params: &MixParams) {
+        let p = params.clamped();
+        self.params.guide = p.guide;
+        self.params.backing_on = p.backing_on;
+        self.params.backing = p.backing;
+        self.params.other = p.other;
+        self.params.drums = p.drums;
+        for (ramp, v) in self.gains.iter_mut().zip(self.params.stem_gains()) {
+            ramp.set_target(v);
+        }
+    }
+
+    /// Key and drum routing only.
+    pub fn set_route(&mut self, semitones: i32, shift_drums: bool) {
+        let p = MixParams { semitones, shift_drums, ..self.params }.clamped();
+        self.params.semitones = p.semitones;
+        self.params.shift_drums = p.shift_drums;
+    }
+
+    fn route_matches(&self, route: Route) -> bool {
+        match route {
+            Route::Bypass => self.params.semitones == 0,
+            Route::Shift(s) => {
+                self.params.semitones != 0
+                    && self.paths[s].semitones == self.params.semitones
+                    && self.paths[s].drums_in == self.params.shift_drums
+            }
+        }
+    }
+
+    /// Feed history `[from, to)` into path `slot` (used right after `restart`).
+    fn prime_path(&mut self, slot: usize, from: u64, to: u64) {
+        let mut pos = from;
+        let chunk = self.cfg.max_block;
+        while pos < to {
+            let n = ((to - pos) as usize).min(chunk);
+            for c in 0..CHANNELS {
+                self.hist_bus.read_channel(c, pos, &mut self.a[c][..n]);
+                self.hist_drums.read_channel(c, pos, &mut self.b[c][..n]);
+            }
+            let bus = [&self.a[0][..n], &self.a[1][..n]];
+            let drums = [&self.b[0][..n], &self.b[1][..n]];
+            self.paths[slot].feed(&bus, &drums, n);
+            pos += n as u64;
+        }
+    }
+
+    /// Start the transition to the current target route. `t` is the first input frame of
+    /// this block; the crossfade starts at output frame `t`.
+    fn start_transition(&mut self, t: u64) {
+        let to = if self.params.semitones == 0 {
+            Route::Bypass
+        } else {
+            let slot = match self.current {
+                Route::Shift(s) => 1 - s,
+                Route::Bypass => 0,
+            };
+            let from = t - self.prime_len as u64;
+            self.paths[slot].restart(self.params.semitones, self.params.shift_drums, from);
+            self.prime_path(slot, from, t);
+            Route::Shift(slot)
+        };
+        self.stats.transitions += 1;
+        self.xfade = Some(Crossfade { from: self.current, to, start: t });
+    }
+
+    /// Write route `r`'s output for `[u, u + n)` into `out`.
+    #[allow(clippy::too_many_arguments)]
+    fn render_route(
+        route: Route,
+        paths: &[ShiftPath; 2],
+        hist_bus: &AbsRing,
+        hist_drums: &AbsRing,
+        stats: &mut GraphStats,
+        u: u64,
+        n: usize,
+        out: &mut [Vec<f32>; CHANNELS],
+    ) {
+        match route {
+            Route::Bypass => {
+                for c in 0..CHANNELS {
+                    hist_bus.read_channel(c, u, &mut out[c][..n]);
+                    hist_drums.add_channel_into(c, u, &mut out[c][..n]);
+                }
+            }
+            Route::Shift(s) => {
+                let p = &paths[s];
+                if p.has(u, n) {
+                    for c in 0..CHANNELS {
+                        p.read_channel(c, u, &mut out[c][..n]);
+                    }
+                } else {
+                    stats.shift_shortfall_frames += n as u64;
+                    for c in 0..CHANNELS {
+                        out[c][..n].iter_mut().for_each(|v| *v = 0.0);
+                    }
+                }
+                if !p.drums_in {
+                    for c in 0..CHANNELS {
+                        hist_drums.add_channel_into(c, u, &mut out[c][..n]);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Process one block of `frames` frames (`frames <= max_block`). `out[ch]` must hold
+    /// at least `frames` samples. Output is the graph input delayed by [`latency`](Self::latency).
+    pub fn process(&mut self, input: &StemBlock, frames: usize, out: [&mut [f32]; CHANNELS]) {
+        assert!(frames <= self.cfg.max_block, "block larger than max_block");
+        if frames == 0 {
+            return;
+        }
+        let t = self.in_pos;
+        let u = t - self.latency as u64;
+
+        // 1. Mix the buses with per-sample gain ramps. Summation order is fixed:
+        //    bus = (lead*g + backing*g) + other*g; drums separately.
+        let lead = &input.stems[Stem::Lead as usize];
+        let back = &input.stems[Stem::Backing as usize];
+        let drum = &input.stems[Stem::Drums as usize];
+        let other = &input.stems[Stem::Other as usize];
+        for i in 0..frames {
+            let gl = self.gains[Stem::Lead as usize].tick();
+            let gb = self.gains[Stem::Backing as usize].tick();
+            let gd = self.gains[Stem::Drums as usize].tick();
+            let go = self.gains[Stem::Other as usize].tick();
+            for c in 0..CHANNELS {
+                self.bus[c][i] = lead[c][i] * gl + back[c][i] * gb + other[c][i] * go;
+                self.drums[c][i] = drum[c][i] * gd;
+            }
+        }
+        {
+            let [b0, b1] = &self.bus;
+            self.hist_bus.push(&[&b0[..frames], &b1[..frames]], frames);
+            let [d0, d1] = &self.drums;
+            self.hist_drums.push(&[&d0[..frames], &d1[..frames]], frames);
+        }
+
+        // 2. Key / routing change: start a transition if none is running.
+        if self.xfade.is_none() && !self.route_matches(self.current) {
+            self.start_transition(t);
+        }
+
+        // 3. Feed this block to every running shifter.
+        let mut running = [false; 2];
+        if let Route::Shift(s) = self.current {
+            running[s] = true;
+        }
+        if let Some(Crossfade { to: Route::Shift(s), .. }) = self.xfade {
+            running[s] = true;
+        }
+        for s in 0..2 {
+            if running[s] {
+                let bus = [&self.bus[0][..frames], &self.bus[1][..frames]];
+                let drums = [&self.drums[0][..frames], &self.drums[1][..frames]];
+                self.paths[s].feed(&bus, &drums, frames);
+            }
+        }
+
+        // 4. Output for [u, u + frames).
+        let [out_l, out_r] = out;
+        match self.xfade {
+            None => {
+                Self::render_route(
+                    self.current, &self.paths, &self.hist_bus, &self.hist_drums,
+                    &mut self.stats, u, frames, &mut self.a,
+                );
+                out_l[..frames].copy_from_slice(&self.a[0][..frames]);
+                out_r[..frames].copy_from_slice(&self.a[1][..frames]);
+            }
+            Some(x) => {
+                Self::render_route(
+                    x.from, &self.paths, &self.hist_bus, &self.hist_drums,
+                    &mut self.stats, u, frames, &mut self.a,
+                );
+                let len = self.table.len() as u64;
+                let end = u + frames as u64;
+                if end <= x.start {
+                    // Transition pending: the new path is primed and running; its output
+                    // is not used yet.
+                    out_l[..frames].copy_from_slice(&self.a[0][..frames]);
+                    out_r[..frames].copy_from_slice(&self.a[1][..frames]);
+                } else {
+                    Self::render_route(
+                        x.to, &self.paths, &self.hist_bus, &self.hist_drums,
+                        &mut self.stats, u, frames, &mut self.b,
+                    );
+                    for i in 0..frames {
+                        let abs = u + i as u64;
+                        if abs < x.start {
+                            out_l[i] = self.a[0][i];
+                            out_r[i] = self.a[1][i];
+                        } else if abs >= x.start + len {
+                            out_l[i] = self.b[0][i];
+                            out_r[i] = self.b[1][i];
+                        } else {
+                            let k = (abs - x.start) as usize;
+                            let go = self.table.fade_out[k];
+                            let gi = self.table.fade_in[k];
+                            out_l[i] = self.a[0][i] * go + self.b[0][i] * gi;
+                            out_r[i] = self.a[1][i] * go + self.b[1][i] * gi;
+                        }
+                    }
+                    if end >= x.start + len {
+                        self.current = x.to;
+                        self.xfade = None;
+                    }
+                }
+            }
+        }
+        self.in_pos += frames as u64;
+    }
+
+    /// Diagnostics: Rubber Band's start pad / start delay for the path currently heard.
+    pub fn shifter_delays(&self) -> Option<(usize, usize)> {
+        match self.current {
+            Route::Bypass => None,
+            Route::Shift(s) => Some((self.paths[s].preferred_start_pad(), self.paths[s].start_delay())),
+        }
+    }
+
+    /// Diagnostics: how far ahead of the read position Rubber Band's output is (frames).
+    /// Negative would mean a shortfall.
+    pub fn shifter_headroom(&self) -> Option<i64> {
+        let u = self.in_pos as i64 - self.latency as i64;
+        match self.current {
+            Route::Bypass => None,
+            Route::Shift(s) => Some(self.paths[s].available_end() as i64 - u),
+        }
+    }
+}

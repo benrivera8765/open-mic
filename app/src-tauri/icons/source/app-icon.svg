@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Jukeoke placeholder app icon. Original artwork drawn for this project
+     (GPL-3.0-or-later): a glowing arch over a dark screen with a music note.
+     Regenerate the platform icons with `npm run icons` in app/ui. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff3d8b"/>
+      <stop offset="0.5" stop-color="#ff2a2a"/>
+      <stop offset="1" stop-color="#ff8a1f"/>
+    </linearGradient>
+    <linearGradient id="column" gradientUnits="userSpaceOnUse" x1="0" y1="500" x2="0" y2="880">
+      <stop offset="0" stop-color="#4dff6a"/>
+      <stop offset="0.5" stop-color="#ffd23f"/>
+      <stop offset="1" stop-color="#ff8a1f"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="200" fill="#14101c"/>
+  <!-- arch: outer glowing tube -->
+  <path d="M192 880 V470 A320 320 0 0 1 832 470 V880" fill="none" stroke="url(#glow)" stroke-width="72" stroke-linecap="round"/>
+  <!-- columns: inner light strips -->
+  <path d="M300 880 V500" stroke="url(#column)" stroke-width="28" stroke-linecap="round"/>
+  <path d="M724 880 V500" stroke="url(#column)" stroke-width="28" stroke-linecap="round"/>
+  <!-- music note -->
+  <g fill="#7dffd8">
+    <ellipse cx="452" cy="742" rx="78" ry="58" transform="rotate(-20 452 742)"/>
+    <rect x="508" y="430" width="34" height="320"/>
+    <path d="M508 430 C600 450 640 500 640 580 C610 530 570 515 542 512 Z"/>
+  </g>
+</svg>

@@ -1,0 +1,140 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Release build for Jukeoke: builds the portable Windows app and the Mac app
+# and uploads them as workflow artifacts.
+#
+# Ready but deliberately never triggered automatically:
+#   * it runs ONLY when someone presses "Run workflow" (workflow_dispatch);
+#   * it NEVER publishes anything: the token is read-only (contents: read), so
+#     it cannot create a tag or a GitHub Release even by mistake. Making a
+#     release public is the owner's decision (WORK_ORDER section 10).
+#
+# The artifacts are the same files a release would contain:
+#   <Name>-windows-x64-<label>.zip   Windows/<Name>.exe (portable, no installer)
+#   <Name>-mac-arm64-<label>.zip     <Name>.app, ad-hoc signed, minimum macOS 13.0
+
+name: Release build (manual, never publishes)
+
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: "Label for the artifact names, e.g. 0.1.0-rc1 (letters, digits, . _ - only)"
+        required: false
+        default: "manual"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  meta:
+    name: Names
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.meta.outputs.name }}
+      label: ${{ steps.meta.outputs.label }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: meta
+        env:
+          LABEL: ${{ inputs.label }}
+        run: |
+          # The app name lives in branding.json only; the label is sanitised
+          # because it comes from a form field.
+          name="$(sed -n 's/^[[:space:]]*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' branding.json | head -n 1)"
+          label="$(printf '%s' "${LABEL:-manual}" | tr -cd 'A-Za-z0-9._-' | cut -c1-40)"
+          [ -n "$label" ] || label=manual
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+          echo "Building $name, label $label (nothing will be published)"
+
+  windows:
+    name: Windows x64 portable
+    needs: meta
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain (Rust GNU host + WinLibs GCC 16.2)
+        run: bash scripts/ci-setup-windows-gnu.sh
+      - uses: actions/setup-node@v7
+        if: hashFiles('app/ui/package.json') != ''
+        with:
+          node-version: "24"
+      - name: Build the portable app (+ smoke test)
+        run: bash scripts/ci-build-app-windows.sh stage/Windows
+      - name: Stage licence files
+        run: |
+          mkdir -p stage
+          for f in LICENSE THIRD_PARTY_LICENSES.md MODELS.md README.md; do
+            if [ -f "$f" ]; then cp "$f" stage/; fi
+          done
+          ls -la stage stage/Windows 2>/dev/null || true
+      - name: Fail if there is nothing to release
+        run: |
+          if ! ls stage/Windows/*.exe >/dev/null 2>&1; then
+            echo "::error::no Windows executable was built (is the app present?)"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.meta.outputs.name }}-windows-x64-${{ needs.meta.outputs.label }}
+          path: stage/
+          retention-days: 30
+
+  macos:
+    name: macOS Apple Silicon (minimum macOS 13.0)
+    needs: meta
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      JK_NONINTERACTIVE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust (stable, aarch64-apple-darwin)
+        run: |
+          rustup toolchain install stable --profile minimal --target aarch64-apple-darwin
+          rustup default stable
+      - uses: actions/setup-node@v7
+        if: hashFiles('app/ui/package.json') != ''
+        with:
+          node-version: "24"
+      - name: Build, ad-hoc sign, minimum-macOS check
+        run: bash scripts/build-mac.sh
+      - name: Launch from an exFAT image (self-check)
+        env:
+          APP_NAME: ${{ needs.meta.outputs.name }}
+        run: bash scripts/ci-exfat-launch.sh "dist/Mac/$APP_NAME.app" ci-out/exfat
+      - name: Zip with ditto (keeps permissions and the signature)
+        env:
+          APP_NAME: ${{ needs.meta.outputs.name }}
+        run: |
+          app="dist/Mac/$APP_NAME.app"
+          if [ ! -d "$app" ]; then
+            echo "::error::no Mac app was built (is the app present?)"
+            exit 1
+          fi
+          mkdir -p stage
+          ditto -c -k --keepParent "$app" "stage/$APP_NAME.app.zip"
+          for f in LICENSE THIRD_PARTY_LICENSES.md MODELS.md README.md docs/MAC.md; do
+            if [ -f "$f" ]; then cp "$f" stage/; fi
+          done
+          cp -r ci-out/exfat stage/exfat-selfcheck 2>/dev/null || true
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.meta.outputs.name }}-mac-arm64-${{ needs.meta.outputs.label }}
+          path: stage/
+          retention-days: 30

@@ -1,0 +1,83 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Plain, readable placeholder styles. The jukebox skin replaces these later
+   (docs/DESIGN.md). Only long-supported CSS (baseline: Safari 16.4, Chrome 120). */
+:root {
+  color-scheme: light dark;
+  --bg: #f6f5f8;
+  --fg: #1d1b22;
+  --muted: #5c5866;
+  --accent: #b0124a;
+  --error: #b3261e;
+  --code-bg: rgba(0, 0, 0, 0.06);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14101c;
+    --fg: #ece8f2;
+    --muted: #a8a2b4;
+    --accent: #ff3d8b;
+    --error: #ff8a80;
+    --code-bg: rgba(255, 255, 255, 0.08);
+  }
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.page {
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 3rem;
+}
+
+h1 {
+  margin: 0 0 1rem;
+  color: var(--accent);
+  font-size: 1.8rem;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+  margin: 0 0 1.25rem;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+code {
+  background: var(--code-bg);
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+button {
+  font: inherit;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+}
+
+.error {
+  color: var(--error);
+}
+
+.note,
+.ping {
+  color: var(--muted);
+}

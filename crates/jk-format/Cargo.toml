@@ -1,0 +1,47 @@
+[package]
+name = "jk-format"
+description = "Reader and writer for the Jukeoke .jksong song file (docs/SONG_FORMAT.md v1.0): header, TOC, settings slots, lyrics, stem byte ranges"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# `symphonia` (on by default): `ChunkReader` implements symphonia's `MediaSource`, so
+# the engine can hand a stem chunk straight to a FLAC decoder, and the `decode` module
+# plus the decode step of `verify` (full decode, MD5, seeks) are built (used by
+# `jukeoke-cli verify` and the `jksong-verify` example). Turn default features off for
+# a build with no decoder.
+default = ["symphonia"]
+symphonia = ["dep:symphonia-core", "dep:symphonia-bundle-flac"]
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+# float_roundtrip: parse JSON numbers exactly (the default fast parser can be 1 ulp off,
+# which changed stored gains and peaks on a rewrite in the conformance test).
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
+crc32fast = "1.5.5"
+flate2 = "1.1.11"
+unicode-segmentation = "1.13.3"
+symphonia-core = { version = "0.6.1", optional = true }
+symphonia-bundle-flac = { version = "0.6.1", optional = true }
+
+[dev-dependencies]
+md-5 = "0.11.0"
+
+[[example]]
+# cargo run -p jk-format --example jksong-verify -- <file.jksong> [--sum-reference <raw f32le>]
+name = "jksong-verify"
+path = "examples/jksong-verify.rs"
+required-features = ["symphonia"]
+
+[[example]]
+# cargo run -p jk-format --example jksong-write-test -- <out.jksong>
+# Writes a song from scratch in Rust (uncompressed "verbatim" FLAC stems) for the
+# Rust -> Python conformance direction.
+name = "jksong-write-test"
+path = "examples/jksong-write-test.rs"
