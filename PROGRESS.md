@@ -36,4 +36,7 @@ Read this first in every session. Then DECISIONS.md, then docs/ARCHITECTURE.md.
 
 ## Notes for a fresh session
 
+- 2026-11-17 12:10-15:10: the account's 5-hour usage limit was hit; every running agent stopped and the workflows restarted them after the reset. Keep workflows to a few agents at a time and avoid re-running finished benchmarks. Separation stream is on its third attempt (it resumes from files on disk).
+- `.gitignore` ignores `Models/` and Windows git is case-insensitive, so no source folder may be called `models/` (the Studio's model registry lives in `studio/jukeoke_studio/modelzoo/`).
+
 - No Visual Studio on this PC, and no admin approval available: stay on the GNU toolchain (DECISIONS D-10).
