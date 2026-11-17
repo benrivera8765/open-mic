@@ -1,0 +1,9 @@
+Atkinson Hyperlegible Next (variable, weights 200-800): the lyrics face, designed by the Braille Institute for maximum legibility.
+Licence: SIL Open Font License 1.1 (OFL.txt in this folder, copied unchanged from the upstream repository).
+Upstream: https://github.com/googlefonts/atkinson-hyperlegible-next  (commit 7925f50f649b3813257faf2f4c0b381011f434f1)
+File:     fonts/webfonts/AtkinsonHyperlegibleNext[wght].woff2  ->  AtkinsonHyperlegibleNext-Variable.woff2
+          (renamed only; the font data is byte-for-byte the official upstream webfont)
+SHA-256:  abde1ad5cf78b9ac575ef90d991f2e9101eb0b3b6668bde9a00e2e1e27d99afd
+Fetched:  2026-11-17
+Bundled with the app and loaded locally through @font-face in app/ui/src/skin/fonts.css.
+Never loaded from the network at run time.

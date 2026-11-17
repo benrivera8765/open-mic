@@ -1,14 +1,19 @@
 {
-  // Type-checks the build configuration, which runs in Node (not in the web view).
+  // Type-checks code that runs in Node: the build configuration, the tests (vitest)
+  // and Node-only test helpers. Tests also use the DOM types (happy-dom, the ticker).
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2023"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
     "strict": true,
     "noEmit": true,
+    "isolatedModules": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "resolveJsonModule": true,
+    "types": ["node", "vite/client"]
   },
-  "include": ["vite.config.ts"]
+  "include": ["vite.config.ts", "src/**/*.test.ts", "src/**/*.test.tsx", "src/**/*-node.ts"]
 }

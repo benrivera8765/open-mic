@@ -176,7 +176,10 @@ impl WavWriter {
     /// channel count. The values are stored bit-for-bit (no clamping: float WAV
     /// can hold values beyond full scale).
     pub fn write_interleaved(&mut self, samples: &[f32]) -> io::Result<()> {
-        if samples.len() % usize::from(self.spec.channels) != 0 {
+        if !samples
+            .len()
+            .is_multiple_of(usize::from(self.spec.channels))
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
@@ -449,8 +452,10 @@ pub fn read_wav_f32(path: &Path) -> io::Result<(WavInfo, Vec<f32>)> {
     ];
     f.read_exact(&mut bytes)?;
     let samples = bytes
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
         .collect();
     Ok((info, samples))
 }

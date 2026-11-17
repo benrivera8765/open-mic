@@ -1,0 +1,9 @@
+Oswald (variable, weights 200-700): condensed display face for plates, labels and title strips.
+Licence: SIL Open Font License 1.1 (OFL.txt in this folder, copied unchanged from the upstream repository).
+Upstream: https://github.com/googlefonts/OswaldFont  (commit 89795261ac9eeb9aa8cd99f43982c4e4b0e53261)
+File:     fonts/webfonts/Oswald[wght].woff2  ->  Oswald-Variable.woff2
+          (renamed only; the font data is byte-for-byte the official upstream webfont)
+SHA-256:  1d7901c75959faac4964cf2e2811d8084ecc09dd73cb03be752941fc33c5d3bb
+Fetched:  2026-11-17
+Bundled with the app and loaded locally through @font-face in app/ui/src/skin/fonts.css.
+Never loaded from the network at run time.

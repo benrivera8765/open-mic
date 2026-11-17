@@ -28,10 +28,15 @@
 //!   Gains ramp per sample and crossfades are counted in samples, so the result does not
 //!   depend on block size (checked by the tests).
 
-use crate::params::{MixParams, Stem, StemBlock, CHANNELS};
+use crate::params::{ExtraBlock, MixParams, Stem, StemBlock, CHANNELS};
 use crate::ring::AbsRing;
 use crate::shifter::{r3_longest_fft, ShiftPath};
 use crate::smooth::{EqualPowerTable, GainRamp};
+use jk_rubberband::{Stretcher, StretcherConfig};
+
+/// How many never-used Rubber Band instances the graph can hold for upcoming key
+/// changes, and how many replaced ones it can hold until the caller collects them.
+pub const MAX_SPARE_STRETCHERS: usize = 4;
 
 /// Construction parameters for [`PitchGraph`].
 #[derive(Clone, Copy, Debug)]
@@ -45,11 +50,17 @@ pub struct GraphConfig {
     pub crossfade_ms: f64,
     /// Gain-change ramp length.
     pub gain_ramp_ms: f64,
+    /// May the graph construct a Rubber Band instance itself when a key change needs one
+    /// and none was offered? `true` for the offline renderer. The real-time engine sets
+    /// `false`: a key change then waits (a few ms) until a helper thread has offered a
+    /// pre-built instance through [`PitchGraph::offer_stretcher`], so the render worker
+    /// never constructs (allocates) one. Output is identical either way.
+    pub inline_stretchers: bool,
 }
 
 impl GraphConfig {
     pub fn new(sample_rate: u32) -> Self {
-        GraphConfig { sample_rate, max_block: 1024, crossfade_ms: 40.0, gain_ramp_ms: 20.0 }
+        GraphConfig { sample_rate, max_block: 1024, crossfade_ms: 40.0, gain_ramp_ms: 20.0, inline_stretchers: true }
     }
 }
 
@@ -61,6 +72,14 @@ pub struct GraphStats {
     pub shift_shortfall_frames: u64,
     /// Number of key/route transitions started.
     pub transitions: u64,
+    /// Rubber Band instances the graph constructed itself (0 in the real-time engine,
+    /// except after a `reset` with no spare offered, which the engine avoids).
+    pub inline_constructions: u64,
+    /// Replaced instances the graph had to free itself because the retired slots were
+    /// full (0 when the caller collects them with `take_retired`).
+    pub inline_drops: u64,
+    /// Blocks in which a key change waited for a pre-built instance.
+    pub deferred_blocks: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +138,10 @@ pub struct PitchGraph {
     table: EqualPowerTable,
     gains: [GainRamp; 4],
     params: MixParams,
+    /// Never-used Rubber Band instances for upcoming key changes.
+    spares: [Option<Stretcher>; MAX_SPARE_STRETCHERS],
+    /// Replaced instances waiting to be freed by the caller (off the real-time thread).
+    retired: [Option<Stretcher>; MAX_SPARE_STRETCHERS],
     // Scratch, allocated once.
     bus: [Vec<f32>; CHANNELS],
     drums: [Vec<f32>; CHANNELS],
@@ -170,6 +193,8 @@ impl PitchGraph {
                 GainRamp::new(g[3], ramp),
             ],
             params,
+            spares: Default::default(),
+            retired: Default::default(),
             bus: mk(cfg.max_block),
             drums: mk(cfg.max_block),
             a: mk(cfg.max_block),
@@ -248,10 +273,93 @@ impl PitchGraph {
         self.current = Route::Bypass;
         if self.params.semitones != 0 {
             let from = self.in_pos - (self.latency + self.prime_len) as u64;
-            self.paths[0].restart(self.params.semitones, self.params.shift_drums, from);
+            self.restart_path(0, self.params.semitones, self.params.shift_drums, from);
             self.prime_path(0, from, self.in_pos);
             self.current = Route::Shift(0);
         }
+    }
+
+    /// The Rubber Band configuration of this graph's shifters (for building spares).
+    pub fn stretcher_config(&self) -> StretcherConfig {
+        ShiftPath::stretcher_config(self.cfg.sample_rate)
+    }
+
+    /// Hand the graph a never-used Rubber Band instance built with
+    /// [`stretcher_config`](Self::stretcher_config) (normally on a helper thread). Gives
+    /// it back when the graph already holds [`MAX_SPARE_STRETCHERS`].
+    pub fn offer_stretcher(&mut self, s: Stretcher) -> Result<(), Stretcher> {
+        match self.spares.iter_mut().find(|x| x.is_none()) {
+            Some(slot) => {
+                *slot = Some(s);
+                Ok(())
+            }
+            None => Err(s),
+        }
+    }
+
+    /// Spare instances held.
+    pub fn spare_count(&self) -> usize {
+        self.spares.iter().filter(|x| x.is_some()).count()
+    }
+
+    /// A replaced instance to free off the real-time thread, if any.
+    pub fn take_retired(&mut self) -> Option<Stretcher> {
+        self.retired.iter_mut().find_map(|x| x.take())
+    }
+
+    /// True when [`reset`](Self::reset) would have to construct a Rubber Band instance
+    /// (key not 0, no spare, path used). The real-time engine waits for a spare first.
+    pub fn reset_needs_stretcher(&self) -> bool {
+        self.params.semitones != 0 && self.paths[0].needs_fresh() && self.spare_count() == 0
+    }
+
+    /// True when a key change is waiting for a spare instance (`inline_stretchers` off).
+    pub fn waiting_for_stretcher(&self) -> bool {
+        self.xfade.is_none() && !self.route_matches(self.current) && !self.can_start_transition()
+    }
+
+    fn take_spare(&mut self) -> Option<Stretcher> {
+        self.spares.iter_mut().find_map(|x| x.take())
+    }
+
+    fn put_retired(&mut self, s: Stretcher) {
+        match self.retired.iter_mut().find(|x| x.is_none()) {
+            Some(slot) => *slot = Some(s),
+            None => {
+                self.stats.inline_drops += 1;
+                drop(s);
+            }
+        }
+    }
+
+    /// Restart path `slot` (see `ShiftPath::restart`), using a spare when it needs a
+    /// fresh instance.
+    fn restart_path(&mut self, slot: usize, semitones: i32, shift_drums: bool, from: u64) {
+        let fresh = if self.paths[slot].needs_fresh() { self.take_spare() } else { None };
+        let (retired, unused, constructed) = self.paths[slot].restart(semitones, shift_drums, from, fresh);
+        if constructed {
+            self.stats.inline_constructions += 1;
+        }
+        if let Some(r) = retired {
+            self.put_retired(r);
+        }
+        if let Some(u) = unused
+            && let Err(u) = self.offer_stretcher(u)
+        {
+            self.put_retired(u);
+        }
+    }
+
+    /// Can the transition to the current target route start now?
+    fn can_start_transition(&self) -> bool {
+        if self.params.semitones == 0 || self.cfg.inline_stretchers {
+            return true;
+        }
+        let slot = match self.current {
+            Route::Shift(s) => 1 - s,
+            Route::Bypass => 0,
+        };
+        !self.paths[slot].needs_fresh() || self.spare_count() > 0
     }
 
     /// Set every parameter. Gains start ramping at the next input frame `t`; a key or
@@ -321,7 +429,7 @@ impl PitchGraph {
                 Route::Bypass => 0,
             };
             let from = t - self.prime_len as u64;
-            self.paths[slot].restart(self.params.semitones, self.params.shift_drums, from);
+            self.restart_path(slot, self.params.semitones, self.params.shift_drums, from);
             self.prime_path(slot, from, t);
             Route::Shift(slot)
         };
@@ -372,6 +480,19 @@ impl PitchGraph {
     /// Process one block of `frames` frames (`frames <= max_block`). `out[ch]` must hold
     /// at least `frames` samples. Output is the graph input delayed by [`latency`](Self::latency).
     pub fn process(&mut self, input: &StemBlock, frames: usize, out: [&mut [f32]; CHANNELS]) {
+        self.process_ext(input, None, frames, out)
+    }
+
+    /// [`process`](Self::process) with stems of roles the graph has no slot for (from a
+    /// newer song file), summed per bus at unity gain by the caller (SONG_FORMAT 4.2
+    /// forward-compatibility rule). `None` gives exactly the same bits as `process`.
+    pub fn process_ext(
+        &mut self,
+        input: &StemBlock,
+        extra: Option<&ExtraBlock>,
+        frames: usize,
+        out: [&mut [f32]; CHANNELS],
+    ) {
         assert!(frames <= self.cfg.max_block, "block larger than max_block");
         if frames == 0 {
             return;
@@ -395,6 +516,15 @@ impl PitchGraph {
                 self.drums[c][i] = drum[c][i] * gd;
             }
         }
+        if let Some(x) = extra {
+            // Added last, so the v1.0 summation order (and its bits) is unchanged.
+            for c in 0..CHANNELS {
+                for i in 0..frames {
+                    self.bus[c][i] += x.pitched[c][i];
+                    self.drums[c][i] += x.unpitched[c][i];
+                }
+            }
+        }
         {
             let [b0, b1] = &self.bus;
             self.hist_bus.push(&[&b0[..frames], &b1[..frames]], frames);
@@ -402,9 +532,14 @@ impl PitchGraph {
             self.hist_drums.push(&[&d0[..frames], &d1[..frames]], frames);
         }
 
-        // 2. Key / routing change: start a transition if none is running.
+        // 2. Key / routing change: start a transition if none is running (and, in the
+        //    real-time engine, once a pre-built Rubber Band instance is at hand).
         if self.xfade.is_none() && !self.route_matches(self.current) {
-            self.start_transition(t);
+            if self.can_start_transition() {
+                self.start_transition(t);
+            } else {
+                self.stats.deferred_blocks += 1;
+            }
         }
 
         // 3. Feed this block to every running shifter.

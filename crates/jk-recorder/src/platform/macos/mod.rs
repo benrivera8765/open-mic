@@ -36,7 +36,7 @@ use std::ptr::{NonNull, null_mut};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchRetained};
@@ -52,8 +52,8 @@ use objc2_core_graphics::{
     CGMainDisplayID, CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess,
 };
 use objc2_core_media::{
-    CMAudioFormatDescriptionGetStreamBasicDescription, CMBlockBuffer, CMSampleBuffer, CMTime,
-    CMTimeFlags, kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+    CMAudioFormatDescriptionGetStreamBasicDescription, CMBlockBuffer, CMClock, CMSampleBuffer,
+    CMTime, CMTimeFlags, kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
 };
 use objc2_foundation::{NSArray, NSError, NSProcessInfo};
 use objc2_screen_capture_kit::{
@@ -64,8 +64,8 @@ use objc2_screen_capture_kit::{
 
 use crate::error::RecorderError;
 use crate::format::{
-    CaptureFormat, CaptureSetup, OutputDeviceInfo, SCK_SUPPORTED_RATES, SourceEncoding,
-    choose_sck_rate,
+    CaptureDevice, CaptureFormat, CaptureSetup, OutputDeviceInfo, SCK_SUPPORTED_RATES,
+    SourceEncoding, choose_sck_rate,
 };
 use crate::pipeline::{CapturePipeline, MediaTime};
 use crate::{Backend, PermissionState, RecorderConfig};
@@ -103,6 +103,25 @@ pub(crate) fn permission_request() -> PermissionState {
 
 pub(crate) fn output_device() -> Option<OutputDeviceInfo> {
     coreaudio::default_output_device()
+}
+
+/// ScreenCaptureKit records the system mix, not a chosen device, so there is
+/// nothing to choose on macOS.
+pub(crate) fn capture_devices() -> Result<Vec<CaptureDevice>, RecorderError> {
+    Ok(Vec::new())
+}
+
+/// "Now" on the host-time clock (`CMClockGetHostTimeClock`, macOS 10.7+), the
+/// clock ScreenCaptureKit stamps its sample buffers with. Used for the
+/// recording's start and stop instants; the pipeline refuses (and counts) an
+/// extension if the buffers turn out to use a different clock.
+fn host_now() -> Option<MediaTime> {
+    // SAFETY: CoreMedia's singleton host clock; CMClockGetTime has no preconditions.
+    let t: CMTime = unsafe { CMClock::host_time_clock().time() };
+    (t.flags.contains(CMTimeFlags::Valid) && t.timescale > 0).then_some(MediaTime {
+        value: t.value,
+        timescale: t.timescale as u32,
+    })
 }
 
 pub(crate) fn os_version() -> String {
@@ -254,7 +273,8 @@ impl StreamOutput {
                 if iv.pipeline.set_format(format).is_ok() {
                     let _ = iv.pipeline.push(start, &scratch.interleaved);
                 }
-                // A changed format is counted by the pipeline and skipped.
+                // A changed format stops the recording: the pipeline closes
+                // the file and reports it (state Failed with a message).
             }
             Ok(None) => {}
             Err(msg) => {
@@ -635,6 +655,7 @@ fn make_configuration(
 fn start_stream(
     config: &RecorderConfig,
     pipeline: &Arc<CapturePipeline>,
+    requested: Instant,
 ) -> Result<(Session, CaptureSetup), RecorderError> {
     // Availability: SCStreamConfiguration.capturesAudio & co. arrived in 13.0.
     if !objc2::available!(macos = 13.0) {
@@ -733,6 +754,12 @@ fn start_stream(
                 )
                 .map_err(|e| ErrInfo::from_ns(&e).into_error("adding the audio output"))?;
         }
+        // Start: the recording covers the time from the Recorder::start()
+        // call, on the host-time clock (ScreenCaptureKit's set-up time before
+        // the first buffer is filled with silence).
+        if let Some(t) = host_now() {
+            pipeline.mark_start_since(t.earlier_by(requested.elapsed()), requested);
+        }
         match wait_for_completion(SCK_TIMEOUT, |block| unsafe {
             stream.startCaptureWithCompletionHandler(Some(block))
         }) {
@@ -781,9 +808,10 @@ pub(crate) fn run_session(
     config: &RecorderConfig,
     pipeline: Arc<CapturePipeline>,
     ready: SyncSender<Result<CaptureSetup, RecorderError>>,
-    stop: Receiver<()>,
+    stop: Receiver<Instant>,
+    requested: Instant,
 ) -> Result<Vec<String>, RecorderError> {
-    let started = autoreleasepool(|_| start_stream(config, &pipeline));
+    let started = autoreleasepool(|_| start_stream(config, &pipeline, requested));
     let session = match started {
         Ok((session, setup)) => {
             let _ = ready.send(Ok(setup));
@@ -794,7 +822,13 @@ pub(crate) fn run_session(
             return Ok(Vec::new());
         }
     };
-    // Either a stop message or the Recorder being dropped ends the capture.
-    let _ = stop.recv();
+    // Either a stop message (the instant stop() was called) or the Recorder
+    // being dropped ends the capture.
+    let stop_called = stop.recv().unwrap_or_else(|_| Instant::now());
+    // Stop: the recording covers the time up to that instant, even if macOS
+    // sent nothing during a silent end (the pipeline fills it at finish()).
+    if let Some(t) = host_now() {
+        pipeline.mark_stop(t.earlier_by(stop_called.elapsed()));
+    }
     autoreleasepool(|_| session.stop())
 }

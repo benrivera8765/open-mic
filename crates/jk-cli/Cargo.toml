@@ -1,6 +1,6 @@
 [package]
 name = "jk-cli"
-description = "jukeoke-cli: test fixtures, offline render, device playback test and DSP benchmarks"
+description = "jukeoke-cli: song-file info/verify/render/export, demo song, playback and DSP benchmarks"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,6 +14,12 @@ path = "src/main.rs"
 [dependencies]
 jk-dsp = { path = "../jk-dsp" }
 jk-engine = { path = "../jk-engine" }
+jk-format = { path = "../jk-format" }
 jk-rubberband = { path = "../jk-rubberband" }
 clap = { version = "4.5", features = ["derive"] }
 hound = "3.5"
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_ProcessStatus"]

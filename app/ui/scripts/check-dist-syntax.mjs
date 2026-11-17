@@ -29,6 +29,15 @@ const DENY_APIS = [
   { re: /\brequestIdleCallback\b/, why: "requestIdleCallback (not in Safari 16/17)" },
   { re: /\.(?:union|intersection|symmetricDifference|isSubsetOf|isSupersetOf|isDisjointFrom)\(/, why: "Set methods (Safari 17)" },
   { re: /\bnavigator\.gpu\b/, why: "WebGPU (not on macOS 13)" },
+  { re: /\bPromise\.try\b/, why: "Promise.try (Safari 18.2)" },
+  { re: /\bURL\.canParse\b/, why: "URL.canParse (Safari 17)" },
+  { re: /\bAbortSignal\.any\b/, why: "AbortSignal.any (Safari 17.4)" },
+  { re: /\bRegExp\.escape\b/, why: "RegExp.escape (Safari 18.2)" },
+  { re: /\bstartViewTransition\b/, why: "View Transitions (Safari 18)" },
+  { re: /\.(?:showPopover|hidePopover|togglePopover)\(/, why: "Popover API (Safari 17)" },
+  { re: /\bscheduler\.(?:postTask|yield)\b/, why: "scheduler API (not in Safari)" },
+  { re: /\.transferToFixedLength\(/, why: "ArrayBuffer transfer (Safari 17.4)" },
+  { re: /\.letterSpacing\s*=|\.wordSpacing\s*=/, why: "canvas letterSpacing/wordSpacing (Safari 18.4)" },
 ];
 
 function* walk(dir) {

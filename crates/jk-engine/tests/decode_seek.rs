@@ -103,3 +103,45 @@ fn encoder_edge_cases_round_trip() {
         }
     }
 }
+
+/// Regression: symphonia's FLAC demuxer keeps stale parser state when a seek lands exactly
+/// on a frame start (seek table points, the first frame), and the packets after the first
+/// one then decode wrong. `FlacStem` rebuilds its demuxer on every seek; check long spans
+/// after backward and forward seeks on highly compressible audio (silence, a quiet sine
+/// on the 16-bit grid, i.e. CONSTANT subframes and wasted bits) with a seek table.
+#[test]
+fn long_spans_after_seeks_on_compressible_audio() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("jk-engine-flac");
+    std::fs::create_dir_all(&dir).unwrap();
+    let frames = 300_000usize;
+    let pcm: Vec<i32> = (0..frames)
+        .map(|i| {
+            if (i / 20_000) % 3 == 0 {
+                0
+            } else {
+                (((i as f64 * 0.031).sin() * 2000.0).round() as i32) * 256
+            }
+        })
+        .collect();
+    let path = dir.join("compressible.flac");
+    std::fs::write(&path, jk_engine::encode_flac(&pcm, 1, 24, 44_100)).unwrap();
+    let mut stem = FlacStem::open(&path).unwrap();
+    let span = 60_000usize;
+    let mut buf = [vec![0.0f32; span], vec![0.0f32; span]];
+    for &p in &[0u64, 200_000, 0, 44_100, 4096, 130_000, 88_200, 1, 0] {
+        stem.seek(p).unwrap();
+        let mut got = 0;
+        while got < span {
+            let n = stem.read(&mut buf, got, span - got).unwrap();
+            if n == 0 {
+                break;
+            }
+            got += n;
+        }
+        let expect = (frames - p as usize).min(span);
+        assert_eq!(got, expect, "frames after seek to {p}");
+        for i in 0..got {
+            assert_eq!(buf[0][i], pcm[p as usize + i] as f32 / 8_388_608.0, "seek to {p}: frame {i}");
+        }
+    }
+}

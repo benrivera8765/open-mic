@@ -213,6 +213,11 @@ Output length is exactly round(len x ratio); an impulse at 44.1 kHz frame 20 000
 
 ## 8. Device playback (WASAPI)
 
+> Stage 0 prototype (`jk_engine::Player`, a stem folder). The prototype player was
+> replaced in Stage 1 by the engine API (`jk_engine::Engine`, `.jksong` files, in-place
+> seek, pre-built Rubber Band instances); its long-run, memory and seek measurements are
+> in `docs/benchmarks/playback.md`. The numbers below are kept as the Stage 0 record.
+
 `jukeoke-cli play --stems <synth-44100> --seconds 60 --master-db -60 --semitones 3
 --load-threads 14 --key-cycle 10` (90 s generated 24-bit FLAC stems at 44.1 kHz; master
 -60 dB, so the peak output was about -62 dBFS; key changes every 10 s: +3, -2, +5, 0, -7):
@@ -255,6 +260,23 @@ silence, a 100-frame file, full-scale alternating samples, 16-bit) round-trip ex
 The FLAC writer is our own (`crates/jk-engine/src/flac_write.rs`): the pure-Rust `flacenc`
 0.5.1 caps the Rice parameter at 14 (no RICE2), so loud 24-bit material produced ~100
 bits/sample frames (a 90 s stereo mix became 24.4 GB) that symphonia then could not read.
+Since Stage 1 it streams (constant memory), writes the STREAMINFO MD5 (jk-format's
+verifier requires it), a SEEKTABLE with a point every second, and codes "wasted bits"
+(samples with trailing zero bits, e.g. 16-bit material on the 24-bit grid).
+
+**symphonia FLAC seek bug (found in Stage 1, worked around).** symphonia-bundle-flac 0.6.1
+keeps its packet parser's state across a seek when the seek lands exactly on a frame
+start (its `resync` soft-resets the parser only if the read position moved; a SEEKTABLE
+point or the first frame makes it land exactly). The first packet after such a seek is
+right; the following ones are assembled from stale fragments and decode to wrong samples
+without any error. Measured on the demo song's `other` stem: after reading 40 000 frames,
+`seek(0)` gave 45 900 wrong samples in the next 50 000 (first wrong sample at frame 4096,
+the second packet). Work-around: `FlacStem` rebuilds its demuxer and decoder from a fresh
+source on every seek (`FlacStem::from_factory`; about 1 KB of metadata re-read).
+Regression test: `decode_seek::long_spans_after_seeks_on_compressible_audio` (60 000
+frames compared after each of 9 forward and backward seeks, seek table present). Checks
+that compare only the first packet after a seek (jk-format's `verify` compares 64 frames)
+cannot see this bug.
 
 ## 10. Build checks
 
@@ -281,6 +303,7 @@ bits/sample frames (a 90 s stereo mix became 24.4 GB) that symphonia then could 
 | Finding | Evidence | Work-around |
 |---|---|---|
 | `reset()` leaves R3 state (output phase, classification, guidance): a used-then-reset stretcher differs from a fresh one by up to 0.25 | `cargo run --release -p jk-rubberband --example probe_reset` | new stretcher per key change (2.4 ms to create + drop at 44.1 kHz, 3.6 ms at 96 kHz; `probe_create`) |
+| Constructing an instance allocates (about 2.4 ms of work) | `probe_create`, `jukeoke-cli bench` | Stage 1: built on the engine's house-keeping thread and handed to the render worker through an SPSC ring (`PitchGraph::offer_stretcher`); replaced instances travel back the same way to be freed; the worker never constructs or frees one (counter `inline_constructions` = 0 in every engine test and run). A key change waits for a spare (`deferred_blocks`) rather than build one inline |
 | Real-time R3 output depends on `process()` chunking for non-power-of-two ratios (max diff 0.34-0.52 between 64- and 512-frame calls at -7 and +3; identical at 0 and +12) | `probe_chunking` | always 256-frame `process()` calls; output then bit-identical for any caller block size |
 | Start delay depends on pitch | `probe` | one fixed-pitch instance per key, prime + crossfade |
 | Transient bias per pitch (up to 7-9 ms at 96 kHz +8..+12) | `probe_jitter`, `calibrate_trim` | per-key trim tables (44.1/48 and 88.2/96 kHz measured; other rates scaled, unverified) |
@@ -295,8 +318,9 @@ cargo test --release -p jk-dsp                                 # same numbers, f
 # numbers are written to target/tmp/jk-dsp-results/*.txt
 cargo run --release -p jk-cli -- gen-test-stems --seconds 90   # -> $JK_BUILD/fixtures/synth-44100
 cargo run --release -p jk-cli -- bench --seconds 30
-cargo run --release -p jk-cli -- play --stems "$JK_BUILD/fixtures/synth-44100" \
-    --seconds 60 --master-db -60 --semitones 3 --load-threads 14 --key-cycle 10
+cargo run --release -p jk-cli -- make-demo-song "$JK_BUILD/demo.jksong"
+cargo run --release -p jk-cli -- play "$JK_BUILD/demo.jksong" \
+    --seconds 60 --silence --loop --key-every 10 --load-threads 14   # see playback.md
 cargo run --release -p jk-cli -- ci-render out/render-windows
 cargo run --release -p jk-dsp --example calibrate_trim 44100 17 256   # trim table
 JK_RUBBERBAND_PERTURB=1 JK_GOLDEN_STRICT=0 CARGO_TARGET_DIR=target-perturb \

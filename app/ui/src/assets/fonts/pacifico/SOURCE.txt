@@ -1,0 +1,9 @@
+Pacifico Regular: retro script used only for the app's own badge.
+Licence: SIL Open Font License 1.1 (OFL.txt in this folder, copied unchanged from the upstream repository).
+Upstream: https://github.com/googlefonts/Pacifico  (commit 423e7cb2b036ead2624c05197e17a83ddf5c6068)
+File:     fonts/webfonts/Pacifico-Regular.woff2  ->  Pacifico-Regular.woff2
+          (renamed only; the font data is byte-for-byte the official upstream webfont)
+SHA-256:  ba820ff1f25777b4195a9a6e7c62ddb8fa119b0752c71391b056da55f0341d0e
+Fetched:  2026-11-17
+Bundled with the app and loaded locally through @font-face in app/ui/src/skin/fonts.css.
+Never loaded from the network at run time.

@@ -151,7 +151,10 @@ pub fn finish_with_ui_report(app: &AppHandle, ui: UiReport) {
         let code = write_report(&handle, &state, Some(ui), None, Some(shot));
         handle.exit(code);
     });
-    match app.get_webview_window(crate::MAIN_WINDOW) {
+    let window = app
+        .get_webview_window(crate::MAIN_WINDOW)
+        .or_else(|| app.get_webview_window(crate::MAIN_WINDOW_RETRY));
+    match window {
         Some(window) => crate::screenshot::capture_png(&window, png, done),
         None => done(Err("the main window is gone".into())),
     }

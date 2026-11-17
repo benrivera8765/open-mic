@@ -1,22 +1,38 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! # jk-engine (prototype)
+//! # jk-engine
 //!
-//! Jukeoke's real-time player: FLAC stem decoding with sample-accurate seeking
-//! ([`decode`]), per-stem SPSC rings, a render-ahead worker running the jk-dsp graph
-//! ([`player`]), device output ([`output`]: WASAPI on Windows, Core Audio via cpal on
-//! macOS), the playback clock and the underrun counter ([`clock`]).
+//! Jukeoke's real-time player. The public contract with the app is [`api`] (re-exported
+//! here): [`Engine`], [`render_offline`] and their types. Behind it:
+//!
+//! * [`source`]: `.jksong` stems streamed from the file through jk-format's
+//!   `ChunkReader` (symphonia FLAC), stored gains applied, roles mapped to the graph.
+//! * [`engine`]: control, stem reader, render-ahead worker, house-keeping thread.
+//! * [`output`]: device output (WASAPI on Windows, Core Audio via cpal on macOS, a
+//!   null device for tests), the lock-free device-side "filler" and the playback clock.
+//! * [`export`]: offline render for "Export backing track".
+//! * [`flac_write`]: an in-house FLAC encoder (fixtures, exports).
+//! * [`demo`]: the generated demo song (self-check, ticker ground truth).
 
 // Index loops over channels and frames are the clearest form for audio code.
 #![allow(clippy::needless_range_loop)]
 
-pub mod clock;
+pub mod api;
 pub mod decode;
+pub mod demo;
+pub mod devices;
+pub mod engine;
+pub mod export;
 pub mod flac_write;
 pub mod output;
-pub mod player;
+pub mod shared;
+pub mod source;
 
-pub use clock::Clock;
+pub use api::{
+    render_offline, DeviceInfo, DeviceStatus, Engine, EngineConfig, EngineError, EngineEvent, ExportFormat,
+    LoadedSong, MixParams, PlaybackState, RenderReport, Snapshot, StemInfo,
+};
 pub use decode::{DecodeError, FlacStem};
-pub use flac_write::encode_flac;
-pub use output::{DeviceInfo, OutputRequest};
-pub use player::{Player, PlayerConfig, PlayerError, StemFiles, WorkerStats};
+pub use engine::Diagnostics;
+pub use flac_write::{encode_flac, FlacEncoder};
+pub use output::{OutputRequest, StreamInfo};
+pub use shared::now_ns;

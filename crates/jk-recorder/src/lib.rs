@@ -7,9 +7,10 @@
 //!   macOS 13.0). The newer Core Audio process taps need macOS 14.2 and are not
 //!   used, because the owner's MacBook runs 13.6.9. Every API this crate calls
 //!   exists on macOS 13.0; see `docs/MAC.md` for the list with sources.
-//! * **Windows:** WASAPI loopback. The public API is final; the implementation
-//!   is a stub that returns [`RecorderError::NotImplemented`] until the Windows
-//!   workstream fills in `src/platform/windows.rs` on top of [`pipeline`].
+//! * **Windows:** WASAPI loopback of the default output device (or a chosen one,
+//!   see [`capture_devices`]), at the device mix format, with a silent
+//!   keep-alive render stream so packets keep coming while nothing plays
+//!   (`src/platform/windows.rs`).
 //!
 //! What every backend guarantees:
 //!
@@ -19,8 +20,12 @@
 //!   stored bit-for-bit as 32-bit float WAV, promoted to RF64 above 4 GiB;
 //! * the file is written progressively and is valid on disk about once a
 //!   second, so a pulled USB stick costs at most the last second;
-//! * the recording's length equals elapsed time: holes in the OS timestamps are
-//!   filled with exact digital silence (see [`pipeline`]);
+//! * the recording's length equals the time from Start to Stop: holes in the OS
+//!   timestamps, and silent stretches before the first or after the last
+//!   buffer, are filled with exact digital silence (see [`pipeline`]);
+//! * a mid-recording format change or a lost device stops the recording
+//!   visibly ([`RecorderState::Failed`] with a plain message) and the file is
+//!   closed, complete and valid, at that point;
 //! * a lock-free level meter, elapsed time and a clip counter for the UI
 //!   ([`Recorder::status`]).
 //!
@@ -48,10 +53,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub use error::RecorderError;
-pub use format::{CaptureFormat, CaptureSetup, OutputDeviceInfo, SourceEncoding};
+pub use format::{CaptureDevice, CaptureFormat, CaptureSetup, OutputDeviceInfo, SourceEncoding};
 pub use meter::{CLIP_LEVEL, Levels, to_dbfs};
 pub use pipeline::{CapturePipeline, MediaTime, PipelineOptions, PipelineState, RecordingStats};
 pub use wav::WavSummary;
@@ -126,12 +131,22 @@ under Privacy & Security > Screen Recording, then quit and reopen Jukeoke (macOS
 a button for that). The permission only takes effect after the app restarts.";
 
 /// The default output device (name, nominal rate, physical bit depth), if the
-/// OS reports it. macOS: Core Audio HAL. Windows: not implemented yet.
+/// OS reports it. macOS: Core Audio HAL. Windows: the default render endpoint
+/// (mix rate, and the hardware format from `PKEY_AudioEngine_DeviceFormat`).
 pub fn output_device() -> Option<OutputDeviceInfo> {
     platform::output_device()
 }
 
-/// The OS name and version, for reports (macOS: "Version 13.6.9 (Build ...)").
+/// Output devices whose sound can be recorded. Windows: every active render
+/// endpoint (pass a `CaptureDevice::id` as [`RecorderConfig::device_id`]).
+/// macOS: empty, because ScreenCaptureKit records the system mix rather than a
+/// chosen device.
+pub fn capture_devices() -> Result<Vec<CaptureDevice>, RecorderError> {
+    platform::capture_devices()
+}
+
+/// The OS name and version, for reports (macOS: "macOS Version 13.6.9 (Build
+/// ...)", Windows: "Windows 11 (build 26200.7171, 25H2)").
 pub fn os_version() -> String {
     platform::os_version()
 }
@@ -157,6 +172,16 @@ pub struct RecorderConfig {
     pub request_permission: bool,
     /// How long to wait for the OS to start the stream. Default 20 s.
     pub start_timeout: Duration,
+    /// Windows: the output device to record (a [`CaptureDevice::id`] from
+    /// [`capture_devices`]). `None` (default) records the default output
+    /// device. Ignored on macOS, which records the system mix.
+    pub device_id: Option<String>,
+    /// Windows: while recording, play digital silence (buffers flagged
+    /// silent) on the recorded device, so loopback keeps delivering packets
+    /// while nothing else plays (WORK_ORDER section 7, trap 5). It adds
+    /// exactly 0.0 to the mix and changes nothing audible. Default `true`.
+    /// With `false`, silent stretches are still filled from the timestamps.
+    pub silent_keepalive: bool,
     /// Timeline and writer settings.
     pub pipeline: PipelineOptions,
 }
@@ -171,6 +196,8 @@ impl RecorderConfig {
             exclude_own_audio: false,
             request_permission: false,
             start_timeout: Duration::from_secs(20),
+            device_id: None,
+            silent_keepalive: true,
             pipeline: PipelineOptions::default(),
         }
     }
@@ -183,8 +210,10 @@ pub enum RecorderState {
     WaitingForAudio,
     /// Audio is being written.
     Recording,
-    /// Something stopped the capture (message says what). The file up to that
-    /// point is valid; call `stop()` to close it.
+    /// Something stopped the capture (the message says what, in plain words:
+    /// device removed, format changed, disk full...). The file up to that
+    /// point is valid (after a device loss or format change it is already
+    /// closed); call `stop()` to collect the final statistics.
     Failed(String),
 }
 
@@ -276,6 +305,16 @@ impl FinishedRecording {
         );
         line("recording length s", format!("{:.6}", s.media_elapsed_secs));
         line(
+            "start to stop s (OS clock)",
+            s.start_to_stop_secs
+                .map_or("n/a".to_string(), |t| format!("{t:.6}")),
+        );
+        line(
+            "length / start-to-stop",
+            s.length_vs_start_stop_ratio()
+                .map_or("n/a".to_string(), |r| format!("{r:.6}")),
+        );
+        line(
             "OS clock span s",
             s.os_clock_elapsed_secs
                 .map_or("n/a".to_string(), |t| format!("{t:.6}")),
@@ -286,9 +325,22 @@ impl FinishedRecording {
                 .map_or("n/a".to_string(), |r| format!("{r:.6}")),
         );
         line("blocks", s.blocks.to_string());
+        line("frames received from the OS", s.received_frames.to_string());
+        line(
+            "silence before the first block (frames)",
+            s.head_fill_frames.to_string(),
+        );
         line(
             "gaps filled",
             format!("{} ({} frames)", s.gap_events, s.gap_frames),
+        );
+        line(
+            "silence after the last block (frames)",
+            s.tail_fill_frames.to_string(),
+        );
+        line(
+            "start/stop extensions refused (clock mismatch)",
+            s.edge_fill_refused.to_string(),
         );
         line(
             "overlaps",
@@ -300,7 +352,10 @@ impl FinishedRecording {
             s.max_jitter_frames.to_string(),
         );
         line("dropped frames (audio lost)", s.dropped_frames.to_string());
-        line("format changes skipped", s.format_mismatches.to_string());
+        line(
+            "format changes (each stops the recording)",
+            s.format_mismatches.to_string(),
+        );
         line(
             "peak dBFS per channel",
             self.levels
@@ -329,24 +384,31 @@ impl FinishedRecording {
 pub struct Recorder {
     pipeline: Arc<CapturePipeline>,
     setup: CaptureSetup,
-    stop_tx: Option<mpsc::Sender<()>>,
+    /// Carries the instant `stop()` was called.
+    stop_tx: Option<mpsc::Sender<Instant>>,
     worker: Option<JoinHandle<Result<Vec<String>, RecorderError>>>,
 }
 
 impl Recorder {
     /// Start capturing into `config.path`. Returns once the OS has started the
-    /// stream (or failed to). The file is created when the first audio buffer
-    /// arrives, in the real format the OS delivers.
+    /// stream (or failed to). The file is created in the real format the OS
+    /// delivers: on Windows at once (the endpoint's mix format is fixed), on
+    /// macOS when the first audio buffer arrives.
     pub fn start(config: RecorderConfig) -> Result<Self, RecorderError> {
+        // "Start" is this call: the recording covers the time from here, even
+        // while the OS stream is still being set up (filled with silence).
+        let requested = Instant::now();
         let pipeline = CapturePipeline::new(&config.path, config.pipeline.clone())?;
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<CaptureSetup, RecorderError>>(1);
-        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        let (stop_tx, stop_rx) = mpsc::channel::<Instant>();
         let timeout = config.start_timeout;
         let worker = {
             let pipeline = Arc::clone(&pipeline);
             std::thread::Builder::new()
                 .name("jk-recorder-session".into())
-                .spawn(move || platform::run_session(&config, pipeline, ready_tx, stop_rx))?
+                .spawn(move || {
+                    platform::run_session(&config, pipeline, ready_tx, stop_rx, requested)
+                })?
         };
         match ready_rx.recv_timeout(timeout) {
             Ok(Ok(setup)) => Ok(Self {
@@ -358,14 +420,14 @@ impl Recorder {
             Ok(Err(e)) => {
                 drop(stop_tx);
                 let _ = worker.join();
-                let _ = pipeline.finish();
+                discard_empty(&pipeline);
                 Err(e)
             }
             Err(_) => {
                 // Dropping stop_tx tells the worker to shut down whatever it
                 // managed to start.
                 drop(stop_tx);
-                let _ = pipeline.finish();
+                discard_empty(&pipeline);
                 Err(RecorderError::Timeout(
                     "waiting for the OS to start the capture stream",
                 ))
@@ -404,7 +466,8 @@ impl Recorder {
             return Err(RecorderError::AlreadyStopped);
         };
         if let Some(tx) = self.stop_tx.take() {
-            let _ = tx.send(());
+            // "Stop" is this call: the backend ends the recording at this instant.
+            let _ = tx.send(Instant::now());
         }
         let mut setup = self.setup.clone();
         match worker.join() {
@@ -426,6 +489,18 @@ impl Recorder {
     }
 }
 
+/// After a failed start: close the pipeline and delete the file if it holds no
+/// audio (a backend that knows its format up front creates the file before the
+/// OS stream starts). The pipeline creates its file with `create_new`, so this
+/// only ever removes a file this recorder made.
+fn discard_empty(pipeline: &CapturePipeline) {
+    if let Ok(summary) = pipeline.finish()
+        && summary.file.is_some_and(|f| f.frames == 0)
+    {
+        let _ = std::fs::remove_file(pipeline.path());
+    }
+}
+
 impl Drop for Recorder {
     fn drop(&mut self) {
         // A recorder dropped without stop() still closes a valid file.
@@ -444,18 +519,64 @@ mod tests {
         assert_send_sync::<CapturePipeline>();
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     #[test]
-    fn non_mac_backends_fail_cleanly_without_creating_a_file() {
+    fn unsupported_platforms_fail_cleanly_without_creating_a_file() {
         let mut p = std::env::temp_dir();
         p.push(format!("jk-recorder-lib-{}.wav", std::process::id()));
         let _ = std::fs::remove_file(&p);
         let err = Recorder::start(RecorderConfig::new(&p)).unwrap_err();
-        #[cfg(windows)]
-        assert!(matches!(err, RecorderError::NotImplemented(_)), "{err}");
-        #[cfg(not(windows))]
         assert!(matches!(err, RecorderError::Unsupported(_)), "{err}");
         assert!(!p.exists());
         assert_eq!(permission_preflight(), PermissionState::NotRequired);
+    }
+
+    /// A real half-second loopback capture of the default output device (the
+    /// keep-alive stream plays only digital silence; nothing is audible). On a
+    /// machine without an output device (some CI runners) it checks the clean
+    /// error instead.
+    #[cfg(windows)]
+    #[test]
+    fn windows_loopback_records_start_to_stop() {
+        let mut p = std::env::temp_dir();
+        p.push(format!("jk-recorder-lib-{}.wav", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(permission_preflight(), PermissionState::NotRequired);
+        let rec = match Recorder::start(RecorderConfig::new(&p)) {
+            Ok(r) => r,
+            Err(e) => {
+                assert!(
+                    output_device().is_none(),
+                    "a device exists but start failed: {e}"
+                );
+                assert!(!p.exists());
+                return;
+            }
+        };
+        let st = rec.status();
+        assert_eq!(st.state, RecorderState::Recording, "{st:?}");
+        let fmt = rec.format().expect("Windows declares the format at start");
+        assert_eq!(
+            Some(f64::from(fmt.sample_rate)),
+            output_device().map(|d| d.nominal_sample_rate)
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        let done = rec.stop().unwrap();
+        let s = &done.stats;
+        assert!(s.error.is_none(), "{:?}", s.error);
+        let file = done.file.expect("file");
+        assert_eq!(file.frames, s.frames);
+        assert_eq!(s.dropped_frames, 0);
+        // Length equals Start..Stop within one 10 ms engine period.
+        let span = s.start_to_stop_secs.expect("start and stop marked");
+        let diff = (s.media_elapsed_secs - span).abs();
+        assert!(
+            diff < 0.011,
+            "length {} s vs start-stop {span} s
+{}",
+            s.media_elapsed_secs,
+            done.report()
+        );
+        std::fs::remove_file(&p).unwrap();
     }
 }

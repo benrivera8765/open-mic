@@ -1,0 +1,391 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* The app inside the jukebox look (settings.ui.skin on; App.tsx SkinApp).
+
+   src/skin draws the cabinet, the console parts and the title strips; this file
+   lays the app's own screens and console into it and restyles the plain components
+   (style.css) for the dark screen: dark tokens, plate-like buttons, display type for
+   headings. Loaded after style.css (main.tsx), so equal-specificity rules win.
+
+   Scope: `:root[data-skin="on"]` for things outside the frame (dialogs, toasts),
+   `.app-skin` (the JukeboxFrame root) for things inside it.
+
+   Browser baseline: Safari 16.4 / Chrome 120 (checked by scripts/check-dist-css.mjs).
+   No :has(), no nesting, no color-mix(). */
+
+/* ---------- tokens: the plain components on a dark screen ---------- */
+
+:root[data-skin="on"] {
+  color-scheme: dark;
+  --bg: #0a0610;
+  --surface: #1c1524;
+  --surface-2: #2a2033;
+  --fg: #f6efd9;
+  --muted: #b9afc6;
+  --line: #43384f;
+  --accent: #ff3d8b;
+  --accent-fg: #14101c;
+  --focus: #7dffd8;
+  --ok: #4dff6a;
+  --warn: #ffd23f;
+  --error: #ff8a80;
+  /* The bundled lyrics face (Atkinson Hyperlegible Next, SIL OFL) for the ticker. */
+  --ticker-font: "Atkinson Hyperlegible Next", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ticker-weight: 700;
+}
+
+:root[data-skin="on"] body {
+  background: #0a0610;
+  overflow: hidden;
+}
+
+/* ---------- the screen: navigation on top, the current screen below ---------- */
+
+.skin-screen {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* The screen's top corners are strongly rounded (--jk-screen-r): keep the plates
+   clear of the curve (skin README: about 0.3 x the radius near the top). */
+.skin-nav {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: clamp(8px, 1vw, 38px);
+  padding: 0 calc(var(--jk-screen-r, 120px) * 0.3) clamp(6px, 1.1vh, 24px);
+}
+
+.skin-nav__screens,
+.skin-nav__tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: clamp(4px, 0.45vw, 17px);
+}
+
+.app-skin .skin-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 clamp(2px, 0.3vw, 12px) clamp(6px, 1vh, 22px);
+  /* Body text in the screen: the legible lyrics face; labels use the display face. */
+  font-family: var(--jk-font-lyrics);
+}
+
+.app-skin .banner {
+  margin: 0 calc(var(--jk-screen-r, 120px) * 0.3) clamp(6px, 1vh, 20px);
+  border-radius: 6px;
+}
+
+/* Headings and labels in the condensed display face, like the cabinet's plates. */
+.app-skin .skin-main h2,
+.app-skin .skin-main h3,
+.app-skin .panel__title,
+.app-skin .panel__subtitle,
+:root[data-skin="on"] .dialog__header h2 {
+  font-family: var(--jk-font-display);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.app-skin .panel {
+  background: linear-gradient(180deg, rgba(42, 32, 51, 0.92), rgba(24, 18, 31, 0.92));
+  border-color: #4a3e56;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* ---------- plain buttons as small plates (black glass in a chrome rim) ---------- */
+
+:root[data-skin="on"] .button,
+:root[data-skin="on"] .icon-button {
+  border: 0;
+  border-radius: 0.42em;
+  background: var(--jk-glass-face);
+  color: #f5f2ea;
+  box-shadow:
+    0 0 0 1.5px #b9bcc4,
+    0 0 0 2.5px #232428,
+    0 2px 4px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  font-family: var(--jk-font-display);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+:root[data-skin="on"] .button:hover:not(:disabled),
+:root[data-skin="on"] .icon-button:hover:not(:disabled) {
+  background: linear-gradient(180deg, #34343e 0%, #18181e 46%, #08080a 100%);
+  text-shadow: 0 0 6px rgba(255, 255, 255, 0.45);
+}
+
+:root[data-skin="on"] .button--primary,
+:root[data-skin="on"] .button--primary:hover:not(:disabled) {
+  background:
+    radial-gradient(ellipse 90% 80% at 50% 115%, rgba(255, 61, 139, 0.65), rgba(255, 61, 139, 0) 70%),
+    linear-gradient(180deg, #3a1428 0%, #1c0712 50%, #0e0308 100%);
+  color: #fff3f8;
+  text-shadow: 0 0 5px rgba(255, 61, 139, 0.95);
+  filter: none;
+}
+
+:root[data-skin="on"] .button--danger {
+  color: #ff9a90;
+}
+
+:root[data-skin="on"] input[type="search"],
+:root[data-skin="on"] input:not([type]),
+:root[data-skin="on"] input[type="text"],
+:root[data-skin="on"] input[type="number"],
+:root[data-skin="on"] select,
+:root[data-skin="on"] textarea {
+  background: #0f0b14;
+  border-color: #5a4e66;
+}
+
+:root[data-skin="on"] input[type="range"],
+:root[data-skin="on"] input[type="checkbox"],
+:root[data-skin="on"] input[type="radio"] {
+  accent-color: var(--jk-pink);
+}
+
+:root[data-skin="on"] .toasts {
+  /* Above the console, inside the columns. */
+  bottom: calc(clamp(104px, 17.5vh, 378px) + 0.8rem);
+  right: calc(clamp(28px, 4vw, 154px) + 1rem);
+}
+
+/* ---------- library: title strips in the chrome rack ---------- */
+
+.library--skin {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: clamp(6px, 1.2vh, 26px);
+}
+
+.library--skin .library__toolbar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: clamp(6px, 0.8vw, 30px);
+  margin: 0;
+  padding: clamp(2px, 0.4vh, 8px) clamp(8px, 2.6vw, 100px) 0;
+}
+
+.library--skin .library__search {
+  flex: 0 1 28em;
+  min-width: 10em;
+  margin: 0;
+}
+
+/* The black-glass search plate (skin .jk-glass-input) over the plain field rules. */
+.library--skin .library__search input.jk-glass-input {
+  width: 100%;
+  border: 0;
+  border-radius: 7px;
+  background: var(--jk-glass-face);
+  padding: 0.35em 0.9em;
+  font-size: clamp(13px, 1.7vh, 37px);
+}
+
+.library__sort--plates {
+  display: flex;
+  gap: clamp(4px, 0.4vw, 15px);
+}
+
+.library--skin .library__space {
+  margin: 0 0 0 auto;
+  font-family: var(--jk-font-display);
+  font-size: clamp(11px, 1.5vh, 32px);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(246, 239, 217, 0.72);
+}
+
+.library--skin .library__space strong {
+  color: var(--jk-cream);
+  font-weight: 600;
+}
+
+.library__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px clamp(4px, 0.5vw, 18px) 6px;
+}
+
+.library__strip {
+  min-width: 0;
+}
+
+.library--skin .library__empty {
+  text-align: center;
+  color: rgba(246, 239, 217, 0.75);
+  padding: 2rem 1rem;
+}
+
+/* ---------- stage: the lyrics fill the screen ---------- */
+
+.app-skin .stage {
+  background: transparent;
+  border-radius: 0;
+  padding: 0 clamp(6px, 1vw, 36px);
+  gap: clamp(4px, 0.8vh, 18px);
+}
+
+.app-skin .stage-screen__tools {
+  margin: clamp(4px, 0.6vh, 14px) clamp(6px, 1vw, 36px) 0;
+}
+
+.app-skin .stage__info {
+  align-items: center;
+  font-family: var(--jk-font-display);
+}
+
+.app-skin .stage__title {
+  font-family: var(--jk-font-display);
+  font-weight: 600;
+  font-size: clamp(16px, 2.5vh, 54px);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--jk-cream);
+}
+
+.app-skin .stage__artist {
+  font-family: var(--jk-font-display);
+  font-size: clamp(12px, 1.7vh, 37px);
+  letter-spacing: 0.05em;
+  color: #ff8fb8;
+}
+
+.app-skin .stage__key,
+.app-skin .stage__time {
+  font-family: var(--jk-font-display);
+  font-size: clamp(13px, 1.9vh, 41px);
+  letter-spacing: 0.05em;
+}
+
+.app-skin .stage__unchecked {
+  font-family: var(--jk-font-lyrics);
+}
+
+/* Full-screen stage inside the frame: the lane takes what the screen has. */
+.app-skin .stage--fullscreen {
+  height: 100%;
+  padding: clamp(4px, 1vh, 24px) clamp(8px, 1.4vw, 54px);
+}
+
+.app-skin .stage--fullscreen .stage__lane {
+  height: auto;
+  flex: 1 1 auto;
+}
+
+/* ---------- console: transport, key dial, faders ---------- */
+
+.skin-console {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: clamp(10px, 1.6vw, 62px);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+}
+
+.skin-console__transport {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: clamp(6px, 1.1vh, 24px);
+}
+
+.skin-transport__plates {
+  display: flex;
+  align-items: center;
+  gap: clamp(4px, 0.5vw, 19px);
+}
+
+.skin-transport__seek {
+  display: flex;
+  align-items: center;
+  gap: 0.8em;
+  min-width: 0;
+  font-family: var(--jk-font-display);
+}
+
+.skin-transport__seek input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 3em;
+  height: clamp(14px, 1.8vh, 38px);
+  margin: 0;
+  accent-color: var(--jk-pink);
+}
+
+.skin-transport__time {
+  flex: none;
+  white-space: nowrap;
+  font-size: clamp(11px, 1.5vh, 32px);
+  letter-spacing: 0.05em;
+  font-variant-numeric: tabular-nums;
+  color: rgba(246, 239, 217, 0.82);
+}
+
+.skin-console__key {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.skin-console__mix {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: clamp(8px, 1.3vw, 50px);
+}
+
+/* The clip lamp: dark red glass, lit when the output went above full scale. */
+.skin-clip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(3px, 0.5vh, 11px);
+  font-family: var(--jk-font-display);
+  font-size: clamp(9px, 1.2vh, 26px);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(246, 239, 217, 0.55);
+}
+
+.skin-clip__lamp {
+  width: clamp(10px, 1.5vh, 32px);
+  height: clamp(10px, 1.5vh, 32px);
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #6b2a2a, #2a0a0a 70%);
+  box-shadow:
+    0 0 0 2px #8e9199,
+    0 0 0 3px #232428;
+}
+
+.skin-clip--on {
+  color: #ff9a90;
+}
+
+.skin-clip--on .skin-clip__lamp {
+  background: radial-gradient(circle at 35% 30%, #ffe0e0, #ff2a2a 50%, #8a0010 100%);
+  box-shadow:
+    0 0 0 2px #8e9199,
+    0 0 0 3px #232428,
+    0 0 12px #ff2a2a;
+}

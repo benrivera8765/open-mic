@@ -2,7 +2,9 @@
 //! FLAC stem decoding with sample-accurate seeking (symphonia).
 //!
 //! Integer FLAC samples are converted to f32 by symphonia (24-bit: `x / 2^23`, exact in
-//! f32). Mono files are presented as two identical channels.
+//! f32). Mono files are presented as two identical channels. The stream is read
+//! incrementally from its source (a file, or a stem chunk of a `.jksong` through
+//! `jk_format::ChunkReader`); nothing is decoded ahead of what `read` asks for.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -11,7 +13,7 @@ use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymError;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::Timestamp;
 
@@ -33,9 +35,24 @@ impl std::fmt::Display for DecodeError {
 }
 impl std::error::Error for DecodeError {}
 
+/// Makes a fresh media source for the same stream (reopens the file, or a new view of
+/// a song-file chunk).
+pub type SourceFactory = Box<dyn Fn() -> std::io::Result<Box<dyn MediaSource>> + Send>;
+
 /// A streaming FLAC reader that hands out planar stereo f32.
+///
+/// **Seeking rebuilds the demuxer.** symphonia-bundle-flac 0.6.1 keeps its packet
+/// parser's state across a seek when the seek lands exactly on a frame start (its
+/// `resync` only soft-resets the parser if the read position moved, and a SEEKTABLE point
+/// or the first frame puts it exactly on a frame). The first packet after such a seek is
+/// right, but later packets are assembled from stale fragments and decode to wrong
+/// samples without any error (measured on the demo song: 45,900 of 50,000 samples wrong
+/// after `seek(0)` following a read). So a stem that knows how to reopen its source
+/// starts a new reader + decoder for every seek; the cost is reading the FLAC metadata
+/// again (about a kilobyte).
 pub struct FlacStem {
     path: PathBuf,
+    reopen: Option<SourceFactory>,
     format: Box<dyn FormatReader>,
     decoder: Box<dyn AudioDecoder>,
     track_id: u32,
@@ -56,35 +73,35 @@ pub struct FlacStem {
 
 impl FlacStem {
     pub fn open(path: &Path) -> Result<Self, DecodeError> {
-        let file = File::open(path).map_err(|e| DecodeError::Io(path.into(), e))?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-        let mut hint = Hint::new();
-        hint.with_extension("flac");
-        let format = symphonia::default::get_probe()
-            .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
-            .map_err(|e| DecodeError::Format(path.into(), e.to_string()))?;
-        let track = format
-            .default_track(TrackType::Audio)
-            .ok_or(DecodeError::Unsupported(path.into(), "no audio track"))?;
-        let track_id = track.id;
-        let total_frames = track.num_frames;
-        let params = track
-            .codec_params
-            .as_ref()
-            .and_then(|p| p.audio())
-            .ok_or(DecodeError::Unsupported(path.into(), "no audio codec parameters"))?
-            .clone();
+        let p = path.to_path_buf();
+        let factory: SourceFactory = Box::new(move || Ok(Box::new(File::open(&p)?) as Box<dyn MediaSource>));
+        Self::from_factory(factory, path)
+    }
+
+    /// Open a FLAC stream through a factory that can make fresh sources of the same bytes
+    /// (used on every seek, see the type documentation). `name` is for error messages.
+    pub fn from_factory(factory: SourceFactory, name: &Path) -> Result<Self, DecodeError> {
+        let source = factory().map_err(|e| DecodeError::Io(name.into(), e))?;
+        let mut s = Self::from_source(source, name)?;
+        s.reopen = Some(factory);
+        Ok(s)
+    }
+
+    /// Open a FLAC stream from one symphonia media source. Without a factory, seeks use
+    /// the demuxer's own seek (see the type documentation for its limitation).
+    pub fn from_source(source: Box<dyn MediaSource>, name: &Path) -> Result<Self, DecodeError> {
+        let (format, decoder, track_id, params) = Self::build(source, name)?;
+        let path = name;
         let sample_rate = params.sample_rate.ok_or(DecodeError::Unsupported(path.into(), "unknown sample rate"))?;
         let channels = params.channels.as_ref().map(|c| c.count()).unwrap_or(0);
         if channels == 0 || channels > 2 {
             return Err(DecodeError::Unsupported(path.into(), "stems must be mono or stereo"));
         }
         let bits_per_sample = params.bits_per_sample.unwrap_or(0);
-        let decoder = symphonia::default::get_codecs()
-            .make_audio_decoder(&params, &AudioDecoderOptions::default())
-            .map_err(|e| DecodeError::Format(path.into(), e.to_string()))?;
+        let total_frames = format.default_track(TrackType::Audio).and_then(|t| t.num_frames);
         Ok(FlacStem {
             path: path.into(),
+            reopen: None,
             format,
             decoder,
             track_id,
@@ -98,6 +115,34 @@ impl FlacStem {
             seek_target: None,
             eof: false,
         })
+    }
+
+    /// Demuxer + decoder for a source.
+    #[allow(clippy::type_complexity)]
+    fn build(
+        source: Box<dyn MediaSource>,
+        path: &Path,
+    ) -> Result<(Box<dyn FormatReader>, Box<dyn AudioDecoder>, u32, symphonia::core::codecs::audio::AudioCodecParameters), DecodeError> {
+        let mss = MediaSourceStream::new(source, Default::default());
+        let mut hint = Hint::new();
+        hint.with_extension("flac");
+        let format = symphonia::default::get_probe()
+            .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
+            .map_err(|e| DecodeError::Format(path.into(), e.to_string()))?;
+        let track = format
+            .default_track(TrackType::Audio)
+            .ok_or(DecodeError::Unsupported(path.into(), "no audio track"))?;
+        let track_id = track.id;
+        let params = track
+            .codec_params
+            .as_ref()
+            .and_then(|p| p.audio())
+            .ok_or(DecodeError::Unsupported(path.into(), "no audio codec parameters"))?
+            .clone();
+        let decoder = symphonia::default::get_codecs()
+            .make_audio_decoder(&params, &AudioDecoderOptions::default())
+            .map_err(|e| DecodeError::Format(path.into(), e.to_string()))?;
+        Ok((format, decoder, track_id, params))
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -121,12 +166,22 @@ impl FlacStem {
 
     /// Seek so that the next `read` returns frame `frame` exactly.
     pub fn seek(&mut self, frame: u64) -> Result<(), DecodeError> {
-        self.format
-            .seek(
-                SeekMode::Accurate,
-                SeekTo::Timestamp { ts: Timestamp::new(frame as i64), track_id: self.track_id },
-            )
-            .map_err(|e| DecodeError::Format(self.path.clone(), format!("seek: {e}")))?;
+        if let Some(f) = &self.reopen {
+            // A fresh demuxer and decoder (see the type documentation).
+            let source = f().map_err(|e| DecodeError::Io(self.path.clone(), e))?;
+            let (format, decoder, track_id, _) = Self::build(source, &self.path)?;
+            self.format = format;
+            self.decoder = decoder;
+            self.track_id = track_id;
+        }
+        if frame > 0 || self.reopen.is_none() {
+            self.format
+                .seek(
+                    SeekMode::Accurate,
+                    SeekTo::Timestamp { ts: Timestamp::new(frame as i64), track_id: self.track_id },
+                )
+                .map_err(|e| DecodeError::Format(self.path.clone(), format!("seek: {e}")))?;
+        }
         self.decoder.reset();
         // Accurate mode lands on the packet at or before the target; the frames before the
         // target are dropped in `decode_next` using each packet's timestamp.

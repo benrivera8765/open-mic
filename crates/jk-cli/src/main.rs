@@ -1,14 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! `jukeoke-cli`: developer tool for the audio engine.
+//! `jukeoke-cli`: developer and test tool for the audio engine and song files.
 //!
-//! * `gen-test-stems`: synthetic 24-bit FLAC stems + their sum (no copyrighted material).
-//! * `render`: offline render of a stem folder to a 32-bit float WAV.
-//! * `play`: play a stem folder through the default device for N seconds and print
-//!   device format, reported latency, clock drift and underruns.
-//! * `bench`: CPU cost (real-time factor) of Rubber Band R3 and the whole graph.
-//! * `ci-render`: fixed set of offline renders of generated material, 32-bit float WAV,
-//!   for the Windows-vs-macOS comparison in CI (scripts/ci-render.sh,
-//!   scripts/ci-compare-renders.sh).
+//! Song files (`.jksong`):
+//! * `info <song>`: manifest, stems, lyrics and saved settings.
+//! * `verify <song>`: SONG_FORMAT section 9 checklist (jk_format::verify_file: every CRC,
+//!   every stem fully decoded with MD5 and seek checks) plus a decode through the
+//!   engine's own stem reader. Exit status 1 on any error.
+//! * `render <song> --out f.wav|f.flac [--semitones N ...]`: offline render with the
+//!   song's saved settings, overridden by the options given.
+//! * `export <song> --format flac24|wav32f [--out f]`: "Export backing track" with the
+//!   song's saved settings (what the app's export does).
+//! * `play <song> ...`: play through an output device through the real engine API and
+//!   report underruns, worker lead, clock drift, memory (long-run benchmark driver).
+//! * `seek-test <song>`: seek accuracy (null device, sample comparison with the offline
+//!   render) and seek latency (real device).
+//! * `make-demo-song <out.jksong>`: the generated demo song (public-domain text,
+//!   synthesised audio, letter timings exact by construction).
+//! * `make-test-song <out.jksong> --seconds 240`: a long stereo synthetic song.
+//! * `devices`: list output devices.
+//!
+//! Engine development (stem folders, generated material):
+//! * `gen-test-stems`, `render-stems`, `bench`, `ci-render` (Windows-vs-macOS renders).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -16,13 +28,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::{Args, Parser, Subcommand};
-use jk_dsp::{render, MixParams, ParamEvent, RenderOptions, StemsRef};
-use jk_engine::{FlacStem, OutputRequest, Player, PlayerConfig, StemFiles};
+use jk_dsp::{render, MixParams as DspParams, ParamEvent, RenderOptions, StemsRef};
+use jk_engine::{Engine, EngineConfig, ExportFormat, FlacStem, MixParams, PlaybackState};
 
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Parser)]
-#[command(name = "jukeoke-cli", version, about = "Jukeoke audio engine developer tool")]
+#[command(name = "jukeoke-cli", version, about = "Jukeoke audio engine and song-file tool")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -30,6 +42,61 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Show a song file's metadata, stems, lyrics and saved settings.
+    Info { song: PathBuf },
+    /// Check a song file completely (format checklist + full decode). Exit 1 on errors.
+    Verify {
+        song: PathBuf,
+        /// Warnings fail too.
+        #[arg(long)]
+        strict: bool,
+    },
+    /// Offline render (same graph as playback) to a 32-bit float WAV or 24-bit FLAC.
+    Render {
+        song: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// flac24 or wav32f (default: from the extension of --out).
+        #[arg(long)]
+        format: Option<String>,
+        #[command(flatten)]
+        mix: MixOverride,
+    },
+    /// Export the backing track with the song's saved settings.
+    Export {
+        song: PathBuf,
+        #[arg(long, default_value = "flac24")]
+        format: String,
+        /// Output file (default: next to the song, "<artist> - <title> (<key>).<ext>").
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Play a song through an output device and report timing statistics.
+    Play(PlayArgs),
+    /// Measure seek accuracy (null device) and seek latency (real device).
+    SeekTest {
+        song: PathBuf,
+        /// Seeks to test.
+        #[arg(long, default_value_t = 12)]
+        seeks: usize,
+        /// Output device for the latency part ("null" for none).
+        #[arg(long)]
+        device: Option<String>,
+    },
+    /// Write the generated demo song.
+    MakeDemoSong { out: PathBuf },
+    /// Write a long synthetic stereo test song (no lyrics).
+    MakeTestSong {
+        out: PathBuf,
+        #[arg(long, default_value_t = 240.0)]
+        seconds: f64,
+        #[arg(long, default_value_t = 44_100)]
+        rate: u32,
+        #[arg(long, default_value_t = 3)]
+        seed: u32,
+    },
+    /// List the output devices.
+    Devices,
     /// Write synthetic 24-bit FLAC stems (lead, backing, drums, other) and their sum.
     GenTestStems {
         /// Output folder (default: $JK_BUILD/fixtures/synth-<rate>).
@@ -42,9 +109,8 @@ enum Cmd {
         #[arg(long, default_value_t = 1)]
         seed: u32,
     },
-    /// Offline render of a stem folder to a 32-bit float WAV.
-    Render {
-        /// Folder with lead.flac, backing.flac, drums.flac, other.flac.
+    /// Offline render of a stem folder (lead/backing/drums/other.flac) to a float WAV.
+    RenderStems {
         #[arg(long)]
         stems: PathBuf,
         #[arg(long)]
@@ -55,45 +121,100 @@ enum Cmd {
         #[command(flatten)]
         mix: MixArgs,
     },
-    /// Play through the default output device and report timing statistics.
-    Play {
-        #[arg(long)]
-        stems: PathBuf,
-        #[arg(long, default_value_t = 10.0)]
-        seconds: f64,
-        /// Master gain in dB (default -60 dB: inaudible test level).
-        #[arg(long, default_value_t = -60.0, allow_hyphen_values = true)]
-        master_db: f64,
-        /// Play digital silence (master gain 0).
-        #[arg(long)]
-        silence: bool,
-        /// Allow a master gain above -60 dB (the default refuses, so a test run can never
-        /// be loud by accident).
-        #[arg(long)]
-        loud: bool,
-        /// WASAPI exclusive mode.
-        #[arg(long)]
-        exclusive: bool,
-        /// Busy-loop threads to run in parallel (CPU load test).
-        #[arg(long, default_value_t = 0)]
-        load_threads: usize,
-        /// Change key every N seconds through +3, -2, +5, 0, -7, ... (0 = off).
-        #[arg(long, default_value_t = 0.0)]
-        key_cycle: f64,
-        #[arg(long, default_value_t = 0.0)]
-        start: f64,
-        #[command(flatten)]
-        mix: MixArgs,
-    },
     /// Measure the CPU cost of Rubber Band R3 and of the full graph (run with --release).
     Bench {
         #[arg(long, default_value_t = 30.0)]
         seconds: f64,
     },
     /// Render a fixed set of generated test cases to OUT_DIR (CI cross-platform check).
-    CiRender {
-        out_dir: PathBuf,
-    },
+    CiRender { out_dir: PathBuf },
+}
+
+#[derive(Args, Clone)]
+struct PlayArgs {
+    song: PathBuf,
+    #[arg(long, default_value_t = 10.0)]
+    seconds: f64,
+    /// Master gain in dB (default -60 dB: inaudible test level).
+    #[arg(long, default_value_t = -60.0, allow_hyphen_values = true)]
+    master_db: f64,
+    /// Play digital silence (master gain 0).
+    #[arg(long)]
+    silence: bool,
+    /// Allow a master gain above -60 dB.
+    #[arg(long)]
+    loud: bool,
+    /// Device id (see `devices`; "null" = no output).
+    #[arg(long)]
+    device: Option<String>,
+    #[arg(long)]
+    exclusive: bool,
+    /// Busy-loop threads to run in parallel (CPU load test).
+    #[arg(long, default_value_t = 0)]
+    load_threads: usize,
+    /// Change key every N seconds through +3, -2, +5, 0, -7, +12, -12, +2 (0 = off).
+    #[arg(long, default_value_t = 0.0)]
+    key_every: f64,
+    /// Seek to a pseudo-random position every N seconds (0 = off).
+    #[arg(long, default_value_t = 0.0)]
+    seek_every: f64,
+    /// Start again from 0 at the end of the song.
+    #[arg(long = "loop")]
+    looping: bool,
+    #[arg(long, default_value_t = 0.0)]
+    start: f64,
+    /// Write a JSON summary here.
+    #[arg(long)]
+    report: Option<PathBuf>,
+    #[command(flatten)]
+    mix: MixOverride,
+}
+
+/// Mix options for song-file commands: anything not given comes from the song's
+/// saved settings.
+#[derive(Args, Clone, Default)]
+struct MixOverride {
+    #[arg(long, allow_hyphen_values = true)]
+    semitones: Option<i32>,
+    #[arg(long)]
+    guide: Option<f32>,
+    #[arg(long)]
+    backing: Option<f32>,
+    #[arg(long)]
+    no_backing: bool,
+    #[arg(long)]
+    other: Option<f32>,
+    #[arg(long)]
+    drums: Option<f32>,
+    #[arg(long)]
+    shift_drums: bool,
+}
+
+impl MixOverride {
+    fn apply(&self, mut p: MixParams) -> MixParams {
+        if let Some(s) = self.semitones {
+            p.semitones = s;
+        }
+        if let Some(g) = self.guide {
+            p.guide_vocal = g;
+        }
+        if let Some(b) = self.backing {
+            p.backing_level = b;
+        }
+        if self.no_backing {
+            p.backing_on = false;
+        }
+        if let Some(o) = self.other {
+            p.other = o;
+        }
+        if let Some(d) = self.drums {
+            p.drums = d;
+        }
+        if self.shift_drums {
+            p.shift_drums = true;
+        }
+        p
+    }
 }
 
 #[derive(Args, Clone)]
@@ -115,8 +236,8 @@ struct MixArgs {
 }
 
 impl MixArgs {
-    fn params(&self) -> MixParams {
-        MixParams {
+    fn params(&self) -> DspParams {
+        DspParams {
             guide: self.guide,
             backing_on: !self.no_backing,
             backing: self.backing,
@@ -131,15 +252,23 @@ impl MixArgs {
 fn main() {
     let cli = Cli::parse();
     let r = match cli.cmd {
-        Cmd::GenTestStems { out, seconds, rate, seed } => gen_test_stems(out, seconds, rate, seed),
-        Cmd::Render { stems, out, rate, mix } => cmd_render(&stems, &out, rate, mix.params()),
-        Cmd::Play { stems, seconds, master_db, silence, loud, exclusive, load_threads, key_cycle, start, mix } => {
-            if !silence && !loud && master_db > -60.0 {
+        Cmd::Info { song } => cmd_info(&song),
+        Cmd::Verify { song, strict } => cmd_verify(&song, strict),
+        Cmd::Render { song, out, format, mix } => cmd_render(&song, &out, format.as_deref(), &mix),
+        Cmd::Export { song, format, out } => cmd_export(&song, &format, out),
+        Cmd::Play(a) => {
+            if !a.silence && !a.loud && a.master_db > -60.0 {
                 Err("master gain above -60 dB needs --loud".into())
             } else {
-                cmd_play(&stems, seconds, if silence { None } else { Some(master_db) }, exclusive, load_threads, key_cycle, start, mix.params())
+                cmd_play(&a)
             }
         }
+        Cmd::SeekTest { song, seeks, device } => cmd_seek_test(&song, seeks, device),
+        Cmd::MakeDemoSong { out } => cmd_make_demo(&out),
+        Cmd::MakeTestSong { out, seconds, rate, seed } => cmd_make_test_song(&out, seconds, rate, seed),
+        Cmd::Devices => cmd_devices(),
+        Cmd::GenTestStems { out, seconds, rate, seed } => gen_test_stems(out, seconds, rate, seed),
+        Cmd::RenderStems { stems, out, rate, mix } => cmd_render_stems(&stems, &out, rate, mix.params()),
         Cmd::Bench { seconds } => cmd_bench(seconds),
         Cmd::CiRender { out_dir } => cmd_ci_render(&out_dir),
     };
@@ -153,8 +282,692 @@ fn jk_build() -> PathBuf {
     std::env::var_os("JK_BUILD").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("../jukeoke-build"))
 }
 
+fn saved_params(song: &Path) -> Res<MixParams> {
+    let f = jk_format::SongFile::open(song)?;
+    Ok(MixParams::from_settings(f.effective_settings()))
+}
+
+fn db(x: f64) -> String {
+    if x <= 0.0 { "-inf dB".into() } else { format!("{:.2} dB", 20.0 * x.log10()) }
+}
+
 // ---------------------------------------------------------------------------------------
-// gen-test-stems
+// info / verify
+
+fn cmd_info(path: &Path) -> Res<()> {
+    let song = jk_format::SongFile::open(path)?;
+    let m = song.manifest();
+    let meta = song.effective_metadata();
+    let bytes = std::fs::metadata(path)?.len();
+    println!("file: {} ({} bytes)", path.display(), bytes);
+    println!("format: {} {}", m.format, m.format_version);
+    println!("title: {}\nartist: {}\nalbum: {}", meta.title, meta.artist, meta.album.as_deref().unwrap_or("-"));
+    println!("audio: {} Hz, {} ch, {} frames ({:.3} s)", m.sample_rate, m.channels, m.duration_frames, m.duration());
+    if let Some(a) = &m.analysis {
+        if let Some(k) = &a.key {
+            println!("key: {} {} (confidence {:?})", k.tonic, k.mode, k.confidence);
+        }
+        if let Some(t) = a.tempo_bpm {
+            println!("tempo: {t} BPM");
+        }
+    }
+    println!("preset: {:?}, stems sum to source: {}", m.preset, m.stems_sum_to_source);
+    for s in &m.stems {
+        let len = song.chunk(&s.chunk).map_or(0, |c| c.length);
+        println!(
+            "stem {:<15} chunk {:<22} {:>10} bytes  gain {}  peak {:?}  in karaoke mix {}  pitched {}",
+            s.role,
+            s.chunk,
+            len,
+            s.gain,
+            s.peak,
+            s.in_karaoke_mix(),
+            s.pitched()
+        );
+    }
+    match song.effective_lyrics()? {
+        Some(l) => {
+            println!(
+                "lyrics: {} lines, {} graphemes, source {:?}, checked {}",
+                l.lines.len(),
+                l.grapheme_count(),
+                l.source,
+                l.checked
+            );
+            for (i, line) in l.lines.iter().enumerate() {
+                println!("  {i:2} [{:7.3} .. {:7.3}] {}", line.start, line.end, line.text());
+            }
+        }
+        None => println!("lyrics: none (instrumental)"),
+    }
+    let s = song.effective_settings();
+    println!(
+        "saved settings: semitones {:+}, shift drums {}, guide {}, backing {} x{}, levels {:?}, lyrics offset {} ms",
+        s.semitones, s.shift_drums, s.guide_vocal, s.backing_on, s.backing_level, s.levels, s.lyrics_offset_ms
+    );
+    println!("chunks:");
+    for c in &song.toc().chunks {
+        println!("  {:<22} {:<18} offset {:>10} length {:>10}", c.id, c.mime, c.offset, c.length);
+    }
+    for w in song.warnings() {
+        println!("WARNING {w}");
+    }
+    Ok(())
+}
+
+fn cmd_verify(path: &Path, strict: bool) -> Res<()> {
+    let t = Instant::now();
+    let rep = jk_format::verify_file(path, &jk_format::VerifyOptions::default());
+    println!("file: {}", rep.path.display());
+    if let Some((ma, mi)) = rep.version {
+        println!("version: {ma}.{mi}");
+    }
+    for s in &rep.stems {
+        println!(
+            "stem {:<15} {} Hz {} ch {} bit, {} frames, {} bytes, MD5 {}, decoded {:?} frames, seeks {:?}, peak {:?}, seek points {:?}",
+            s.role,
+            s.sample_rate,
+            s.channels,
+            s.bits_per_sample,
+            s.total_samples,
+            s.bytes,
+            match s.md5_ok {
+                Some(true) => "ok",
+                Some(false) => "MISMATCH",
+                None => "not checked",
+            },
+            s.decoded_frames,
+            s.seeks_ok,
+            s.decoded_peak,
+            s.seek_points
+        );
+    }
+    for sl in &rep.slots {
+        println!("{sl}");
+    }
+    if let Some(g) = rep.lyrics_graphemes {
+        println!("lyrics: {g} timed graphemes");
+    }
+    // Decode through the engine's own stem reader (what playback uses).
+    let mut errors = rep.errors.clone();
+    match jk_engine::source::SongSource::open(path) {
+        Ok(mut src) => {
+            let frames = src.info().frames;
+            let mut bufs = jk_engine::source::slot_buffers(8192);
+            let mut n = 0u64;
+            let mut peak = 0.0f32;
+            loop {
+                match src.read(&mut bufs, 8192) {
+                    Ok(0) => break,
+                    Ok(k) => {
+                        for s in &bufs {
+                            for c in s {
+                                peak = c[..k].iter().fold(peak, |m, v| m.max(v.abs()));
+                            }
+                        }
+                        n += k as u64;
+                    }
+                    Err(e) => {
+                        errors.push(format!("engine decode: {e}"));
+                        break;
+                    }
+                }
+            }
+            if n != frames {
+                errors.push(format!("engine decode: {n} frames, manifest says {frames}"));
+            } else {
+                println!("engine stem reader: {n} frames decoded (all stems, gains applied), slot peak {}", db(peak as f64));
+            }
+        }
+        Err(e) => errors.push(format!("engine open: {e}")),
+    }
+    for w in &rep.warnings {
+        println!("WARNING {w}");
+    }
+    for e in &errors {
+        println!("ERROR {e}");
+    }
+    let ok = errors.is_empty() && (!strict || rep.warnings.is_empty());
+    println!(
+        "{}: {} errors, {} warnings ({:.2} s)",
+        if ok { "PASS" } else { "FAIL" },
+        errors.len(),
+        rep.warnings.len(),
+        t.elapsed().as_secs_f64()
+    );
+    if !ok {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------
+// render / export
+
+fn parse_format(s: &str) -> Res<ExportFormat> {
+    match s.to_ascii_lowercase().as_str() {
+        "flac24" | "flac" => Ok(ExportFormat::Flac24),
+        "wav32f" | "wav" => Ok(ExportFormat::Wav32f),
+        _ => Err(format!("unknown format {s} (flac24 or wav32f)").into()),
+    }
+}
+
+fn run_render(song: &Path, p: &MixParams, out: &Path, fmt: ExportFormat) -> Res<()> {
+    let t = Instant::now();
+    let cancel = AtomicBool::new(false);
+    let mut last = -1.0f32;
+    let mut progress = |x: f32| {
+        if x - last >= 0.25 || x >= 1.0 {
+            last = x;
+            eprint!("\r{:3.0} %", x * 100.0);
+        }
+    };
+    let r = jk_engine::render_offline(song, p, out, fmt, &mut progress, &cancel)?;
+    eprintln!();
+    let secs = t.elapsed().as_secs_f64();
+    let dur = r.frames as f64 / r.sample_rate as f64;
+    println!(
+        "{}: {:?}, {} frames at {} Hz, {} ch; key {:+}; peak {}; applied gain {:.3} dB; {:.2} s ({:.1}x real time)",
+        out.display(),
+        fmt,
+        r.frames,
+        r.sample_rate,
+        r.channels,
+        p.semitones,
+        db(r.peak as f64),
+        r.applied_gain_db,
+        secs,
+        dur / secs
+    );
+    Ok(())
+}
+
+fn cmd_render(song: &Path, out: &Path, format: Option<&str>, mix: &MixOverride) -> Res<()> {
+    let fmt = match format {
+        Some(f) => parse_format(f)?,
+        None => match out.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+            Some("flac") => ExportFormat::Flac24,
+            _ => ExportFormat::Wav32f,
+        },
+    };
+    let p = mix.apply(saved_params(song)?);
+    run_render(song, &p, out, fmt)
+}
+
+fn cmd_export(song: &Path, format: &str, out: Option<PathBuf>) -> Res<()> {
+    let fmt = parse_format(format)?;
+    let f = jk_format::SongFile::open(song)?;
+    let p = MixParams::from_settings(f.effective_settings());
+    let out = match out {
+        Some(o) => o,
+        None => {
+            let meta = f.effective_metadata();
+            let key = f
+                .manifest()
+                .analysis
+                .as_ref()
+                .and_then(|a| a.key.as_ref())
+                .map(|k| format!("{} {} {:+}", k.tonic, k.mode, p.semitones))
+                .unwrap_or_else(|| format!("{:+}", p.semitones));
+            let ext = if fmt == ExportFormat::Flac24 { "flac" } else { "wav" };
+            let name: String = format!("{} - {} ({key}).{ext}", meta.artist, meta.title)
+                .chars()
+                .map(|c| if "<>:\"/\\|?*".contains(c) || c.is_control() { '_' } else { c })
+                .collect();
+            song.with_file_name(name)
+        }
+    };
+    drop(f);
+    run_render(song, &p, &out, fmt)
+}
+
+// ---------------------------------------------------------------------------------------
+// generators
+
+fn cmd_make_demo(out: &Path) -> Res<()> {
+    let t = Instant::now();
+    let r = jk_engine::demo::make_demo_song(out)?;
+    println!(
+        "{}: {} bytes, {} frames at {} Hz ({:.1} s); stems: {}; {:.2} s",
+        r.path.display(),
+        r.bytes,
+        r.frames,
+        r.sample_rate,
+        r.frames as f64 / r.sample_rate as f64,
+        r.stem_bytes.iter().map(|(k, b)| format!("{k} {b} B")).collect::<Vec<_>>().join(", "),
+        t.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
+fn cmd_make_test_song(out: &Path, seconds: f64, rate: u32, seed: u32) -> Res<()> {
+    let t = Instant::now();
+    let r = jk_engine::demo::make_synth_song(out, seconds, rate, seed)?;
+    println!(
+        "{}: {} bytes, {} frames at {} Hz ({:.1} s), stereo 24-bit; {:.1} s",
+        r.path.display(),
+        r.bytes,
+        r.frames,
+        r.sample_rate,
+        r.frames as f64 / r.sample_rate as f64,
+        t.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
+fn cmd_devices() -> Res<()> {
+    for d in Engine::list_devices()? {
+        println!(
+            "{} {} | {} Hz {} ch | exclusive {} | id {}",
+            if d.is_default { "*" } else { " " },
+            d.name,
+            d.sample_rate,
+            d.channels,
+            if d.exclusive_capable { "yes" } else { "no" },
+            d.id
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------
+// play
+
+fn busy_threads(n: usize, stop: Arc<AtomicBool>) -> Vec<std::thread::JoinHandle<u64>> {
+    (0..n)
+        .map(|i| {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut x = 1.0f64 + i as f64;
+                let mut iters = 0u64;
+                while !stop.load(Relaxed) {
+                    for _ in 0..10_000 {
+                        x = std::hint::black_box(x * 1.000_000_1 + 1e-9).sqrt() + 0.5;
+                    }
+                    iters += 1;
+                }
+                iters
+            })
+        })
+        .collect()
+}
+
+/// Peak working set and current private bytes of this process (Windows), or peak RSS
+/// (macOS / Unix).
+fn memory_bytes() -> (u64, u64) {
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        let mut c = PROCESS_MEMORY_COUNTERS_EX { cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32, ..Default::default() };
+        // SAFETY: valid out pointer and size for the current process.
+        let ok = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut c as *mut _ as *mut _, c.cb) };
+        if ok.is_ok() {
+            return (c.PeakWorkingSetSize as u64, c.PrivateUsage as u64);
+        }
+        (0, 0)
+    }
+    #[cfg(not(windows))]
+    {
+        (0, 0)
+    }
+}
+
+/// Least-squares fit of `y` on `x`: (slope, residual min, residual max).
+fn fit(pts: &[(f64, f64)]) -> (f64, f64, f64) {
+    let n = pts.len() as f64;
+    let mx = pts.iter().map(|p| p.0).sum::<f64>() / n;
+    let my = pts.iter().map(|p| p.1).sum::<f64>() / n;
+    let sxy: f64 = pts.iter().map(|p| (p.0 - mx) * (p.1 - my)).sum();
+    let sxx: f64 = pts.iter().map(|p| (p.0 - mx).powi(2)).sum();
+    let slope = if sxx > 0.0 { sxy / sxx } else { 1.0 };
+    let res: Vec<f64> = pts.iter().map(|p| p.1 - (my + slope * (p.0 - mx))).collect();
+    (slope, res.iter().cloned().fold(f64::MAX, f64::min), res.iter().cloned().fold(f64::MIN, f64::max))
+}
+
+fn cmd_play(a: &PlayArgs) -> Res<()> {
+    let master = if a.silence { 0.0f32 } else { 10f64.powf(a.master_db / 20.0) as f32 };
+    let params = a.mix.apply(saved_params(&a.song)?);
+    let stop_load = Arc::new(AtomicBool::new(false));
+    let loaders = busy_threads(a.load_threads, stop_load.clone());
+    let engine = Engine::new(EngineConfig { device_id: a.device.clone(), exclusive: a.exclusive, master })?;
+    let events = engine.events();
+    let loaded = engine.load(&a.song, params)?;
+    if a.start > 0.0 {
+        engine.seek(a.start);
+    }
+    let d0 = engine.diagnostics();
+    println!("device: {}", d0.device.clone().unwrap_or_else(|| "none".into()));
+    println!(
+        "song: {} Hz, {} ch, {:.1} s, {} stems; graph latency {} frames; resampling: {}",
+        loaded.sample_rate,
+        loaded.channels,
+        loaded.duration_s,
+        loaded.stems.len(),
+        d0.graph_latency_frames,
+        if d0.device_rate != loaded.sample_rate { format!("{} -> {} Hz", loaded.sample_rate, d0.device_rate) } else { "no".into() }
+    );
+    println!(
+        "master: {}; key {:+}; load threads {}; key change every {} s; seek every {} s; loop {}",
+        if master == 0.0 { "digital silence".to_string() } else { db(master as f64) },
+        params.semitones,
+        a.load_threads,
+        a.key_every,
+        a.seek_every,
+        a.looping
+    );
+    engine.play();
+    let cycle = [3, -2, 5, 0, -7, 12, -12, 2];
+    let mut ki = 0usize;
+    let mut next_key = if a.key_every > 0.0 { a.key_every } else { f64::MAX };
+    let mut next_seek = if a.seek_every > 0.0 { a.seek_every } else { f64::MAX };
+    let mut lcg = 0x2545_F491_4F6C_DD1Du64;
+    let wall0 = Instant::now();
+    // Clock samples per generation: (callback time s, DAC song time s).
+    let mut segs: Vec<(u64, Vec<(f64, f64)>)> = Vec::new();
+    let mut last_print = 0.0;
+    let (mut key_changes, mut seeks, mut loops) = (0, 0, 0);
+    let mut peak_ws = 0u64;
+    let mut cur = params;
+    loop {
+        std::thread::sleep(Duration::from_millis(50));
+        let w = wall0.elapsed().as_secs_f64();
+        while let Ok(ev) = events.try_recv() {
+            if let jk_engine::EngineEvent::Error { code, message } = &ev {
+                println!("  t={w:7.2} s: engine error {code}: {message}");
+            }
+            if ev == jk_engine::EngineEvent::DeviceLost {
+                println!("  t={w:7.2} s: device lost");
+            }
+        }
+        let snap = engine.snapshot();
+        let d = engine.diagnostics();
+        if snap.state == PlaybackState::Playing && snap.position_ns != 0 && d.dac_gen == d.generation {
+            let t = snap.position_ns as f64 * 1e-9;
+            match segs.last_mut() {
+                Some((g, v)) if *g == d.generation => {
+                    if v.last().is_none_or(|p| p.0 != t) {
+                        v.push((t, snap.position_s));
+                    }
+                }
+                _ => segs.push((d.generation, vec![(t, snap.position_s)])),
+            }
+        }
+        if snap.state == PlaybackState::Ended {
+            if a.looping {
+                engine.seek(0.0);
+                engine.play();
+                loops += 1;
+            } else {
+                break;
+            }
+        }
+        if w >= next_key {
+            cur = MixParams { semitones: cycle[ki % cycle.len()], ..cur };
+            engine.set_params(cur);
+            ki += 1;
+            key_changes += 1;
+            next_key += a.key_every;
+        }
+        if w >= next_seek {
+            lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let target = (lcg >> 11) as f64 / (1u64 << 53) as f64 * (loaded.duration_s - 5.0).max(0.0);
+            engine.seek(target);
+            seeks += 1;
+            next_seek += a.seek_every;
+        }
+        let (pw, _) = memory_bytes();
+        peak_ws = peak_ws.max(pw);
+        if w - last_print >= 10.0 {
+            last_print = w;
+            println!(
+                "  t={w:7.1} s  pos={:8.3} s  key {:+3}  underruns={} starved={}  lead(min)={}  worker max block {:.2} ms  mem peak {:.1} MB",
+                snap.position_s,
+                d.audible_semitones,
+                d.underruns,
+                d.device_starved,
+                d.min_lead_ms.map_or("-".into(), |m| format!("{m:.1} ms")),
+                d.worker_max_block_ms,
+                peak_ws as f64 / 1e6
+            );
+        }
+        if w >= a.seconds {
+            break;
+        }
+    }
+    let wall = wall0.elapsed().as_secs_f64();
+    let d = engine.diagnostics();
+    engine.pause();
+    stop_load.store(true, Relaxed);
+    let iters: u64 = loaders.into_iter().map(|h| h.join().unwrap_or(0)).sum();
+    let (pw, private) = memory_bytes();
+    peak_ws = peak_ws.max(pw);
+
+    // Clock vs callback time per continuous segment (skip each segment's first 0.5 s).
+    let mut drifts = Vec::new();
+    let mut jitter: (f64, f64) = (0.0, 0.0);
+    let mut seg_seconds = 0.0;
+    for (_, v) in &segs {
+        let pts: Vec<(f64, f64)> = v.iter().copied().filter(|p| p.0 - v[0].0 >= 0.5).collect();
+        if pts.len() < 40 {
+            continue;
+        }
+        let span = pts.last().unwrap().0 - pts[0].0;
+        let (slope, rmin, rmax) = fit(&pts);
+        drifts.push(((slope - 1.0) * 1e6, span));
+        seg_seconds += span;
+        jitter = (jitter.0.min(rmin), jitter.1.max(rmax));
+    }
+    let wmean = if seg_seconds > 0.0 { drifts.iter().map(|(p, s)| p * s).sum::<f64>() / seg_seconds } else { 0.0 };
+    let wmax = drifts.iter().map(|d| d.0.abs()).fold(0.0, f64::max);
+
+    println!("---- results after {wall:.1} s ----");
+    println!("underruns: {} callbacks, {} frames of silence inserted", d.underruns, d.underrun_frames);
+    println!("device buffer found empty (WASAPI shared mode): {}", d.device_starved);
+    println!("device callbacks: {}, longest callback {:.1} us", d.callbacks, d.max_callback_us);
+    println!(
+        "render worker ({}): {} blocks, CPU {:.2} % of one core, longest block {:.2} ms, min lead {}, reader starved {}, Rubber Band shortfall {} frames, key changes waiting for a pre-built instance {} blocks, instances built on the render thread {}",
+        d.worker_priority,
+        d.worker_blocks,
+        d.worker_busy_s / wall * 100.0,
+        d.worker_max_block_ms,
+        d.min_lead_ms.map_or("-".into(), |m| format!("{m:.1} ms")),
+        d.reader_starved,
+        d.shortfall_frames,
+        d.deferred_blocks,
+        d.inline_constructions
+    );
+    println!(
+        "playback clock (song time at the DAC) vs callback time: {} segments ({seg_seconds:.0} s), drift weighted mean {wmean:+.2} ppm, max |drift| {wmax:.2} ppm, jitter around trend {:+.3} .. {:+.3} ms",
+        drifts.len(),
+        jitter.0 * 1000.0,
+        jitter.1 * 1000.0
+    );
+    match d.device_drift_ppm {
+        Some(ppm) => println!("device clock (IAudioClock) vs OS performance counter: {ppm:+.2} ppm"),
+        None => println!("device clock vs OS counter: not available on this backend"),
+    }
+    println!("events: {key_changes} key changes, {seeks} seeks, {loops} loops");
+    println!("memory: peak working set {:.1} MB, private bytes now {:.1} MB", peak_ws as f64 / 1e6, private as f64 / 1e6);
+    if a.load_threads > 0 {
+        println!("load threads: {}, {iters} work units completed", a.load_threads);
+    }
+    if let Some(rp) = &a.report {
+        let j = serde_json::json!({
+            "song": a.song.display().to_string(), "seconds": wall, "device": d.device,
+            "underruns": d.underruns, "underrun_frames": d.underrun_frames, "device_starved": d.device_starved,
+            "callbacks": d.callbacks, "max_callback_us": d.max_callback_us,
+            "worker_cpu_percent": d.worker_busy_s / wall * 100.0, "worker_max_block_ms": d.worker_max_block_ms,
+            "min_lead_ms": d.min_lead_ms, "reader_starved": d.reader_starved, "shortfall_frames": d.shortfall_frames,
+            "deferred_blocks": d.deferred_blocks, "inline_constructions": d.inline_constructions,
+            "drift_ppm_weighted_mean": wmean, "drift_ppm_max_abs": wmax, "drift_segments": drifts.len(),
+            "jitter_ms": [jitter.0 * 1000.0, jitter.1 * 1000.0], "device_drift_ppm": d.device_drift_ppm,
+            "key_changes": key_changes, "seeks": seeks, "loops": loops, "load_threads": a.load_threads,
+            "peak_working_set_bytes": peak_ws, "private_bytes": private,
+        });
+        std::fs::write(rp, serde_json::to_vec_pretty(&j)?)?;
+    }
+    drop(engine);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------
+// seek-test
+
+fn cmd_seek_test(song: &Path, seeks: usize, device: Option<String>) -> Res<()> {
+    let base = saved_params(song)?;
+    let info = jk_format::SongFile::open(song)?;
+    let rate = info.manifest().sample_rate;
+    let dur = info.manifest().duration();
+    drop(info);
+    // Reference renders (offline, whole song) for the cases.
+    let cases = [
+        ("key 0, full mix", MixParams { semitones: 0, ..base }),
+        ("key +3, drums only (unshifted path)", MixParams { semitones: 3, guide_vocal: 0.0, backing_on: false, other: 0.0, drums: 1.0, ..base }),
+        ("key +3, full mix", MixParams { semitones: 3, ..base }),
+    ];
+    let tmp = std::env::temp_dir().join(format!("jk-seek-{}.wav", std::process::id()));
+    let fade = (rate / 100) as usize;
+    let compare = 20_000usize;
+    for (name, p) in cases {
+        jk_engine::render_offline(song, &p, &tmp, ExportFormat::Wav32f, &mut |_| {}, &AtomicBool::new(false))?;
+        let reference: Vec<f32> = hound::WavReader::open(&tmp)?.into_samples::<f32>().collect::<Result<_, _>>()?;
+        let (engine, cap) = Engine::new_with_capture(rate, true, 1.0)?;
+        engine.load(song, p)?;
+        let mut exact = 0;
+        let mut worst_diff = f32::MIN;
+        let mut rel_dbs: Vec<f64> = Vec::new();
+        let mut lcg = 77u64;
+        for k in 0..seeks {
+            lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let t = (lcg >> 11) as f64 / (1u64 << 53) as f64 * (dur - 2.0) + 0.5;
+            let frame = (t * rate as f64).round() as usize;
+            engine.pause();
+            std::thread::sleep(Duration::from_millis(30));
+            engine.seek(frame as f64 / rate as f64);
+            cap.lock().unwrap().clear();
+            engine.play();
+            // Wait for enough audio past the fade-in.
+            let t0 = Instant::now();
+            while cap.lock().unwrap().len() < (fade + compare + 48_000) * 2 && t0.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let c = cap.lock().unwrap().clone();
+            // Expected: reference from frame+fade on; find it in the capture.
+            let want = &reference[(frame + fade) * 2..((frame + fade + compare) * 2).min(reference.len())];
+            let mut found = None;
+            for d in 0..(c.len() / 2).saturating_sub(want.len() / 2) {
+                if c[d * 2] == want[0] && c[d * 2 + 1] == want[1] && c[d * 2..d * 2 + want.len()] == *want {
+                    found = Some(d);
+                    break;
+                }
+            }
+            match found {
+                Some(_) => exact += 1,
+                None => {
+                    // Not bit-exact (expected with a pitch shift: Rubber Band restarts from
+                    // a primed but different internal state). Find the capture offset that
+                    // best matches the reference (least squares over the window) and
+                    // measure the residual there.
+                    let win = want.len().min(16_384);
+                    let mut best = (0usize, f64::MAX);
+                    for d in 0..(c.len() / 2).saturating_sub(win / 2) {
+                        let mut e = 0.0f64;
+                        for i in (0..win).step_by(2) {
+                            let x = (c[d * 2 + i] - want[i]) as f64;
+                            e += x * x;
+                            if e >= best.1 {
+                                break;
+                            }
+                        }
+                        if e < best.1 {
+                            best = (d, e);
+                        }
+                    }
+                    let d = best.0;
+                    let n = want.len().min(c.len().saturating_sub(d * 2));
+                    let (mut se, mut ss) = (0.0f64, 0.0f64);
+                    for i in 0..n {
+                        let x = (c[d * 2 + i] - want[i]) as f64;
+                        se += x * x;
+                        ss += (want[i] as f64).powi(2);
+                    }
+                    let rel_db = 10.0 * (se / ss.max(1e-30)).log10();
+                    worst_diff = worst_diff.max(rel_db as f32);
+                    rel_dbs.push(rel_db);
+                }
+            }
+            let _ = k;
+        }
+        println!(
+            "seek accuracy, {name}: {exact}/{seeks} seeks bit-exact against the offline render for {compare} frames after the 10 ms fade-in{}",
+            if exact < seeks {
+                rel_dbs.sort_by(f64::total_cmp);
+                format!(
+                    "; the others, at their best (least-squares) alignment: residual {:.1} dB (median) .. {worst_diff:.1} dB (worst) relative to the signal",
+                    rel_dbs[rel_dbs.len() / 2]
+                )
+            } else {
+                String::new()
+            }
+        );
+        drop(engine);
+    }
+    let _ = std::fs::remove_file(&tmp);
+
+    // Latency on a real device (digital silence).
+    let engine = Engine::new(EngineConfig { device_id: device, exclusive: false, master: 0.0 })?;
+    engine.load(song, base)?;
+    engine.play();
+    std::thread::sleep(Duration::from_millis(500));
+    let mut to_adopt = Vec::new();
+    let mut to_dac = Vec::new();
+    let mut lcg = 99u64;
+    for _ in 0..seeks.max(20) {
+        lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let t = (lcg >> 11) as f64 / (1u64 << 53) as f64 * (dur - 3.0) + 0.5;
+        let t0 = Instant::now();
+        engine.seek(t);
+        let g = engine.diagnostics().generation;
+        let mut adopted = None;
+        loop {
+            let d = engine.diagnostics();
+            if d.dac_gen == g {
+                if adopted.is_none() {
+                    adopted = Some(t0.elapsed().as_secs_f64());
+                }
+                if d.dac_pos > t + 1e-6 {
+                    to_dac.push(t0.elapsed().as_secs_f64() * 1000.0);
+                    break;
+                }
+            }
+            if t0.elapsed() > Duration::from_secs(3) {
+                break;
+            }
+            std::thread::sleep(Duration::from_micros(500));
+        }
+        if let Some(a) = adopted {
+            to_adopt.push(a * 1000.0);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let d = engine.diagnostics();
+    let stats = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        if v.is_empty() {
+            return "n/a".to_string();
+        }
+        format!("median {:.1} ms, min {:.1}, max {:.1} (n={})", v[v.len() / 2], v[0], v[v.len() - 1], v.len())
+    };
+    println!("device: {}", d.device.unwrap_or_default());
+    println!("seek latency, call -> new position at the DAC clock (silence-to-audio at the speaker): {}", stats(&mut to_dac));
+    println!("seek latency, call -> filler adopts the new segment: {}", stats(&mut to_adopt));
+    println!("underruns during the seek test: {}", d.underruns);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------
+// gen-test-stems / render-stems
 
 /// f32 -> 24-bit integer with the same scale the decoder uses (symphonia: `x / 2^23`), so
 /// every value on the 24-bit grid round-trips exactly. (+1.0 itself is not representable
@@ -215,15 +1028,11 @@ fn gen_test_stems(out: Option<PathBuf>, seconds: f64, rate: u32, seed: u32) -> R
     Ok(())
 }
 
-// ---------------------------------------------------------------------------------------
-// render
-
 fn load_stems(dir: &Path) -> Res<(u32, [[Vec<f32>; 2]; 4])> {
-    let files = StemFiles::in_dir(dir);
     let mut rate = 0;
     let mut out: Vec<[Vec<f32>; 2]> = Vec::new();
-    for p in &files.paths {
-        let (r, ch) = FlacStem::decode_all(p)?;
+    for n in ["lead", "backing", "drums", "other"] {
+        let (r, ch) = FlacStem::decode_all(&dir.join(format!("{n}.flac")))?;
         if rate != 0 && r != rate {
             return Err("stems have different sample rates".into());
         }
@@ -238,221 +1047,6 @@ fn load_stems(dir: &Path) -> Res<(u32, [[Vec<f32>; 2]; 4])> {
     let arr: [[Vec<f32>; 2]; 4] = out.try_into().map_err(|_| "need four stems")?;
     Ok((rate, arr))
 }
-
-fn cmd_render(stems_dir: &Path, out: &Path, rate: Option<u32>, params: MixParams) -> Res<()> {
-    let t = Instant::now();
-    let (sr, stems) = load_stems(stems_dir)?;
-    let frames = stems[0][0].len();
-    let sref = StemsRef { sample_rate: sr, frames, stems: std::array::from_fn(|s| [&stems[s][0][..], &stems[s][1][..]]) };
-    let mut opts = RenderOptions::native(sr);
-    opts.out_rate = rate.unwrap_or(sr);
-    let t_dec = t.elapsed().as_secs_f64();
-    let r = render(sref, params, &[], &opts)?;
-    let t_ren = t.elapsed().as_secs_f64() - t_dec;
-    let spec = hound::WavSpec { channels: 2, sample_rate: r.sample_rate, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
-    let tmp = out.with_extension("tmp-write");
-    {
-        let mut w = hound::WavWriter::create(&tmp, spec)?;
-        for i in 0..r.channels[0].len() {
-            w.write_sample(r.channels[0][i])?;
-            w.write_sample(r.channels[1][i])?;
-        }
-        w.finalize()?;
-    }
-    std::fs::rename(&tmp, out)?;
-    let peak = r.channels.iter().flat_map(|c| c.iter()).fold(0.0f32, |m, v| m.max(v.abs()));
-    println!(
-        "{}: {} frames at {} Hz, 32-bit float, peak {:.2} dBFS; key {:+}, graph latency {} frames removed, resampler {}",
-        out.display(),
-        r.channels[0].len(),
-        r.sample_rate,
-        20.0 * peak.log10(),
-        params.semitones,
-        r.graph_latency,
-        if r.sample_rate == sr { "not used".to_string() } else { format!("{sr} -> {} Hz (delay {} removed)", r.sample_rate, r.resampler_delay) }
-    );
-    println!("decode {t_dec:.2} s, render {t_ren:.2} s ({:.1}x real time)", frames as f64 / sr as f64 / t_ren);
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------------------
-// play
-
-fn busy_threads(n: usize, stop: Arc<AtomicBool>) -> Vec<std::thread::JoinHandle<u64>> {
-    (0..n)
-        .map(|i| {
-            let stop = stop.clone();
-            std::thread::spawn(move || {
-                let mut x = 1.0f64 + i as f64;
-                let mut iters = 0u64;
-                while !stop.load(Relaxed) {
-                    for _ in 0..10_000 {
-                        x = std::hint::black_box(x * 1.000_000_1 + 1e-9).sqrt() + 0.5;
-                    }
-                    iters += 1;
-                }
-                iters
-            })
-        })
-        .collect()
-}
-
-#[allow(clippy::too_many_arguments)]
-fn cmd_play(
-    stems_dir: &Path,
-    seconds: f64,
-    master_db: Option<f64>,
-    exclusive: bool,
-    load_threads: usize,
-    key_cycle: f64,
-    start_s: f64,
-    params: MixParams,
-) -> Res<()> {
-    let master = match master_db {
-        None => 0.0f32,
-        Some(db) => 10f64.powf(db / 20.0) as f32,
-    };
-    let files = StemFiles::in_dir(stems_dir);
-    let probe = FlacStem::open(&files.paths[0])?;
-    let start_frame = (start_s * probe.sample_rate() as f64) as u64;
-    drop(probe);
-    let cfg = PlayerConfig {
-        output: OutputRequest { exclusive, preferred_rate: None, buffer_ms: 20 },
-        start_frame,
-        params,
-        master_gain: master,
-        ..PlayerConfig::default()
-    };
-    let stop_load = Arc::new(AtomicBool::new(false));
-    let loaders = busy_threads(load_threads, stop_load.clone());
-    let mut player = Player::start(&files, cfg)?;
-    let d = player.device.clone();
-    println!("device: {} [{} {}]", d.name, d.backend, d.share_mode);
-    println!("device format: {} Hz, {} ch, {}, endpoint buffer {} frames ({:.2} ms)", d.sample_rate, d.channels, d.sample_format, d.buffer_frames, d.buffer_frames as f64 * 1000.0 / d.sample_rate as f64);
-    println!("reported stream latency: {} frames ({:.2} ms)", d.stream_latency_frames, d.stream_latency_frames as f64 * 1000.0 / d.sample_rate as f64);
-    println!(
-        "song: {} Hz, {:.1} s; graph latency {} frames ({:.1} ms); resampling: {}",
-        player.song_rate,
-        player.song_frames as f64 / player.song_rate as f64,
-        player.graph_latency,
-        player.graph_latency as f64 * 1000.0 / player.song_rate as f64,
-        if player.resampling { format!("yes, {} -> {} Hz (rubato sinc, delay {} frames)", player.song_rate, d.sample_rate, player.resampler_delay) } else { "no (rates match)".into() }
-    );
-    println!("master gain: {}; key {:+}; load threads: {load_threads}", if master == 0.0 { "digital silence".to_string() } else { format!("{:.1} dB", 20.0 * (master as f64).log10()) }, params.semitones);
-
-    let clock = player.clock.clone();
-    // Wait for the stream to start (first callback).
-    let t_wait = Instant::now();
-    while clock.callbacks.load(Relaxed) == 0 {
-        if t_wait.elapsed() > Duration::from_secs(5) {
-            return Err("device did not start within 5 s".into());
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    let wall0 = Instant::now();
-    let song0 = clock.song_time_at_dac();
-    let cycle = [3, -2, 5, 0, -7, 12, -12, 2];
-    let mut next_key = key_cycle;
-    let mut ki = 0;
-    let mut samples: Vec<(f64, f64)> = Vec::new(); // (wall, clock - wall), raw clock
-    let mut isamples: Vec<(f64, f64)> = Vec::new(); // same, interpolated clock
-    let isong0 = clock.song_time_interpolated(jk_engine::clock::now_ns());
-    let mut last_print = 0.0;
-    loop {
-        std::thread::sleep(Duration::from_millis(50));
-        let w = wall0.elapsed().as_secs_f64();
-        let s = clock.song_time_at_dac() - song0;
-        samples.push((w, s - w));
-        let si = clock.song_time_interpolated(jk_engine::clock::now_ns()) - isong0;
-        isamples.push((w, si - w));
-        if key_cycle > 0.0 && w >= next_key {
-            let p = MixParams { semitones: cycle[ki % cycle.len()], ..params };
-            player.set_params(p);
-            println!("  t={w:6.2} s: key -> {:+}", p.semitones);
-            ki += 1;
-            next_key += key_cycle;
-        }
-        if w - last_print >= 5.0 {
-            last_print = w;
-            println!(
-                "  t={w:6.2} s  clock={:8.3} s  clock-wall={:+7.2} ms  underruns={}  ahead(min)={:.1} ms",
-                s,
-                (s - w) * 1000.0,
-                clock.underruns.load(Relaxed),
-                player.stats.min_ahead_frames.load(Relaxed) as f64 * 1000.0 / d.sample_rate as f64
-            );
-        }
-        if w >= seconds || player.is_finished() {
-            break;
-        }
-    }
-    let wall = wall0.elapsed().as_secs_f64();
-    stop_load.store(true, Relaxed);
-    let iters: u64 = loaders.into_iter().map(|h| h.join().unwrap_or(0)).sum();
-
-    // Clock vs wall: least-squares slope (ppm) and spread after removing the slope.
-    let fit = |samples: &[(f64, f64)]| {
-        let n = samples.len() as f64;
-        let (mx, my) = (samples.iter().map(|s| s.0).sum::<f64>() / n, samples.iter().map(|s| s.1).sum::<f64>() / n);
-        let sxy: f64 = samples.iter().map(|s| (s.0 - mx) * (s.1 - my)).sum();
-        let sxx: f64 = samples.iter().map(|s| (s.0 - mx).powi(2)).sum();
-        let slope = if sxx > 0.0 { sxy / sxx } else { 0.0 };
-        let resid: Vec<f64> = samples.iter().map(|s| s.1 - (my + slope * (s.0 - mx))).collect();
-        let rmin = resid.iter().cloned().fold(f64::MAX, f64::min);
-        let rmax = resid.iter().cloned().fold(f64::MIN, f64::max);
-        let last = samples.last().map(|s| s.1).unwrap_or(0.0);
-        (slope, rmin, rmax, last)
-    };
-    let (slope, rmin, rmax, last) = fit(&samples);
-    let (islope, irmin, irmax, ilast) = fit(&isamples);
-
-    let st = &player.stats;
-    let busy = st.busy_ns.load(Relaxed) as f64 * 1e-9;
-    println!("---- results after {wall:.2} s wall time ----");
-    println!("underruns: {} callbacks, {} frames of silence inserted", clock.underruns.load(Relaxed), clock.underrun_frames.load(Relaxed));
-    println!(
-        "device buffer found empty (WASAPI shared mode: device thread late, likely gap): {}",
-        clock.device_starved.load(Relaxed)
-    );
-    println!("device callbacks: {}, longest callback {:.1} us", clock.callbacks.load(Relaxed), clock.max_callback_ns.load(Relaxed) as f64 / 1000.0);
-    println!(
-        "render worker ({}): {} blocks, CPU {:.2} % of one core, longest block {:.2} ms, min lead {:.1} ms, reader starved {} times, Rubber Band shortfall {} frames",
-        st.worker_priority.get().map(|s| s.as_str()).unwrap_or("?"),
-        st.blocks.load(Relaxed),
-        busy / wall * 100.0,
-        st.max_block_ns.load(Relaxed) as f64 / 1e6,
-        st.min_ahead_frames.load(Relaxed) as f64 * 1000.0 / d.sample_rate as f64,
-        st.reader_starved.load(Relaxed),
-        st.graph_shortfall_frames.load(Relaxed),
-    );
-    println!(
-        "playback clock (frames delivered - reported latency) vs wall clock: end offset {:+.3} ms, trend {:+.1} ppm, jitter around trend {:+.3} .. {:+.3} ms ({} samples every 50 ms)",
-        last * 1000.0,
-        slope * 1e6,
-        rmin * 1000.0,
-        rmax * 1000.0,
-        samples.len()
-    );
-    println!(
-        "same, interpolated between callbacks (what the UI does): end offset {:+.3} ms, trend {:+.1} ppm, jitter {:+.3} .. {:+.3} ms",
-        ilast * 1000.0,
-        islope * 1e6,
-        irmin * 1000.0,
-        irmax * 1000.0
-    );
-    match clock.device_drift_ppm() {
-        Some(ppm) => println!("device clock (IAudioClock position) vs OS performance counter: {ppm:+.2} ppm"),
-        None => println!("device clock vs OS counter: not available on this backend"),
-    }
-    if load_threads > 0 {
-        println!("load threads: {load_threads}, {iters} work units completed");
-    }
-    player.stop()?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------------------
-// ci-render
 
 fn write_wav_f32(path: &Path, ch: &[Vec<f32>; 2], rate: u32) -> Res<()> {
     let spec = hound::WavSpec { channels: 2, sample_rate: rate, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
@@ -469,17 +1063,46 @@ fn write_wav_f32(path: &Path, ch: &[Vec<f32>; 2], rate: u32) -> Res<()> {
     Ok(())
 }
 
+fn cmd_render_stems(stems_dir: &Path, out: &Path, rate: Option<u32>, params: DspParams) -> Res<()> {
+    let t = Instant::now();
+    let (sr, stems) = load_stems(stems_dir)?;
+    let frames = stems[0][0].len();
+    let sref = StemsRef { sample_rate: sr, frames, stems: std::array::from_fn(|s| [&stems[s][0][..], &stems[s][1][..]]) };
+    let mut opts = RenderOptions::native(sr);
+    opts.out_rate = rate.unwrap_or(sr);
+    let t_dec = t.elapsed().as_secs_f64();
+    let r = render(sref, params, &[], &opts)?;
+    let t_ren = t.elapsed().as_secs_f64() - t_dec;
+    write_wav_f32(out, &r.channels, r.sample_rate)?;
+    let peak = r.channels.iter().flat_map(|c| c.iter()).fold(0.0f32, |m, v| m.max(v.abs()));
+    println!(
+        "{}: {} frames at {} Hz, 32-bit float, peak {:.2} dBFS; key {:+}, graph latency {} frames removed, resampler {}",
+        out.display(),
+        r.channels[0].len(),
+        r.sample_rate,
+        20.0 * peak.log10(),
+        params.semitones,
+        r.graph_latency,
+        if r.sample_rate == sr { "not used".to_string() } else { format!("{sr} -> {} Hz (delay {} removed)", r.sample_rate, r.resampler_delay) }
+    );
+    println!("decode {t_dec:.2} s, render {t_ren:.2} s ({:.1}x real time)", frames as f64 / sr as f64 / t_ren);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------
+// ci-render
+
 /// The cross-platform render set. Inputs are generated with `jk_dsp::signals` (pure
 /// arithmetic + the `libm` crate), so both platforms start from bit-identical stems.
 fn cmd_ci_render(out: &Path) -> Res<()> {
     std::fs::create_dir_all(out)?;
-    let mut cases: Vec<(String, u32, u32, MixParams, Vec<ParamEvent>)> = Vec::new();
-    let base = MixParams { guide: 0.3, ..MixParams::default() };
+    let mut cases: Vec<(String, u32, u32, DspParams, Vec<ParamEvent>)> = Vec::new();
+    let base = DspParams { guide: 0.3, ..DspParams::default() };
     for s in [-12, -7, -5, -3, -2, -1, 0, 1, 2, 3, 5, 7, 12] {
-        cases.push((format!("key_{s:+03}.wav"), 44_100, 44_100, MixParams { semitones: s, ..base }, vec![]));
+        cases.push((format!("key_{s:+03}.wav"), 44_100, 44_100, DspParams { semitones: s, ..base }, vec![]));
     }
     for s in [-5, 3] {
-        cases.push((format!("key_{s:+03}_shiftdrums.wav"), 44_100, 44_100, MixParams { semitones: s, shift_drums: true, ..base }, vec![]));
+        cases.push((format!("key_{s:+03}_shiftdrums.wav"), 44_100, 44_100, DspParams { semitones: s, shift_drums: true, ..base }, vec![]));
     }
     let r = 44_100u64;
     cases.push((
@@ -488,13 +1111,13 @@ fn cmd_ci_render(out: &Path) -> Res<()> {
         44_100,
         base,
         vec![
-            ParamEvent { frame: r, params: MixParams { semitones: 2, ..base } },
-            ParamEvent { frame: 2 * r, params: MixParams { semitones: -3, backing: 0.5, ..base } },
-            ParamEvent { frame: 3 * r, params: MixParams { semitones: 0, ..base } },
+            ParamEvent { frame: r, params: DspParams { semitones: 2, ..base } },
+            ParamEvent { frame: 2 * r, params: DspParams { semitones: -3, backing: 0.5, ..base } },
+            ParamEvent { frame: 3 * r, params: DspParams { semitones: 0, ..base } },
         ],
     ));
-    cases.push(("resample_44k1_to_48k_key_+02.wav".into(), 44_100, 48_000, MixParams { semitones: 2, ..base }, vec![]));
-    cases.push(("song48k_key_+04.wav".into(), 48_000, 48_000, MixParams { semitones: 4, ..base }, vec![]));
+    cases.push(("resample_44k1_to_48k_key_+02.wav".into(), 44_100, 48_000, DspParams { semitones: 2, ..base }, vec![]));
+    cases.push(("song48k_key_+04.wav".into(), 48_000, 48_000, DspParams { semitones: 4, ..base }, vec![]));
     let seconds = 4.0;
     let mut songs: std::collections::HashMap<u32, [[Vec<f32>; 2]; 4]> = std::collections::HashMap::new();
     for (name, song_rate, out_rate, params, events) in &cases {
@@ -552,7 +1175,7 @@ fn cmd_bench(seconds: f64) -> Res<()> {
         let sref = StemsRef { sample_rate: rate, frames, stems: std::array::from_fn(|s| [&stems[s][0][..], &stems[s][1][..]]) };
         for &semis in &[0i32, 3] {
             let t = Instant::now();
-            let _ = render(sref, MixParams { semitones: semis, ..MixParams::default() }, &[] as &[ParamEvent], &RenderOptions::native(rate))?;
+            let _ = render(sref, DspParams { semitones: semis, ..DspParams::default() }, &[] as &[ParamEvent], &RenderOptions::native(rate))?;
             let el = t.elapsed().as_secs_f64();
             println!("full graph (render)    {rate} Hz {semis:+3} st: RTF {:.4} ({:.0}x real time)", el / seconds, seconds / el);
         }
@@ -560,11 +1183,19 @@ fn cmd_bench(seconds: f64) -> Res<()> {
             let t = Instant::now();
             let mut o = RenderOptions::native(rate);
             o.out_rate = 48_000;
-            let _ = render(sref, MixParams { semitones: 3, ..MixParams::default() }, &[], &o)?;
+            let _ = render(sref, DspParams { semitones: 3, ..DspParams::default() }, &[], &o)?;
             let el = t.elapsed().as_secs_f64();
             println!("full graph + resampler 44100->48000 +3 st: RTF {:.4} ({:.0}x real time)", el / seconds, seconds / el);
         }
     }
+    // Building one Rubber Band instance (what the house thread does before a key change).
+    let t = Instant::now();
+    let n = 20;
+    for _ in 0..n {
+        let s = Stretcher::new(jk_dsp::stretcher_config(44_100))?;
+        drop(s);
+    }
+    println!("Rubber Band R3 construct + drop at 44.1 kHz: {:.2} ms each (off the render thread)", t.elapsed().as_secs_f64() * 1000.0 / n as f64);
     Ok(())
 }
 

@@ -1,0 +1,34 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later (this file); the fonts are SIL OFL 1.1.
+   Bundled fonts (docs/DESIGN.md "Typography"). The woff2 files are the official
+   upstream webfonts, unmodified; licence and provenance next to each file in
+   src/assets/fonts/<family>/ (OFL.txt, SOURCE.txt). No local() and no network:
+   the app always uses exactly these files, on every machine.
+
+   Safari 16.4 / Chrome 120: woff2 variable fonts with a weight range work in both. */
+
+/* Condensed display face: plates, labels, title strips. */
+@font-face {
+  font-family: "Oswald";
+  src: url("../assets/fonts/oswald/Oswald-Variable.woff2") format("woff2");
+  font-weight: 200 700;
+  font-style: normal;
+  font-display: block;
+}
+
+/* Lyrics face: designed for legibility (clear letter shapes, large x-height). */
+@font-face {
+  font-family: "Atkinson Hyperlegible Next";
+  src: url("../assets/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-Variable.woff2") format("woff2");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: block;
+}
+
+/* Retro script, used only for the app's own badge. */
+@font-face {
+  font-family: "Pacifico";
+  src: url("../assets/fonts/pacifico/Pacifico-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}

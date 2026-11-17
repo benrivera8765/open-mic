@@ -8,8 +8,8 @@ use std::fmt;
 /// Everything that can go wrong while starting, running or stopping a recording.
 #[derive(Debug)]
 pub enum RecorderError {
-    /// The backend for this platform exists in the API but has not been written
-    /// yet (Windows WASAPI loopback, at the time of writing).
+    /// A backend feature that exists in the API but has not been written yet.
+    /// (No current backend returns it; kept so the API stays stable.)
     NotImplemented(&'static str),
     /// This platform or OS version cannot capture system audio at all.
     Unsupported(String),

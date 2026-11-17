@@ -9,14 +9,27 @@
 #      different drive letter made with `subst`, deleting <root>/Settings before
 #      each run so each run must create its own state (the delete is retried until
 #      the previous run's WebView2 processes have let go; see clear_settings).
+#      Run 1 is started with WEBVIEW2_USER_DATA_FOLDER pointing outside the stick:
+#      the app must ignore it (the profile stays in <root>/Settings, the other folder
+#      is never created).
+#   3b. Forces a start-up failure (Settings/webview-windows is a file, so the web view
+#      profile cannot be created) and checks that the app exits with code 1 and
+#      writes Settings/logs/startup-error.txt (no dialog: --smoke-test is unattended).
 #   4. Checks each report (Settings/smoke-test.json) and repeats the snapshots.
-#      Any new entry fails the test, with one documented exception: Explorer's
-#      MuiCache (HKCU\Software\Classes\Local Settings\...\Shell\MuiCache). Windows
-#      Explorer records the display name of EVERY program that shows a taskbar
-#      window there; the program itself writes nothing. Control experiment
-#      (2026-11-17): a 20-line Win32 program importing only kernel32/user32/msvcrt
-#      got the same entry when its window was shown, and none when it stayed
-#      hidden. These entries are listed separately and do not fail the test.
+#      Any new entry fails the test, with two documented exceptions, both written by
+#      Windows itself, never by the app:
+#      - Explorer's MuiCache (HKCU\Software\Classes\Local Settings\...\Shell\MuiCache).
+#        Windows Explorer records the display name of EVERY program that shows a
+#        taskbar window there. Control experiment (2026-11-17): a 20-line Win32
+#        program importing only kernel32/user32/msvcrt got the same entry when its
+#        window was shown, and none when it stayed hidden.
+#      - The audio service's per-application store (HKCU\Software\Microsoft\Internet
+#        Explorer\LowRegistry\Audio\PolicyConfig\PropertyStore\<id>), keyed by the exe
+#        path, written by Windows for EVERY program that opens an audio stream
+#        (per-app volume and device memory). The app's audio engine opens the output
+#        device at start-up. Control (2026-11-17): the same store already held entries
+#        for jukeoke-cli.exe and other test builds before this script ran.
+#      These entries are listed separately and do not fail the test.
 #
 # Usage (Git Bash, after `source scripts/devenv.sh`):
 #   app/scripts/portable-smoke-test.sh path/to/Jukeoke.exe [root]
@@ -44,12 +57,12 @@ registry_matches() {
 }
 
 snapshot() { # $1: output file (audited), $2: output file (Explorer shell cache, informational)
-  local muicache='\\Shell\\MuiCache' registry
+  local muicache='\\Shell\\MuiCache|\\Audio\\PolicyConfig\\PropertyStore' registry
   registry="$(registry_matches)"
   {
     echo "--- files and folders named *jukeoke* under %LOCALAPPDATA% and %APPDATA%"
     find "$local_appdata" "$roaming_appdata" -iname '*jukeoke*' 2>/dev/null | sort
-    echo "--- HKCU keys, values and data containing 'jukeoke' (except Explorer's MuiCache)"
+    echo "--- HKCU keys, values and data containing 'jukeoke' (except Windows' own per-program caches, see above)"
     grep -v -E "$muicache" <<<"$registry" || true
   } >"$1"
   grep -E "$muicache" <<<"$registry" >"$2" || true
@@ -105,8 +118,16 @@ run_smoke() { # $1: label, $2: exe path to start, $3: expected portable root (Wi
 echo "== snapshot before"
 snapshot "$reports/before.txt" "$reports/muicache-before.txt"
 
-echo "== run 1: from $(cygpath -w "$root")"
-run_smoke "run1-original-path" "$root/Windows/Jukeoke.exe" "$(cygpath -w "$root")"
+echo "== run 1: from $(cygpath -w "$root"), with WEBVIEW2_USER_DATA_FOLDER pointing elsewhere"
+elsewhere="$root-webview-elsewhere"
+rm -rf "$elsewhere"
+WEBVIEW2_USER_DATA_FOLDER="$(cygpath -w "$elsewhere")"   run_smoke "run1-original-path" "$root/Windows/Jukeoke.exe" "$(cygpath -w "$root")"
+if [[ -e "$elsewhere" ]]; then
+  echo "[run1] FAIL: WEBVIEW2_USER_DATA_FOLDER was obeyed: $(cygpath -w "$elsewhere") exists"
+  failures=$((failures + 1))
+else
+  echo "[run1] OK: WEBVIEW2_USER_DATA_FOLDER was ignored; the profile stayed in Settings/"
+fi
 
 echo "== run 2: through a subst drive letter"
 drive=""
@@ -124,6 +145,24 @@ else
   echo "[subst] $drive removed"
 fi
 
+echo "== run 3: start-up failure must be reported, not silent"
+if clear_settings "run3"; then
+  mkdir -p "$root/Settings"
+  printf 'not a folder' >"$root/Settings/webview-windows"
+  "$root/Windows/Jukeoke.exe" --smoke-test >"$reports/run3-startup-failure.stdout" 2>&1
+  code=$?
+  report="$root/Settings/logs/startup-error.txt"
+  if [[ $code -eq 1 && -f "$report" ]] && grep -q "could not start" "$report"; then
+    echo "[run3] OK: exit code 1 and Settings/logs/startup-error.txt:"
+    sed -n '1,12p' "$report" | tr -d '' | sed 's/^/        /'
+    cp "$report" "$reports/run3-startup-error.txt"
+  else
+    echo "[run3] FAIL: exit code $code; report present: $([[ -f "$report" ]] && echo yes || echo no)"
+    failures=$((failures + 1))
+  fi
+  rm -rf "$root/Settings"
+fi
+
 echo "== snapshot after"
 snapshot "$reports/after.txt" "$reports/muicache-after.txt"
 if diff -u "$reports/before.txt" "$reports/after.txt" >"$reports/snapshot.diff"; then
@@ -134,8 +173,8 @@ else
   failures=$((failures + 1))
 fi
 if ! diff -u "$reports/muicache-before.txt" "$reports/muicache-after.txt" >"$reports/muicache.diff"; then
-  echo "[audit] note: Explorer's MuiCache gained display-name entries (written by the shell for every"
-  echo "        program that shows a window; not by the app, see the header of this script):"
+  echo "[audit] note: Windows' own per-program caches (Explorer's MuiCache, the audio service's per-app"
+  echo "        store) gained entries; Windows writes them for every program, not the app (see the header):"
   grep '^+[^+]' "$reports/muicache.diff" | sed 's/^+/        /'
 fi
 

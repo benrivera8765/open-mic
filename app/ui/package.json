@@ -7,12 +7,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit -p . && tsc --noEmit -p tsconfig.node.json && vite build && node scripts/check-dist-syntax.mjs",
+    "build": "tsc --noEmit -p . && tsc --noEmit -p tsconfig.node.json && vite build && node scripts/check-dist-syntax.mjs && node scripts/check-dist-css.mjs",
     "check-syntax": "node scripts/check-dist-syntax.mjs",
     "test": "vitest run",
     "tauri": "cd .. && tauri",
     "app:dev": "cd .. && tauri dev -- --no-default-features",
-    "icons": "tauri icon ../src-tauri/icons/source/app-icon.svg -o ../src-tauri/icons && node scripts/prune-icons.mjs"
+    "icons": "tauri icon ../src-tauri/icons/source/app-icon.svg -o ../src-tauri/icons && node scripts/prune-icons.mjs",
+    "check-css": "node scripts/check-dist-css.mjs",
+    "screenshots": "node scripts/screenshots.mjs",
+    "extract-demo-lyrics": "node scripts/extract-jksong-lyrics.mjs",
+    "real-app-check": "node scripts/real-app-check.mjs",
+    "real-app-screens": "node scripts/real-app-screens.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.5",
@@ -24,6 +29,10 @@
     "@tauri-apps/cli": "2.12.5",
     "@types/node": "25.9.9",
     "acorn": "8.19.0",
+    "caniuse-lite": "1.0.30001826",
+    "happy-dom": "21.0.4",
+    "playwright-core": "1.64.1",
+    "postcss": "8.5.33",
     "typescript": "7.0.2",
     "vite": "8.3.8",
     "vitest": "5.1.0"

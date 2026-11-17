@@ -114,8 +114,8 @@ fn deterministic_and_matches_golden() {
         let gold_hash = std::fs::read_to_string(&hash_path).unwrap();
         let gold_hash = gold_hash.split_whitespace().next().unwrap().to_string();
         assert_eq!(gold.len(), bytes.len(), "{}: length differs from golden", c.name);
-        let g: Vec<f32> = gold.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
-        let o: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        let g: Vec<f32> = gold.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        let o: Vec<f32> = bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
         let mut max_abs = 0.0f32;
         let (mut e_diff, mut e_sig) = (0.0f64, 0.0f64);
         let mut differing = 0usize;

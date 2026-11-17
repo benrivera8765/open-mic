@@ -31,6 +31,18 @@ pub enum SourceEncoding {
     },
 }
 
+impl SourceEncoding {
+    /// The short name used by the app API (`docs/APP_API.md` section 8,
+    /// `RecorderStatus.format.sample_format`): `"f32"`, `"i16"` or `"i32"`.
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            SourceEncoding::Float32 { .. } => "f32",
+            SourceEncoding::Int16 { .. } => "i16",
+            SourceEncoding::Int32 { .. } => "i32",
+        }
+    }
+}
+
 impl fmt::Display for SourceEncoding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (name, interleaved) = match self {
@@ -87,6 +99,19 @@ pub struct OutputDeviceInfo {
     pub physical_bits: Option<u32>,
     /// Channels of the device's physical output format, if known.
     pub physical_channels: Option<u32>,
+}
+
+/// An output device whose sound can be recorded (Windows: an active render
+/// endpoint; pass `id` as `RecorderConfig::device_id`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaptureDevice {
+    /// The OS endpoint id (Windows: the `IMMDevice` id string, stable across
+    /// restarts for the same device).
+    pub id: String,
+    /// Device name as the OS shows it.
+    pub name: String,
+    /// True for the current default output device.
+    pub is_default: bool,
 }
 
 /// What the backend decided when it started, for the UI, logs and self-check.
