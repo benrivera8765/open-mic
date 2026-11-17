@@ -1,0 +1,14 @@
+{
+  "name": "Jukeoke",
+  "name_note": "Placeholder name (WORK_ORDER section 11, #1). Check for conflicts before any public release.",
+  "bundle_id": "org.jukeoke.app",
+  "song_extension": "jksong",
+  "song_magic_note": "The song file magic bytes are NOT renamed with the app; see docs/SONG_FORMAT.md.",
+  "tagline": "Karaoke from any song, on a bubbler jukebox.",
+  "also_edit": [
+    "app/src-tauri/tauri.conf.json  (productName, identifier, mainBinaryName)",
+    "app/src-tauri/Cargo.toml       (package name only if you want the binary renamed)",
+    "app/ui/index.html              (<title>)",
+    "studio/pyproject.toml          (description only)"
+  ]
+}
