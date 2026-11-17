@@ -94,13 +94,16 @@ PITCH BUS out + DRUM BUS out --> resampler (only if device rate != song rate)
 ```
 
 - **Key shift 0 = bit-transparent path.** At 0 semitones the pitch bus bypasses Rubber
-  Band through a delay line of the same latency, so the output equals the plain mix.
-  Rubber Band keeps running (fed the same input) so a change of key can crossfade
-  (about 40 ms, equal-power) between the bypass and the shifted path without a click.
-  Changes between two non-zero shifts use Rubber Band's own smooth `setPitchScale`.
+  Band through a delay line of the same latency, so the output equals the plain mix
+  (measured: difference 0).
+- **Key changes** (DECISIONS D-31): each key uses its own fixed-pitch R3 instance. A change
+  builds a fresh instance in the render worker, primes it with 4096 frames of the real
+  audio before the change, and crossfades (40 ms, equal-power) from the old path to the
+  new one. Rubber Band is idle at 0. The change is heard about 280 ms after the click.
 - **One latency for the whole graph.** Every path is delayed to the same total latency L
-  (Rubber Band start delay). Drums, bypass and shifted paths line up to the sample;
-  the clock subtracts L. This is proven by an impulse test (WORK_ORDER section 7, trap 6).
+  (longest R3 FFT x 9/8: 4608 frames at 44.1/48 kHz). Drums and the bypass path are
+  delayed by exactly L; per-key correction tables remove R3's systematic transient bias.
+  The clock subtracts L. Proven by the impulse tests in docs/benchmarks/dsp.md.
 - **Threads.** (1) Stem readers: one I/O thread decodes FLAC ahead into per-stem SPSC
   rings holding at least 3 s, so a slow USB stick cannot starve playback.
   (2) Render worker (raised priority: MMCSS "Pro Audio" on Windows, QoS user-interactive
