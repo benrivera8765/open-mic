@@ -21,17 +21,16 @@ Read this first in every session. Then DECISIONS.md, then docs/ARCHITECTURE.md.
   - Tauri 2 shell on the GNU target: launches, renders in WebView2, portable from a subst drive letter, own WebView2 loader, 6.0 MB exe.
   - Song file library jk-format + Python jksong.py, cross-tested (tests/conformance).
   - Mac: CI workflows, build-mac.sh, minos check, ScreenCaptureKit recorder: TYPE-CHECKED ONLY (no Mac, no GitHub).
-- 2026-11-17 Lyrics/alignment (not yet committed, verifier was re-running): JamendoLyrics 20 songs, word-onset median 0.036 s, 94-95 % within 0.3 s; wav2vec2-large-960h-lv60-self (Apache-2.0); faster-whisper large-v3-turbo transcription.
+- 2026-11-17 Lyrics/alignment/analysis (commit 92d3d25, verified): JamendoLyrics 20 songs, word-onset median 0.036 s, 94-95 % within 0.3 s; wav2vec2-large-960h-lv60-self (Apache-2.0); faster-whisper large-v3-turbo transcription.
 
 ## In flight
 
 - Workflow `jukeoke-stage0` (wf_6c491af5-270): only the separation build is still running (restarted after an API error at 08:26); then its verifier. Commits pending: studio/, MODELS.md, docs/benchmarks/separation.md.
-- Workflow `jukeoke-format-align` (wf_6acf924b-7ee): lyrics verifier running (restarted). Commit pending: studio/ lyrics files, docs/benchmarks/alignment.md; docs/benchmarks/analysis.md content is in the build report's next_steps (a hook blocked the subagent from writing it): write it from there.
 - Workflow `jukeoke-stage1-app` (wf_811279e5-4e3): engine on .jksong + export + demo song + 20-min run; Windows WASAPI loopback recorder; app core implementing docs/APP_API.md (+ fake Studio, self-check, startup error dialog); functional UI + lyrics ticker + sync editor; jukebox skin; then integrator + verifiers.
 
 ## Next
 
-- Studio stage (after separation + lyrics land): pipeline orchestration (PyAV decode, tags/cover, separate, lyrics, align, analyse, write), protocol server (docs/STUDIO_PROTOCOL.md), model registry + downloads with sha256, relocatable Python runtime in dist/Windows/Studio, test-songs end to end (folder was empty), speed for a 4-min song.
+- Studio stage (after separation lands): merge Python deps into studio/pyproject.toml (list in the lyrics build report: regex, mutagen, av, transformers, faster-whisper, nvidia-cublas-cu12 (win32), librosa, soxr, numpy, soundfile); add `lyrics.source_hint` to job.submit so lookup results are recorded as `online:lrclib` (protocol gap); realign should drop only the infeasible anchor, not all; resolve_lyrics('auto') should fall through when given LRC/text normalises to nothing; register models in MODELS.md (wav2vec2-large-960h-lv60-self default, HuBERT option, faster-whisper large-v3-turbo default, large-v3 optional); pipeline orchestration (PyAV decode, tags/cover, separate, lyrics, align, analyse, write), protocol server (docs/STUDIO_PROTOCOL.md), model registry + downloads with sha256, relocatable Python runtime in dist/Windows/Studio, test-songs end to end (folder was empty), speed for a 4-min song.
 - Stage 7: dist/ layout (WO 4.8), size budget, portable audit, weak-computer tests (GPU hidden, Studio removed), README, CONTRIBUTING, THIRD_PARTY_LICENSES.md, MODELS.md final, listening + MacBook checklists, HANDOFF.md.
 - Stage 0 verifier minor items still open: recorder CI probe flags, ci-compare-renders single-platform pass, THIRD_PARTY_LICENSES.md missing.
 
