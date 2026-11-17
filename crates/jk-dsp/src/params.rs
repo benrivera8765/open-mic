@@ -37,6 +37,15 @@ pub struct StemBlock<'a> {
     pub stems: [[&'a [f32]; CHANNELS]; 4],
 }
 
+/// Stems of roles the graph has no slot for (roles added by newer song files), summed
+/// by the caller at unity gain: `pitched` goes into the pitch bus, `unpitched` into the
+/// drum bus (SONG_FORMAT 4.2 forward-compatibility rule). Slices at least block long.
+#[derive(Clone, Copy)]
+pub struct ExtraBlock<'a> {
+    pub pitched: [&'a [f32]; CHANNELS],
+    pub unpitched: [&'a [f32]; CHANNELS],
+}
+
 /// What the singer controls. All gains are linear amplitude factors.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MixParams {

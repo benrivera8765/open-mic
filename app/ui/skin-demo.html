@@ -1,0 +1,18 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Jukebox skin demo: every skin component in the full frame, for judging the
+     look in a browser alone. Run `npm run dev` in app/ui and open /skin-demo.html.
+     Not part of the app build (vite.config.ts builds index.html only).
+     The %APP_NAME% placeholders are filled from branding.json by the Vite plugin. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="application-name" content="%APP_NAME%" />
+    <title>%APP_NAME% - skin demo</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/skin/demo/main.tsx"></script>
+  </body>
+</html>

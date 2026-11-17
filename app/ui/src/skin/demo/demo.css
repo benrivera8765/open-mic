@@ -1,0 +1,255 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Styles for skin-demo.html only (placeholder screens round the skin components). */
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  background: #000;
+}
+
+body {
+  overflow: hidden;
+}
+
+/* ---- library */
+.demo-library {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  gap: clamp(8px, 1.4vh, 30px);
+  padding: 0 clamp(14px, 2.2vw, 84px) clamp(10px, 1.6vh, 35px);
+}
+
+.demo-topbar {
+  display: flex;
+  align-items: center;
+  gap: clamp(10px, 1.2vw, 46px);
+  padding: 0 clamp(30px, 4vw, 154px);
+}
+
+.demo-search {
+  flex: 0 1 26em;
+  min-width: 8em;
+}
+
+.demo-sort {
+  display: flex;
+  gap: 8px;
+}
+
+.demo-free {
+  margin-left: auto;
+  font-family: var(--jk-font-display);
+  font-size: clamp(11px, 1.5vh, 32px);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(246, 239, 217, 0.7);
+}
+
+.demo-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px;
+}
+
+/* ---- stage (placeholder ticker) */
+.demo-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.demo-stage-info {
+  display: flex;
+  justify-content: center;
+  gap: 1.6em;
+  font-family: var(--jk-font-display);
+  font-size: clamp(12px, 1.7vh, 37px);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(246, 239, 217, 0.75);
+}
+
+.demo-stage-title {
+  color: var(--jk-cream);
+  font-weight: 600;
+}
+
+.demo-stage-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.demo-ticker {
+  position: relative;
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-size: clamp(36px, 7.5vh, 162px);
+  font-weight: 600;
+  line-height: 1;
+}
+
+.demo-ticker-sung,
+.demo-ticker-up {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-55%);
+  white-space: nowrap;
+}
+
+.demo-ticker-sung {
+  right: 67%;
+  color: var(--jk-pink);
+  text-shadow: 0 0 18px rgba(255, 61, 139, 0.45);
+}
+
+.demo-ticker-up {
+  left: 33%;
+  color: var(--jk-cream);
+}
+
+.demo-marker {
+  position: absolute;
+  left: 33%;
+  top: 22%;
+  bottom: 22%;
+  width: 3px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #ffffff, #b9bcc4 50%, #ffffff);
+  box-shadow:
+    0 0 8px rgba(255, 61, 139, 0.9),
+    0 0 22px rgba(255, 61, 139, 0.6);
+}
+
+.demo-stage-note {
+  text-align: center;
+  padding-bottom: 12px;
+  font-family: var(--jk-font-display);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  color: rgba(246, 239, 217, 0.4);
+}
+
+/* ---- components gallery */
+.demo-gallery {
+  height: 100%;
+  overflow: auto;
+  padding: 0 clamp(20px, 4vw, 154px) 20px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr));
+  gap: 14px 28px;
+  align-content: start;
+}
+
+.demo-gallery h2 {
+  margin: 0 0 8px;
+  font-family: var(--jk-font-display);
+  font-weight: 500;
+  font-size: 13px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(246, 239, 217, 0.55);
+}
+
+.demo-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+.demo-ornaments {
+  align-items: center;
+}
+
+.demo-badge-large {
+  width: 220px;
+  height: 88px;
+}
+
+.demo-medallion {
+  width: 84px;
+  height: 84px;
+}
+
+.demo-grille-panel {
+  width: 120px;
+  height: 90px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--jk-chrome);
+}
+
+.demo-grille-panel .jk-grille {
+  border-radius: 7px;
+}
+
+.demo-crest {
+  width: 130px;
+  height: 65px;
+}
+
+.demo-strips {
+  display: grid;
+  gap: 10px;
+}
+
+/* ---- console layout */
+.demo-console {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: clamp(10px, 2vw, 77px);
+  width: 100%;
+}
+
+.demo-console-group {
+  display: flex;
+  align-items: center;
+  gap: clamp(8px, 1vw, 38px);
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.demo-console-group:last-child {
+  justify-content: flex-end;
+}
+
+.demo-transport {
+  display: flex;
+  gap: 6px;
+}
+
+.demo-mixer {
+  gap: clamp(10px, 1.4vw, 54px);
+}
+
+/* ---- demo controls (not part of the skin) */
+.demo-hud {
+  position: fixed;
+  left: 8px;
+  bottom: 8px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #ddd;
+  font: 12px system-ui, sans-serif;
+}
+
+.demo-hud-title {
+  font-weight: 600;
+}
+
+.demo-hud select,
+.demo-hud input {
+  font: inherit;
+}

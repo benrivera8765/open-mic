@@ -6,5 +6,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    std::process::exit(jukeoke_lib::run());
+    // The dialog plugin is registered here rather than in the library: its message
+    // dialogs import TaskDialogIndirect (Common Controls v6), which only executables
+    // with our application manifest can load, and the library's unit-test executable
+    // has no manifest (see build.rs).
+    std::process::exit(jukeoke_lib::run(|builder| builder.plugin(tauri_plugin_dialog::init())));
 }

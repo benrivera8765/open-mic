@@ -26,9 +26,11 @@
 //! Fresh instances: Rubber Band 4.0.0's `reset()` does not clear all R3 state (the
 //! accumulated output phase, bin classification and guidance survive; measured with the
 //! `probe_reset` example: a used-then-reset stretcher differs from a fresh one by up to 0.25
-//! in sample value). A restarted path therefore gets a newly constructed stretcher
-//! (measured 2.4 ms to create + drop at 44.1 kHz on a Ryzen 7 9700X). This happens in the
-//! render-ahead worker, never in the device callback.
+//! in sample value). A restarted path therefore gets a never-used stretcher (measured
+//! 2.4 ms to create + drop at 44.1 kHz on a Ryzen 7 9700X). The real-time engine builds
+//! those on a helper thread and hands them over lock-free (see `PitchGraph::offer_stretcher`),
+//! so the render worker never constructs or frees one; the offline renderer builds them
+//! inline.
 
 use crate::params::CHANNELS;
 use crate::ring::AbsRing;
@@ -82,6 +84,16 @@ pub fn transient_trim(sample_rate: u32, semitones: i32) -> i32 {
 /// `RB_QUANTUM - 1` frames of internal buffering, covered by the graph latency.
 pub const RB_QUANTUM: usize = 256;
 
+/// The Rubber Band configuration the graph's shifters use at `sample_rate` (stereo, R3,
+/// real-time, high-quality pitch, [`RB_QUANTUM`]-frame process calls). A helper thread
+/// uses it to pre-build instances off the render thread.
+pub fn stretcher_config(sample_rate: u32) -> StretcherConfig {
+    let mut cfg = StretcherConfig::new(sample_rate, CHANNELS);
+    cfg.pitch_mode = PitchMode::HighQuality;
+    cfg.max_process_size = RB_QUANTUM;
+    cfg
+}
+
 pub(crate) struct ShiftPath {
     rb: Stretcher,
     rb_cfg: StretcherConfig,
@@ -98,13 +110,16 @@ pub(crate) struct ShiftPath {
     pending_len: usize,
     /// Retrieve buffer (allocated once).
     out_scratch: [Vec<f32>; CHANNELS],
+    /// `rb` has been fed audio since it was constructed. A stretcher that has never
+    /// been fed is interchangeable with a newly constructed one (construction leaves
+    /// R3 in its `JustCreated` mode, where `set_pitch_scale` recomputes everything that
+    /// depends on the pitch), so a restart can reuse it instead of building another.
+    fed: bool,
 }
 
 impl ShiftPath {
     pub fn new(sample_rate: u32, fifo_capacity: usize) -> Result<Self, jk_rubberband::Error> {
-        let mut cfg = StretcherConfig::new(sample_rate, CHANNELS);
-        cfg.pitch_mode = PitchMode::HighQuality;
-        cfg.max_process_size = RB_QUANTUM;
+        let cfg = Self::stretcher_config(sample_rate);
         let rb = Stretcher::new(cfg)?;
         Ok(ShiftPath {
             rb,
@@ -117,20 +132,59 @@ impl ShiftPath {
             pending: [vec![0.0; RB_QUANTUM], vec![0.0; RB_QUANTUM]],
             pending_len: 0,
             out_scratch: [vec![0.0; 4096], vec![0.0; 4096]],
+            fed: false,
         })
+    }
+
+    /// The configuration every stretcher of a path at this rate is built with.
+    pub fn stretcher_config(sample_rate: u32) -> StretcherConfig {
+        stretcher_config(sample_rate)
+    }
+
+    /// True when a restart needs a new stretcher (the current one has processed audio).
+    pub fn needs_fresh(&self) -> bool {
+        self.fed
     }
 
     /// Restart this path at `semitones`, fed from absolute frame `from_abs` onward.
     /// After this, call [`feed`](Self::feed) with consecutive input starting at `from_abs`.
-    pub fn restart(&mut self, semitones: i32, drums_in: bool, from_abs: u64) {
+    ///
+    /// Rubber Band instance (see "Fresh instances" above): if the current one has never
+    /// been fed it is reused; otherwise `fresh` is used (a never-fed instance built with
+    /// [`stretcher_config`](Self::stretcher_config), e.g. by a helper thread), and only
+    /// when `fresh` is `None` is one constructed here. Returns the replaced instance, if
+    /// any, so the caller can free it off the real-time thread, and whether this call
+    /// constructed an instance itself.
+    pub fn restart(
+        &mut self,
+        semitones: i32,
+        drums_in: bool,
+        from_abs: u64,
+        fresh: Option<Stretcher>,
+    ) -> (Option<Stretcher>, Option<Stretcher>, bool) {
         self.semitones = semitones;
         self.drums_in = drums_in;
-        // A fresh stretcher (see "Fresh instances" above); fall back to reset() only if
-        // construction fails (it cannot with the validated configuration).
-        match Stretcher::new(self.rb_cfg) {
-            Ok(fresh) => self.rb = fresh,
-            Err(_) => self.rb.reset(),
+        let mut retired = None;
+        let mut unused = None;
+        let mut constructed = false;
+        if self.fed {
+            let new = match fresh {
+                Some(f) => Some(f),
+                None => {
+                    constructed = true;
+                    Stretcher::new(self.rb_cfg).ok()
+                }
+            };
+            match new {
+                Some(n) => retired = Some(std::mem::replace(&mut self.rb, n)),
+                // Construction cannot fail with the validated configuration; keep going
+                // with reset() rather than stopping playback.
+                None => self.rb.reset(),
+            }
+        } else {
+            unused = fresh;
         }
+        self.fed = false;
         self.rb.set_pitch_scale(semitones_to_scale(semitones as f64));
         let pad = self.rb.preferred_start_pad() as i64;
         let delay = self.rb.start_delay() as i64;
@@ -140,6 +194,7 @@ impl ShiftPath {
         let start = self.next_out_abs.max(0) as u64;
         self.fifo.clear(start);
         self.pending_len = 0;
+        (retired, unused, constructed)
     }
 
     /// Feed `frames` frames: `bus` (+ `drums` when this path carries the drums).
@@ -165,6 +220,7 @@ impl ShiftPath {
                     let [l, r] = &self.pending;
                     self.rb.process(&[&l[..], &r[..]], RB_QUANTUM, false);
                 }
+                self.fed = true;
                 self.pending_len = 0;
                 self.drain();
             }

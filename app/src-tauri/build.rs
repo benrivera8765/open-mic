@@ -4,7 +4,13 @@
 // 1. Checks that the literals Tauri forces into tauri.conf.json match branding.json,
 //    the single source of truth for the app name (docs/ARCHITECTURE.md section 9).
 // 2. Makes sure app/ui/dist exists, so `cargo build --workspace` works even before
-//    the UI has been built (a stub page then explains what to do).
+//    the UI has been built (a stub page then explains what to do). Debug and test
+//    builds only: a RELEASE build fails when app/ui/dist is missing or is the stub,
+//    so a shipped app can never contain the stub page (set JK_ALLOW_UI_STUB=1 to
+//    allow it, e.g. for a release-mode test run of the Rust crates alone).
+// 2b. Copies the generated demo song (tests/fixtures/generated/demo-song.jksong,
+//    made by the engine work stream) into resources/, which tauri.conf.json bundles
+//    as a resource (self-check). A missing demo song is a warning, not an error.
 // 3. On the Windows GNU target, makes Jukeoke.exe depend on Windows system DLLs only:
 //    - links the built-in WebView2 loader (native/webview2_loader.c) instead of
 //      importing Microsoft's WebView2Loader.dll;
@@ -17,10 +23,14 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "build_support/ui_dist.rs"]
+mod ui_dist;
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     check_branding(&manifest_dir);
     ensure_ui_dist(&manifest_dir);
+    copy_demo_song(&manifest_dir);
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
@@ -39,10 +49,28 @@ fn main() {
     //   the system-wide LongPathsEnabled setting for this one).
     let manifest_xml = manifest_dir.join("windows-app-manifest.xml");
     println!("cargo:rerun-if-changed={}", manifest_xml.display());
+    println!("cargo:rerun-if-changed={}", manifest_dir.join("build_support").display());
     let manifest = fs::read_to_string(&manifest_xml).expect("read windows-app-manifest.xml");
     let windows = tauri_build::WindowsAttributes::new().app_manifest(manifest);
     tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
         .expect("tauri-build failed");
+
+    // tauri-build links the resource (and so the manifest) into binaries only. The
+    // integration-test executables need it too: they link the dialog plugin, which
+    // imports TaskDialogIndirect, and that exists only in Common Controls v6, so
+    // without the manifest a test exe dies at load time with
+    // STATUS_ENTRYPOINT_NOT_FOUND. (`-tests` does not reach the library's own
+    // unit-test exe; src/lib.rs links the same resource into that one with a
+    // `#[cfg(test)] #[link]` attribute; OUT_DIR is already a link search path.) Never use the plain
+    // `rustc-link-arg` form here: the bin would get the resource twice and GNU ld
+    // fails to merge the two manifests (".rsrc merge failure").
+    if target_os == "windows" && target_env == "gnu" {
+        let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+        let resource = out_dir.join("libresource.a");
+        if resource.is_file() {
+            println!("cargo:rustc-link-arg-tests={}", resource.display());
+        }
+    }
 }
 
 /// Compiles native/webview2_loader.c and links it as a whole archive into the
@@ -140,24 +168,47 @@ fn check_branding(manifest_dir: &Path) {
     }
 }
 
-/// tauri::generate_context!() embeds app/ui/dist and refuses to compile when it is
-/// missing. Write a one-page stub in that case and say so loudly; a real build runs
-/// `npm run build` in app/ui first (app/README.md).
+/// The app/ui/dist rule (build_support/ui_dist.rs): a stub page for debug and test
+/// builds, a hard error for release builds.
 fn ensure_ui_dist(manifest_dir: &Path) {
     let dist = manifest_dir.join("../ui/dist");
     println!("cargo:rerun-if-changed={}", dist.display());
-    if dist.join("index.html").is_file() {
-        return;
+    println!("cargo:rerun-if-changed={}", dist.join("index.html").display());
+    println!("cargo:rerun-if-env-changed=JK_ALLOW_UI_STUB");
+    let release = env::var("PROFILE").is_ok_and(|p| p == "release");
+    let stub_allowed = env::var("JK_ALLOW_UI_STUB").is_ok_and(|v| v == "1");
+    match ui_dist::ensure_ui_dist(&dist, release, stub_allowed) {
+        Ok(ui_dist::UiDist::Built) => {}
+        Ok(_) => println!(
+            "cargo:warning=app/ui/dist is missing: embedding a stub page (not allowed in release builds). Run `npm install && npm run build` in app/ui, then rebuild."
+        ),
+        Err(message) => panic!("{message}"),
     }
-    println!(
-        "cargo:warning=app/ui/dist is missing: embedding a stub page. Run `npm install && npm run build` in app/ui, then rebuild."
-    );
-    fs::create_dir_all(&dist).expect("create app/ui/dist");
-    fs::write(
-        dist.join("index.html"),
-        "<!doctype html><meta charset=\"utf-8\"><title>UI not built</title>\
-         <p>The web UI was not built when this binary was compiled. \
-         Run <code>npm install</code> and <code>npm run build</code> in <code>app/ui</code>, then rebuild.</p>\n",
-    )
-    .expect("write stub app/ui/dist/index.html");
+}
+
+/// Copies the generated demo song into resources/ (bundled as a Tauri resource,
+/// see tauri.conf.json `bundle.resources`), when it exists and changed.
+fn copy_demo_song(manifest_dir: &Path) {
+    let src = manifest_dir.join("../../tests/fixtures/generated/demo-song.jksong");
+    let dest_dir = manifest_dir.join("resources");
+    let dest = dest_dir.join("demo-song.jksong");
+    let Ok(src_meta) = fs::metadata(&src) else {
+        // Watch the folder (its time changes when the file appears); watching a
+        // missing file would make every build re-run this script.
+        if let Some(dir) = src.parent() {
+            println!("cargo:rerun-if-changed={}", dir.display());
+        }
+        println!(
+            "cargo:warning=tests/fixtures/generated/demo-song.jksong is missing: the self-check's demo-song item will fail until it is generated."
+        );
+        return;
+    };
+    println!("cargo:rerun-if-changed={}", src.display());
+    let same = fs::metadata(&dest).is_ok_and(|d| {
+        d.len() == src_meta.len() && d.modified().ok() >= src_meta.modified().ok()
+    });
+    if !same {
+        fs::create_dir_all(&dest_dir).expect("create resources/");
+        fs::copy(&src, &dest).expect("copy demo-song.jksong into resources/");
+    }
 }

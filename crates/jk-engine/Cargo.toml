@@ -1,6 +1,6 @@
 [package]
 name = "jk-engine"
-description = "Jukeoke real-time player: FLAC stem readers, render-ahead worker, device output (WASAPI / Core Audio), playback clock"
+description = "Jukeoke real-time player: .jksong stem streaming, render-ahead worker, device output (WASAPI / Core Audio), playback clock, offline export"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,8 +9,22 @@ publish.workspace = true
 
 [dependencies]
 jk-dsp = { path = "../jk-dsp" }
+jk-format = { path = "../jk-format" }
+jk-rubberband = { path = "../jk-rubberband" }
 symphonia = { version = "0.6", default-features = false, features = ["flac"] }
 rtrb = "0.4"
+crossbeam-channel = "0.5.17"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1"
+# STREAMINFO MD5 in the FLAC writer (jk-format's verifier requires it).
+md-5 = "0.11.0"
+# Demo-song generator: bit-reproducible sines (libm), the PNG cover (flate2, crc32fast).
+libm = "0.2.16"
+flate2 = "1.1.11"
+crc32fast = "1.5.5"
+
+[dev-dependencies]
+hound = "3.5"
 
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.27"

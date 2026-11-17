@@ -2,6 +2,8 @@
   // Type-checking only: Vite does the actual transpiling (and the lowering to the
   // browser baseline in vite.config.ts). ES2022 is the newest language level the
   // macOS 13 baseline (Safari 16.4) fully supports.
+  // Tests and Node-only helpers (*.test.ts(x), *-node.ts) are checked by
+  // tsconfig.node.json, which adds the Node types.
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
@@ -13,10 +15,12 @@
     "noEmit": true,
     "isolatedModules": true,
     "skipLibCheck": true,
+    "resolveJsonModule": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "types": ["vite/client"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/*-node.ts"]
 }

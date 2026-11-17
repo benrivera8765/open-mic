@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions of the main window. App commands (src/commands.rs) need no entry here; core:default covers the @tauri-apps/api core calls.",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "description": "Permissions of the main window. App commands (src/commands/) need no entry here; the dialog plugin is used from Rust only, so the UI gets no dialog permissions; core:default covers the @tauri-apps/api core calls (events included); set-fullscreen is for the full-screen stage.",
+  "windows": ["main", "main-retry"],
+  "permissions": ["core:default", "core:window:allow-set-fullscreen"]
 }

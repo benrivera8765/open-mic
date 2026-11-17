@@ -167,10 +167,10 @@ fn run(args: Args) -> i32 {
     let finish = |report: &str, result: &str, extra: &str, code: i32| -> i32 {
         let line = format!("SCK_PROBE result={result} {extra}");
         println!("{line}");
-        if let Some(p) = &args.report {
-            if let Err(e) = std::fs::write(p, format!("{report}{line}\n")) {
-                eprintln!("could not write report {}: {e}", p.display());
-            }
+        if let Some(p) = &args.report
+            && let Err(e) = std::fs::write(p, format!("{report}{line}\n"))
+        {
+            eprintln!("could not write report {}: {e}", p.display());
         }
         code
     };
@@ -305,8 +305,10 @@ fn run(args: Args) -> i32 {
         );
     };
     let ratio = s.frames_per_os_second_ratio();
-    // Recording length against the wall-clock capture window. Start-up
-    // latency (first buffer after start) makes this a little below 1.0.
+    // Recording length against the wall-clock capture window. The recording
+    // spans Recorder::start() to stop() (silence before the first and after
+    // the last buffer is filled), so this should be close to 1.0; the window
+    // starts after start() returned, so it is slightly shorter than Start..Stop.
     let length_vs_window = if window_s > 0.0 {
         s.media_elapsed_secs / window_s
     } else {
@@ -332,16 +334,17 @@ fn run(args: Args) -> i32 {
         .copied()
         .fold(0.0f32, f32::max);
     let mut tone_hz = None;
-    if args.tone && done.file.is_some() {
-        if let Ok((_, data)) = jk_recorder::wav::read_wav_f32(&out) {
-            tone_hz =
-                estimate_frequency(&data, usize::from(format.channels), 0, format.sample_rate);
-        }
+    if args.tone
+        && done.file.is_some()
+        && let Ok((_, data)) = jk_recorder::wav::read_wav_f32(&out)
+    {
+        tone_hz = estimate_frequency(&data, usize::from(format.channels), 0, format.sample_rate);
     }
     let extra = format!(
         "permission={permission:?} rate={} channels={} source=\"{}\" frames={} os_span_s={} ratio={} \
          window_s={window_s:.3} length_vs_window={length_vs_window:.4} peak_dbfs={:.2} \
-         clipped={} gaps={} gap_frames={} dropped={} tone_hz={}",
+         clipped={} gaps={} gap_frames={} dropped={} tone_hz={} head={} tail={} \
+         length_vs_start_stop={} edge_refused={}",
         format.sample_rate,
         format.channels,
         format.source,
@@ -354,7 +357,12 @@ fn run(args: Args) -> i32 {
         s.gap_events,
         s.gap_frames,
         s.dropped_frames,
-        tone_hz.map_or("n/a".into(), |f| format!("{f:.2}"))
+        tone_hz.map_or("n/a".into(), |f| format!("{f:.2}")),
+        s.head_fill_frames,
+        s.tail_fill_frames,
+        s.length_vs_start_stop_ratio()
+            .map_or("n/a".into(), |r| format!("{r:.6}")),
+        s.edge_fill_refused
     );
     if !args.keep {
         let _ = std::fs::remove_file(&out);
@@ -365,11 +373,11 @@ fn run(args: Args) -> i32 {
         say!("verdict: capture error: {e}");
         return finish(&report, "error", &extra, 1);
     }
-    if let Some(r) = ratio {
-        if (r - 1.0).abs() > COUNT_TOLERANCE {
-            say!("verdict: sample count does not match the OS clock (ratio {r:.6})");
-            return finish(&report, "count_mismatch", &extra, 4);
-        }
+    if let Some(r) = ratio
+        && (r - 1.0).abs() > COUNT_TOLERANCE
+    {
+        say!("verdict: sample count does not match the OS clock (ratio {r:.6})");
+        return finish(&report, "count_mismatch", &extra, 4);
     }
     if args.tone {
         let ok = tone_hz.is_some_and(|f| (f - TONE_HZ).abs() < 2.0);

@@ -13,50 +13,59 @@
 //!
 //! The stream lives on its own thread because cpal streams are not `Send` on every
 //! backend. Core Audio's I/O thread calls the data callback, which only runs [`Filler`].
+//! Device ids on macOS are the device names (cpal 0.16 has no stable id).
+//!
+//! Device loss: cpal reports `StreamError::DeviceNotAvailable` through the error
+//! callback; it sets `device_failed`, the thread stops the stream and returns an error.
 
-use std::sync::atomic::Ordering::Relaxed;
-use std::sync::mpsc;
-use std::thread::JoinHandle;
+use std::sync::atomic::{AtomicBool, Ordering::*};
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use super::{DeviceFeed, DeviceInfo, Filler, OutputRequest};
+use super::{DeviceFeed, Filler, OpenOutput, OutputRequest, StreamInfo};
 
-pub struct CoreAudioOutput {
-    pub info: DeviceInfo,
-    pub feed_tx: mpsc::Sender<DeviceFeed>,
-    pub thread: JoinHandle<Result<(), String>>,
+/// The output device named `id`, or the default for `None`.
+pub(crate) fn find_device(host: &cpal::Host, id: Option<&str>) -> Result<cpal::Device, String> {
+    match id {
+        None => host.default_output_device().ok_or_else(|| "no default output device".to_string()),
+        Some(id) => host
+            .output_devices()
+            .map_err(|e| e.to_string())?
+            .find(|d| d.name().map(|n| n == id).unwrap_or(false))
+            .ok_or_else(|| format!("device {id} not found")),
+    }
 }
 
-pub fn open(req: OutputRequest) -> Result<CoreAudioOutput, String> {
-    let (info_tx, info_rx) = mpsc::channel::<Result<DeviceInfo, String>>();
+pub fn open(req: OutputRequest) -> Result<OpenOutput, String> {
+    let (info_tx, info_rx) = mpsc::channel::<Result<StreamInfo, String>>();
     let (feed_tx, feed_rx) = mpsc::channel::<DeviceFeed>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop2 = stop.clone();
     let thread = std::thread::Builder::new()
         .name("jk-coreaudio-out".into())
-        .spawn(move || device_thread(req, info_tx, feed_rx))
+        .spawn(move || device_thread(req, info_tx, feed_rx, stop2))
         .map_err(|e| e.to_string())?;
     let info = info_rx.recv().map_err(|_| "device thread died".to_string())??;
-    Ok(CoreAudioOutput { info, feed_tx, thread })
+    Ok(OpenOutput { info, feed_tx, thread, stop })
 }
 
 fn device_thread(
-    _req: OutputRequest,
-    info_tx: mpsc::Sender<Result<DeviceInfo, String>>,
+    req: OutputRequest,
+    info_tx: mpsc::Sender<Result<StreamInfo, String>>,
     feed_rx: mpsc::Receiver<DeviceFeed>,
+    stop: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let host = cpal::default_host();
-    let device = match host.default_output_device() {
-        Some(d) => d,
-        None => {
-            let e = "no default output device".to_string();
-            let _ = info_tx.send(Err(e.clone()));
-            return Err(e);
-        }
-    };
-    let supported = match device.default_output_config() {
-        Ok(c) => c,
+    let setup = (|| -> Result<_, String> {
+        let device = find_device(&host, req.device_id.as_deref())?;
+        let supported = device.default_output_config().map_err(|e| format!("default output config: {e}"))?;
+        Ok((device, supported))
+    })();
+    let (device, supported) = match setup {
+        Ok(v) => v,
         Err(e) => {
-            let e = format!("default output config: {e}");
             let _ = info_tx.send(Err(e.clone()));
             return Err(e);
         }
@@ -70,10 +79,12 @@ fn device_thread(
         buffer_size: cpal::BufferSize::Default,
     };
     let name = device.name().unwrap_or_else(|_| "default output".to_string());
-    let info = DeviceInfo {
+    let info = StreamInfo {
+        id: name.clone(),
         name,
         backend: "CoreAudio (cpal)",
         share_mode: "shared",
+        exclusive: false,
         sample_rate: rate,
         channels,
         sample_format: "f32".into(),
@@ -82,47 +93,56 @@ fn device_thread(
     };
     let _ = info_tx.send(Ok(info));
 
-    let mut feed = Some(feed_rx.recv().map_err(|_| "no pipeline".to_string())?);
-    let go = feed.as_ref().unwrap().go.clone();
-    let running = feed.as_ref().unwrap().running.clone();
-    let mut filler = Filler::new(&mut feed, channels).ok_or("no feed")?;
-    let go_cb = go.clone();
+    let feed = loop {
+        if stop.load(Acquire) {
+            return Ok(());
+        }
+        match feed_rx.recv_timeout(Duration::from_millis(5)) {
+            Ok(f) => break f,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(_) => return Ok(()),
+        }
+    };
+    let shared = feed.shared.clone();
+    let shared_err = feed.shared.clone();
+    let mut filler = Filler::new(feed, channels, rate);
     let stream = device
         .build_output_stream::<f32, _, _>(
             &config,
             move |data: &mut [f32], cb: &cpal::OutputCallbackInfo| {
-                if !go_cb.load(Relaxed) {
-                    data.iter_mut().for_each(|v| *v = 0.0);
-                    return;
-                }
                 // cpal: `playback` is when the FIRST frame of `data` reaches the DAC.
-                // `Filler::fill` adds all of `data` to `frames_delivered` and the clock
-                // subtracts the latency we pass, so the latency must also cover the
-                // frames of this buffer (as on WASAPI, where it is the queued padding
-                // including the frames just written). Without them the macOS clock would
-                // run one device buffer (about 10 ms) ahead of the audio.
+                // The filler subtracts the latency we pass from the write head (the end
+                // of `data`), so it must also cover the frames of this buffer.
                 let ts = cb.timestamp();
                 let lat = ts.playback.duration_since(&ts.callback).unwrap_or_default();
                 let lat_frames = (lat.as_secs_f64() * rate as f64).round() as u32;
                 let buf_frames = (data.len() / channels.max(1)) as u32;
                 filler.fill(data, lat_frames + buf_frames);
             },
-            |e| eprintln!("core audio stream error: {e}"),
+            move |e| {
+                // Not real-time: cpal calls this from its own thread.
+                if matches!(e, cpal::StreamError::DeviceNotAvailable) {
+                    shared_err.device_failed.store(true, Release);
+                }
+                eprintln!("core audio stream error: {e}");
+            },
             None,
         )
         .map_err(|e| format!("build_output_stream: {e}"))?;
-    while !go.load(Relaxed) {
-        if !running.load(Relaxed) {
-            return Ok(());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
     stream.play().map_err(|e| format!("play: {e}"))?;
-    while running.load(Relaxed) {
-        std::thread::sleep(std::time::Duration::from_millis(5));
+    let mut result = Ok(());
+    while !stop.load(Acquire) {
+        if shared.simulate_device_loss.load(Acquire) {
+            shared.device_failed.store(true, Release);
+        }
+        if shared.device_failed.load(Acquire) {
+            result = Err("device lost".to_string());
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
     drop(stream);
-    Ok(())
+    result
 }
 
 /// QoS user-interactive for the render worker (Core Audio's own I/O thread is already

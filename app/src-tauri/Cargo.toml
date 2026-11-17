@@ -19,6 +19,9 @@ crate-type = ["rlib"]
 [[bin]]
 name = "jukeoke"
 path = "src/main.rs"
+# main.rs is a two-line wrapper with no tests; building no test exe for it also keeps
+# the Windows resource (manifest) from being linked twice (see build.rs).
+test = false
 
 [features]
 default = ["custom-protocol"]
@@ -35,11 +38,54 @@ cc = "1.2"
 
 [dependencies]
 tauri = { version = "2.12.6", features = [] }
+# Native file and folder pickers (pick_files, the macOS "choose the stick" picker),
+# called from Rust only; the web UI gets no dialog permissions.
+tauri-plugin-dialog = "2.8.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Windows only: WebView2 access for the smoke-test screenshot (src/screenshot.rs).
-# Same versions as Tauri's own (wry), so the COM types are identical.
+# The Rust core's own crates.
+jk-format = { path = "../../crates/jk-format" }
+jk-engine = { path = "../../crates/jk-engine" }
+jk-dsp = { path = "../../crates/jk-dsp" }
+jk-recorder = { path = "../../crates/jk-recorder" }
+
+# Engine events arrive on a crossbeam channel (the engine API); the clock thread
+# selects over it with a timeout.
+crossbeam-channel = "0.5.15"
+# Library folder watcher (library://changed).
+notify = "8.2.2"
+# Cover thumbnails: decode JPEG / PNG and downscale. No other formats are compiled in.
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+# data: URLs for cover thumbnails.
+base64 = "0.22.1"
+
+# Windows only: WebView2 access for the smoke-test screenshot (src/screenshot.rs),
+# the startup error dialog (MessageBoxW), OS version, memory and disk space queries,
+# and write-through renames (src/fs_atomic.rs). Same versions as Tauri's own (wry),
+# so the COM types are identical.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39.1"
-windows = { version = "0.62.2", features = ["Win32_System_Com", "Win32_UI_Shell"] }
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_SystemInformation",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
+    "Wdk_System_SystemServices",
+] }
+
+# macOS only: the startup error dialog (NSAlert through rfd, the same crate the dialog
+# plugin uses), sysctl / statvfs / task_info (memory, disk space, OS version), and
+# NSBundle (WebKit.framework version for the self-check).
+[target.'cfg(target_os = "macos")'.dependencies]
+rfd = { version = "0.17", default-features = false }
+libc = "0.2"
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", features = ["NSBundle", "NSDictionary", "NSString", "NSObject", "NSProcessInfo"] }
+
+[dev-dependencies]
+# Nothing beyond std: tests use temporary folders under std::env::temp_dir().

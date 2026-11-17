@@ -27,9 +27,36 @@ objc2-core-audio-types = "0.3.2"
 objc2-core-audio = "0.3.2"
 objc2-core-graphics = "0.3.2"
 
+# The Windows backend (WASAPI loopback). `wasapi` and `windows` are the versions
+# jk-engine already uses (wasapi 0.27 is built on windows 0.62), so the workspace
+# compiles one copy of each.
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.27"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+    "Win32_System_Performance",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+]
+
 [[example]]
 # macOS self-check: permission state + a 3-second capture. Builds (as a stub that
 # explains itself) on every platform so `cargo build --examples` never breaks.
 name = "sck_probe"
 path = "examples/sck_probe.rs"
 test = true   # run its unit tests (tone-frequency estimator) with `cargo test`
+
+[[example]]
+# Windows self-check and benchmark: plays a -60 dBFS test signal (997 Hz sine and
+# a pseudo-random sequence) through the default device, records it via loopback
+# and checks rate, length against elapsed time, dropouts and bit-transparency
+# (docs/benchmarks/recorder.md). A stub that explains itself on other platforms.
+name = "loopback_probe"
+path = "examples/loopback_probe.rs"
+test = true

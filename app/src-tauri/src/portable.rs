@@ -26,6 +26,13 @@
 //! When the app is not portable it uses a developer folder (`$JK_BUILD/dev-data`,
 //! set by `scripts/devenv.sh`) or, for an ordinary install, the per-user app data
 //! folder that the operating system provides.
+//!
+//! macOS App Translocation (an unsigned app opened from a quarantined copy runs from a
+//! random read-only path): the stick is invisible, so the UI explains this and asks
+//! for the stick's folder; the choice is remembered in
+//! `~/Library/Application Support/<bundle id>/root.txt`, the only file the app ever
+//! writes outside the stick. Until a folder is chosen, the few settings go to a
+//! temporary folder ([`DataMode::Translocated`]).
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -38,6 +45,16 @@ pub const MAC_APP_DIR: &str = "Mac";
 pub const PORTABLE_MARKER: &str = "portable.txt";
 /// Song library folder; its presence also marks a portable root.
 pub const LIBRARY_DIR: &str = "Library";
+/// Recorder output folder.
+pub const RECORDINGS_DIR: &str = "Recordings";
+/// Exported backing tracks.
+pub const EXPORTS_DIR: &str = "Exports";
+/// Studio model weights (downloaded on first use).
+pub const MODELS_DIR: &str = "Models";
+/// Logs, inside `Settings/`.
+pub const LOGS_DIR: &str = "logs";
+/// Scratch files (Studio temp, self-check renders), inside `Settings/`.
+pub const TMP_DIR: &str = "tmp";
 /// Settings folder (also holds the WebView2 profile and diagnostics reports).
 pub const SETTINGS_DIR: &str = "Settings";
 /// WebView2 user-data folder, inside `Settings/`. Named per OS so a stick used on
@@ -58,6 +75,10 @@ pub enum DataMode {
     Dev,
     /// Ordinary install: data in the per-user app data folder.
     User,
+    /// macOS App Translocation and no root chosen yet: the stick is invisible, so the
+    /// app keeps its few settings in a throw-away temporary folder and the UI asks the
+    /// user to pick the stick's folder (WORK_ORDER section 7, trap 2).
+    Translocated,
 }
 
 /// A portable root found next to the executable, and why it counts as one.
@@ -175,6 +196,69 @@ pub fn is_translocated(exe: &Path) -> bool {
     exe.to_string_lossy().contains("/AppTranslocation/")
 }
 
+/// File (in the per-user app data folder, macOS only) remembering which folder the
+/// user picked as the stick's root while the app was translocated. It is the only
+/// thing the app ever writes outside the portable root, and only on macOS after the
+/// user chose a folder (documented in app/README.md).
+pub const ROOT_CHOICE_FILE: &str = "root.txt";
+
+/// Reads a remembered root choice and checks it still looks like a stick.
+pub fn read_root_choice(user_data_dir: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(user_data_dir.join(ROOT_CHOICE_FILE)).ok()?;
+    let root = PathBuf::from(text.trim());
+    (root.is_absolute() && looks_like_stick_root(&root, None)).then_some(root)
+}
+
+/// Saves the user's choice of root (macOS translocation only).
+pub fn write_root_choice(user_data_dir: &Path, root: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(user_data_dir)?;
+    crate::fs_atomic::write_atomic(
+        &user_data_dir.join(ROOT_CHOICE_FILE),
+        root.display().to_string().as_bytes(),
+    )
+}
+
+/// True when `dir` can be the portable root the user pointed at: it holds the Mac app
+/// folder or `portable.txt`, or a `Library/` folder - unless `dir` is the home folder,
+/// whose `~/Library` is not a song library.
+pub fn looks_like_stick_root(dir: &Path, home: Option<&Path>) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    let home = home
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+    let is_home = home.is_some_and(|h| h == dir);
+    has_marker_file(dir) || (!is_home && has_library(dir))
+}
+
+/// Turns the folder the user picked into the root: the folder itself, or its parent
+/// when the user picked the `Library` folder inside the stick.
+pub fn root_from_pick(picked: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    if looks_like_stick_root(picked, home) {
+        return Some(picked.to_path_buf());
+    }
+    if name_is(picked, LIBRARY_DIR)
+        && let Some(parent) = picked.parent()
+        && looks_like_stick_root(parent, home)
+    {
+        return Some(parent.to_path_buf());
+    }
+    None
+}
+
+/// The data folders, all under the data root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Paths {
+    pub library: PathBuf,
+    pub recordings: PathBuf,
+    pub exports: PathBuf,
+    pub settings: PathBuf,
+    pub models: PathBuf,
+    pub logs: PathBuf,
+    pub tmp: PathBuf,
+}
+
 /// Everything the rest of the app needs to know about where data goes.
 #[derive(Debug, Clone)]
 pub struct DataLayout {
@@ -220,21 +304,48 @@ impl DataLayout {
 
     /// Decides the layout for this process.
     ///
-    /// `user_data_dir` is only called when neither portable nor developer mode
-    /// applies; it returns the operating system's per-user app data folder.
+    /// `user_data_dir` returns the operating system's per-user app data folder. It is
+    /// called when neither portable nor developer mode applies, and on macOS when the
+    /// app is translocated (to read the remembered root choice, `root.txt`).
     pub fn detect(
         exe: &Path,
         dev_env: Option<PathBuf>,
         user_data_dir: impl FnOnce() -> Option<PathBuf>,
     ) -> Result<Self, String> {
         let translocated = is_translocated(exe);
+        if translocated {
+            // The stick is invisible from the translocated copy. Use the folder the
+            // user picked earlier, or a throw-away temporary folder until they pick.
+            let user = user_data_dir();
+            if let Some(root) = user.as_deref().and_then(read_root_choice) {
+                return Ok(Self::new(
+                    DataMode::Portable,
+                    Some(root.clone()),
+                    root,
+                    "macOS runs the app from a translocated copy; using the stick folder you chose".into(),
+                    true,
+                ));
+            }
+            let id = user
+                .as_deref()
+                .and_then(Path::file_name)
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "jukeoke".into());
+            return Ok(Self::new(
+                DataMode::Translocated,
+                None,
+                std::env::temp_dir().join(format!("{id}-translocated")),
+                "macOS is running the app from a temporary translocated copy, so the stick is not visible; choose the stick's folder".into(),
+                true,
+            ));
+        }
         if let Some(found) = find_portable_root(exe, Platform::current()) {
             return Ok(Self::new(
                 DataMode::Portable,
                 Some(found.root.clone()),
                 found.root,
                 found.reason,
-                translocated,
+                false,
             ));
         }
         if let Some(dev) = dev_env.filter(|p| !p.as_os_str().is_empty()) {
@@ -243,16 +354,32 @@ impl DataLayout {
                 None,
                 dev.join(DEV_DATA_DIR),
                 format!("no portable layout found; ${DEV_ENV_VAR} is set (developer machine)"),
-                translocated,
+                false,
             ));
         }
         let user = user_data_dir().ok_or("the per-user app data folder could not be determined")?;
-        let reason = if translocated {
-            "macOS is running the app from a temporary translocated copy, so the stick layout is not visible".to_string()
-        } else {
-            "no portable layout found next to the app".to_string()
-        };
-        Ok(Self::new(DataMode::User, None, user, reason, translocated))
+        Ok(Self::new(
+            DataMode::User,
+            None,
+            user,
+            "no portable layout found next to the app".into(),
+            false,
+        ))
+    }
+
+    /// The folders under the data root (docs/APP_API.md `AppInfo.paths`).
+    pub fn paths(&self) -> Paths {
+        let r = &self.data_root;
+        let settings = self.settings_dir.clone();
+        Paths {
+            library: r.join(LIBRARY_DIR),
+            recordings: r.join(RECORDINGS_DIR),
+            exports: r.join(EXPORTS_DIR),
+            models: r.join(MODELS_DIR),
+            logs: settings.join(LOGS_DIR),
+            tmp: settings.join(TMP_DIR),
+            settings,
+        }
     }
 
     /// Creates the folders this process writes to (Settings and the web view profile).
@@ -265,10 +392,129 @@ impl DataLayout {
     }
 }
 
+/// Environment variable with which WebView2 lets anyone override the profile folder
+/// the app passes in. It would move the profile off the stick, so the app removes it
+/// from its own environment before any web view exists.
+pub const WEBVIEW2_USER_DATA_ENV: &str = "WEBVIEW2_USER_DATA_FOLDER";
+
+/// Removes [`WEBVIEW2_USER_DATA_ENV`] from this process's environment (Windows), so
+/// the profile always goes where [`DataLayout::webview_data_dir`] says. Returns the
+/// value that was ignored, for diagnostics.
+///
+/// # Safety (of the call site)
+/// Must run before any other thread exists (environment changes are not
+/// thread-safe); `lib::run` calls it first thing.
+pub fn neutralise_webview2_env() -> Option<std::ffi::OsString> {
+    let old = std::env::var_os(WEBVIEW2_USER_DATA_ENV)?;
+    if cfg!(windows) {
+        // SAFETY: called from `run()` before Tauri, the engine or any of our threads
+        // start, so no other thread can be reading the environment.
+        unsafe { std::env::remove_var(WEBVIEW2_USER_DATA_ENV) };
+    }
+    Some(old)
+}
+
+/// The WebView2 profile is disposable: the UI keeps nothing in web storage (settings
+/// live in `Settings/settings.json`). When the web view cannot be created (a damaged
+/// profile, or one left by a newer WebView2 on another PC), the profile folder is
+/// renamed aside and deleted, and creation is retried once with a fresh profile.
+///
+/// Renaming first is the safe test for "nobody is using it": Windows refuses to rename
+/// a folder while any file inside it is open, so a profile still held by a lingering
+/// WebView2 process is left alone. Returns true when the profile was moved away.
+pub fn discard_webview_profile(dir: &Path) -> bool {
+    if !dir.exists() {
+        return false;
+    }
+    let aside = dir.with_file_name(format!(
+        "{}.discarded-{:08x}",
+        dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        crate::fs_atomic::random_u32()
+    ));
+    if std::fs::rename(dir, &aside).is_err() {
+        return false;
+    }
+    let _ = std::fs::remove_dir_all(&aside);
+    true
+}
+
+/// Deletes profile folders a previous [`discard_webview_profile`] could not finish
+/// deleting (best effort, at start-up, in the background).
+pub fn remove_discarded_profiles(settings_dir: &Path) {
+    let Ok(rd) = std::fs::read_dir(settings_dir) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with(WEBVIEW_WINDOWS_DIR) && name.contains(".discarded-") {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn root_choice_accepts_the_stick_or_its_library_but_never_home() {
+        let stick = scratch("choice-stick");
+        fs::create_dir_all(stick.join("Library")).unwrap();
+        fs::create_dir_all(stick.join("Mac")).unwrap();
+        let home = scratch("choice-home");
+        fs::create_dir_all(home.join("Library")).unwrap();
+        assert_eq!(root_from_pick(&stick, Some(&home)), Some(stick.clone()));
+        assert_eq!(root_from_pick(&stick.join("Library"), Some(&home)), Some(stick.clone()));
+        assert_eq!(root_from_pick(&home, Some(&home)), None, "~/Library is not a song library");
+        assert_eq!(root_from_pick(&home.join("Library"), Some(&home)), None);
+        // Remembered choice round trip.
+        let user = scratch("choice-user");
+        write_root_choice(&user, &stick).unwrap();
+        assert_eq!(read_root_choice(&user), Some(stick.clone()));
+        fs::remove_dir_all(&stick).unwrap();
+        assert_eq!(read_root_choice(&user), None, "a vanished stick is not used");
+        for d in [home, user] {
+            fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    #[test]
+    fn translocated_app_uses_the_remembered_root_or_a_temporary_folder() {
+        let exe = Path::new(
+            "/private/var/folders/xy/T/AppTranslocation/1234-ABCD/d/Jukeoke.app/Contents/MacOS/Jukeoke",
+        );
+        let user = scratch("transloc-user");
+        let user_dir = user.join("org.jukeoke.app");
+        let l = DataLayout::detect(exe, Some(PathBuf::from("/dev")), || Some(user_dir.clone())).unwrap();
+        assert_eq!(l.mode, DataMode::Translocated);
+        assert!(l.translocated);
+        assert!(l.data_root.starts_with(std::env::temp_dir()));
+        assert!(l.data_root.ends_with("org.jukeoke.app-translocated"));
+        let stick = scratch("transloc-stick");
+        fs::create_dir_all(stick.join("Library")).unwrap();
+        write_root_choice(&user_dir, &stick).unwrap();
+        let l = DataLayout::detect(exe, None, || Some(user_dir.clone())).unwrap();
+        assert_eq!(l.mode, DataMode::Portable);
+        assert_eq!(l.portable_root.as_deref(), Some(stick.as_path()));
+        assert_eq!(l.paths().library, stick.join("Library"));
+        assert_eq!(l.paths().logs, stick.join("Settings").join("logs"));
+        for d in [user, stick] {
+            fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    #[test]
+    fn discarding_a_profile_moves_it_away() {
+        let s = scratch("discard");
+        let profile = s.join(WEBVIEW_WINDOWS_DIR);
+        fs::create_dir_all(profile.join("EBWebView")).unwrap();
+        fs::write(profile.join("EBWebView").join("Local State"), b"{}").unwrap();
+        assert!(discard_webview_profile(&profile));
+        assert!(!profile.exists());
+        assert!(!discard_webview_profile(&profile), "nothing left to discard");
+        remove_discarded_profiles(&s);
+        assert_eq!(fs::read_dir(&s).unwrap().count(), 0);
+        fs::remove_dir_all(s).unwrap();
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A fresh, empty temporary folder per test (no extra crates needed).

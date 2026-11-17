@@ -28,3 +28,38 @@ source scripts/devenv.sh
 "$JK_BUILD/studio-venv/Scripts/python.exe" -I tests/fixtures/generated/make_tiny.py
 cargo run -p jk-format --example jksong-verify -- tests/fixtures/generated/tiny.jksong --strict
 ```
+
+## `demo-song.jksong` (2,425,490 bytes)
+
+The demo song: bundled with the app for the self-check, and the ground truth for the
+lyrics-ticker test. It is the one exception to the 600 KB rule above (the work order
+allows this fixture up to 3 MB: a 40 s song with four stems cannot be smaller without
+losing what it is for).
+
+- Made by `jukeoke-cli make-demo-song` (code: `crates/jk-engine/src/demo.rs`).
+  Deterministic: the same bytes every run (sha256 `1ddb91d8...9f06e0786` on Windows
+  x86-64; sines come from the pure-Rust `libm` crate, the noise from an integer PRNG).
+- "Twinkle, Twinkle, Little Star": words by Jane Taylor (1806), melody the traditional
+  French tune; both public domain. All audio is synthesised: a sine-and-harmonics
+  "voice" (`lead_vocal`), a quiet harmony a third below in lines 3-6 (`backing_vocals`),
+  a soft kick / snare / hat loop (`drums`), a chord pad (`other`).
+- 40.0 s (1,764,000 frames), 44.1 kHz, **mono** stems (SONG_FORMAT allows `channels` 1),
+  24-bit FLAC carrying 16 significant bits (every sample a multiple of 256, coded as
+  FLAC "wasted bits") to keep the file small; all gains 1.0, STREAMINFO MD5 and a seek
+  table every second. Key C major, 120 BPM, a 96x96 generated PNG cover.
+- Structure: intro 0-2 s, lines 1-4 at 2-18 s, **instrumental break 17.9-26 s** (8 s with
+  no singing), lines 5-6 at 26-34 s, outro to 40 s.
+- Lyrics: 6 lines, 139 timed graphemes, `source: user_text`, `checked: true`. Every
+  syllable is one note (0.5 s, the last of each line 1.0 s), sung over the first 90 % of
+  the note. Letter times are exact **by construction**: onset consonants 60 ms each, coda
+  consonants 60 ms each, extra vowels of the nucleus 80 ms each, and the first vowel holds
+  for the rest of the note (held vowels long); punctuation is a zero-length grapheme at
+  the end of its word. `jk_engine::demo::demo_lyrics()` returns the same data.
+
+Regenerate and check:
+
+```bash
+source scripts/devenv.sh
+cargo run --release -p jk-cli -- make-demo-song tests/fixtures/generated/demo-song.jksong
+cargo run --release -p jk-cli -- verify --strict tests/fixtures/generated/demo-song.jksong
+```
