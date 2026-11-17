@@ -50,3 +50,13 @@ One line of reasoning each. Newest at the bottom of each section. "WO" = WORK_OR
 - D-44 Web-view baseline stays Safari 16.4. The true floor on 13.6.9 is WebKit 16.6 (13.6 did not update Safari); separately installed Safari updates can reach 18.6. The self-check records the real version. Build check: every emitted JS file must parse as ES2022.
 - D-45 ScreenCaptureKit: capture at the device's nominal rate if SCK supports it (8, 16, 24 or 48 kHz), else 48 kHz with a plain note; the file format comes from the first real buffer. 2x2 px video at 1 fps, discarded. Recordings are float WAV (RF64 above 4 GiB) written progressively to the final path (header patched every 1 s) so a pulled stick loses at most ~1 s.
 - D-46 Song file library: serde_json `float_roundtrip` enabled (gains must survive a rewrite bit-exactly). Settings that do not fit the slot trigger a full rewrite with a larger slot. Unknown keys preserved at every level.
+
+## Lyrics, alignment and analysis (2026-11-17)
+
+- D-50 Alignment model: facebook/wav2vec2-large-960h-lv60-self (Apache-2.0, 1.26 GB). HuBERT-xlarge (Apache-2.0, 3.85 GB) measured the same, so the smaller one is default (WO: prefer the more permissive/smaller when close). MMS aligners excluded (CC-BY-NC-4.0).
+- D-51 Own CTC forced alignment (numpy Viterbi), no torchaudio (its forced-align API is deprecated). Aligned against the isolated lead vocal: on the full mix the mean error is 3.5 s instead of 0.21 s.
+- D-52 LRC/online line times become windows (start - 1 s, next + 1 s); a constant LRC offset (another edit of the song) is detected and corrected (0.5-15 s tested: 94.7 % within 0.3 s instead of 15 %). An offset affecting only part of a song is not solved (warning only).
+- D-53 Held notes: the last letter of a word extends through the hold while the lead stem stays within 15 dB of its loud level. Halves the median word-end error (0.101 -> 0.050 s).
+- D-54 Transcription: faster-whisper 1.2.1 / CTranslate2 4.9 with large-v3-turbo (MIT), fp16, VAD off (it dropped sung passages). WER 26.6 % on 20 songs: transcribed lyrics are always labelled unchecked. CTranslate2 needs CUDA 12 cuBLAS beside torch cu130 (nvidia-cublas-cu12, 737 MB, NVIDIA EULA, redistributable).
+- D-55 Key: librosa CQT chroma vs Albrecht-Shanahan profiles; 100 % on clear cadences, 66.7 % on synthetic pop progressions, 59-80 % on real guitar. Shown as a suggestion; the saved value is the shift in semitones, which works whatever the detected name. Tempo is informational.
+- D-56 Analysis/alignment use their own mono 16/22.05 kHz copies (soxr VHQ); these never touch a stem, so they are not listed as stem resampling.
