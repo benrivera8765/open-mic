@@ -14,6 +14,7 @@ pub mod applog;
 pub mod commands;
 pub mod core;
 pub mod debounce;
+pub mod deleted;
 pub mod engine;
 pub mod error;
 pub mod events;

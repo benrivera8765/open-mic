@@ -1480,6 +1480,205 @@ button.title-strip:hover {
   margin: 0.3rem 0;
 }
 
+/* ---------- library: deleting songs (D-230) ---------- */
+
+.title-strip__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+/* The card's delete control: faint until the card is hovered, focused or current. */
+.title-strip__delete {
+  opacity: 0.3;
+  color: var(--muted);
+  transition: opacity 120ms;
+}
+
+.title-strip__row:hover .title-strip__delete,
+.title-strip__row:focus-within .title-strip__delete,
+.title-strip--current + .title-strip__delete {
+  opacity: 1;
+}
+
+.title-strip__delete:hover:not(:disabled),
+.title-strip__delete:focus-visible {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.title-strip--picking {
+  cursor: pointer;
+}
+
+.title-strip--ticked {
+  border-color: var(--accent);
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+.title-strip__check {
+  display: inline-grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 2px solid var(--line);
+  border-radius: 0.3rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.title-strip__check--on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.library__views,
+.library__select-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.library__views .button[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: inset 0 -3px 0 var(--accent);
+}
+
+.library__select-count {
+  font-weight: 700;
+  margin-right: 0.3rem;
+}
+
+.library__space-deleted {
+  white-space: nowrap;
+}
+
+.deleted__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 1rem;
+}
+
+.deleted__title {
+  margin: 0;
+  font-size: 1.3rem;
+}
+
+.deleted__summary {
+  margin: 0;
+  color: var(--muted);
+}
+
+.deleted__header .deleted__empty-all {
+  margin-left: auto;
+}
+
+.deleted__note {
+  color: var(--muted);
+  margin: 0.4rem 0 0.9rem;
+}
+
+.deleted__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.deleted-song {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.deleted-song__tab {
+  color: var(--muted);
+}
+
+.deleted-song__text,
+.deleted-song__meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.deleted-song__title {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deleted-song__artist,
+.deleted-song__from,
+.deleted-song__meta {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deleted-song__from {
+  font-size: 0.85rem;
+}
+
+.deleted-song__meta {
+  align-items: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+
+.deleted-song__actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+/* ---------- the confirmation before a delete ---------- */
+
+.confirm {
+  width: min(34rem, 92vw);
+}
+
+.confirm__face {
+  padding: 1.2rem 1.4rem;
+}
+
+.confirm__title {
+  margin: 0 0 0.6rem;
+  font-size: 1.25rem;
+  overflow-wrap: anywhere;
+}
+
+.confirm__body p {
+  margin: 0.4rem 0;
+}
+
+.confirm__list {
+  margin: 0.4rem 0;
+  padding-left: 1.2rem;
+  color: var(--muted);
+}
+
+.confirm__note {
+  color: var(--warn);
+}
+
+.confirm__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin-top: 1.2rem;
+}
+
 /* ---------- dialogs ---------- */
 
 .dialog {

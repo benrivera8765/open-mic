@@ -121,6 +121,65 @@ pub fn rename_durable(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+/// Moves `from` to `to`, a name that must not exist yet (never replaces a file), and
+/// makes the move durable. Only within one volume: across volumes it fails with
+/// [`is_cross_volume`] true (Windows `ERROR_NOT_SAME_DEVICE`, Unix `EXDEV`), and the
+/// caller copies instead (src/deleted.rs). On Windows a virus scanner or the search
+/// indexer holding the file for a moment is waited for (up to about 2 s).
+pub fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
+        use windows::core::PCWSTR;
+        let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(std::iter::once(0)).collect() };
+        let (a, b) = (wide(from), wide(to));
+        let mut attempt = 0;
+        loop {
+            // No MOVEFILE_REPLACE_EXISTING (an existing `to` is an error, 80 / 183) and no
+            // MOVEFILE_COPY_ALLOWED (another volume is an error, 17), so this is a rename.
+            // SAFETY: both buffers are NUL-terminated UTF-16 strings that outlive the call.
+            let r = unsafe { MoveFileExW(PCWSTR(a.as_ptr()), PCWSTR(b.as_ptr()), MOVEFILE_WRITE_THROUGH) };
+            match r {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let code = e.code().0 & 0xFFFF;
+                    // 5 = ERROR_ACCESS_DENIED, 32 = ERROR_SHARING_VIOLATION
+                    if (code == 5 || code == 32) && attempt < 100 {
+                        attempt += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        continue;
+                    }
+                    return Err(io::Error::from_raw_os_error(code));
+                }
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // std's rename replaces silently; the callers hold their own lock and pick
+        // free names, so this check only guards against a programming error.
+        if fs::symlink_metadata(to).is_ok() {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the target name is taken"));
+        }
+        fs::rename(from, to)?;
+        sync_dir(to.parent().unwrap_or(Path::new(".")));
+        if from.parent() != to.parent() {
+            sync_dir(from.parent().unwrap_or(Path::new(".")));
+        }
+        Ok(())
+    }
+}
+
+/// True for the error a rename gives when the two names are on different volumes.
+pub fn is_cross_volume(e: &io::Error) -> bool {
+    if e.kind() == io::ErrorKind::CrossesDevices {
+        return true;
+    }
+    // ERROR_NOT_SAME_DEVICE (Windows) / EXDEV (Linux, macOS).
+    if cfg!(windows) { e.raw_os_error() == Some(17) } else { e.raw_os_error() == Some(18) }
+}
+
 /// Flushes a directory's entries to disk (Unix). Errors are ignored: some file
 /// systems (exFAT through some drivers) do not support fsync on a directory, and the
 /// file data itself was already flushed.

@@ -180,8 +180,11 @@
   padding: clamp(2px, 0.4vh, 8px) clamp(8px, 2.6vw, 100px) 0;
 }
 
+/* Starts small and grows into the room the plates leave (up to 28em), so the plates
+   and the free-space line stay on one row as long as they can. */
 .library--skin .library__search {
-  flex: 0 1 28em;
+  flex: 1 1 14em;
+  max-width: 28em;
   min-width: 10em;
   margin: 0;
 }
@@ -230,6 +233,323 @@
   text-align: center;
   color: rgba(246, 239, 217, 0.75);
   padding: 2rem 1rem;
+}
+
+/* ---------- library: deleting songs (D-230) ---------- */
+
+/* The strip and its trash plate share one grid cell: the plate sits on the strip's
+   right end, in room the strip keeps free for it, and shows on the hovered, focused
+   or current strip. */
+.library--skin .library__strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+}
+
+.library--skin .library__strip > * {
+  grid-area: 1 / 1;
+}
+
+.library--skin .library__strip .jk-strip {
+  padding-right: calc(clamp(10px, 1vw, 38px) + clamp(10px, 1.35vh, 29px) * 3.3);
+}
+
+.library--skin .library__strip--picking .jk-strip {
+  padding-right: clamp(10px, 1vw, 38px);
+}
+
+.library--skin .library__trash {
+  justify-self: end;
+  margin-right: clamp(8px, 0.8vw, 30px);
+  position: relative;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 120ms;
+}
+
+.library--skin .library__strip:hover .library__trash,
+.library--skin .library__strip:focus-within .library__trash,
+.library--skin .library__strip--current .library__trash {
+  opacity: 1;
+}
+
+/* Under the pointer the bin's glass lights red: this plate deletes. */
+.library--skin .library__trash:hover .jk-plate-glass,
+.library--skin .library__trash:focus-visible .jk-plate-glass {
+  background:
+    radial-gradient(ellipse 90% 80% at 50% 115%, rgba(255, 42, 42, 0.62), rgba(255, 42, 42, 0) 70%),
+    linear-gradient(180deg, #3d1616 0%, #1e0808 50%, #0f0303 100%);
+}
+
+.library--skin .library__trash:hover .jk-icon,
+.library--skin .library__trash:focus-visible .jk-icon {
+  color: #fff3f1;
+  filter: drop-shadow(0 0 4px rgba(255, 60, 50, 0.95));
+}
+
+.library--skin .library__views,
+.library--skin .library__select-bar {
+  display: flex;
+  align-items: center;
+  gap: clamp(4px, 0.4vw, 15px);
+}
+
+/* Songs / Deleted songs: a group of its own, a little apart from the plates before it. */
+.library--skin .library__views {
+  margin-left: clamp(4px, 0.8vw, 30px);
+}
+
+.library--skin .library__select-count {
+  font-family: var(--jk-font-display);
+  font-size: clamp(11px, 1.5vh, 32px);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--jk-cream);
+  margin-right: clamp(2px, 0.3vw, 12px);
+}
+
+.library--skin .library__space-deleted {
+  white-space: nowrap;
+  color: rgba(246, 239, 217, 0.6);
+}
+
+/* Deleted songs: faded title strips in the same chrome rack, each with a chrome tab
+   holding a bin, and Restore / Delete for good plates. */
+.deleted--skin {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(4px, 0.8vh, 18px);
+}
+
+.deleted--skin .deleted__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: clamp(4px, 0.6vh, 14px) clamp(10px, 1.2vw, 46px);
+  padding: 0 clamp(8px, 2.6vw, 100px);
+}
+
+.app-skin .deleted--skin .deleted__title {
+  margin: 0;
+  font-size: clamp(16px, 2.4vh, 52px);
+  font-weight: 500;
+  color: var(--jk-cream);
+  text-shadow: 0 0 10px rgba(255, 61, 139, 0.35);
+}
+
+.deleted--skin .deleted__summary {
+  margin: 0;
+  font-family: var(--jk-font-display);
+  font-size: clamp(11px, 1.5vh, 32px);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(246, 239, 217, 0.72);
+}
+
+.deleted--skin .deleted__empty-all {
+  margin-left: auto;
+}
+
+.deleted--skin .deleted__note {
+  margin: 0;
+  padding: 0 clamp(8px, 2.6vw, 100px);
+  font-size: clamp(12px, 1.55vh, 33px);
+  color: rgba(246, 239, 217, 0.62);
+}
+
+.deleted--skin .library__empty {
+  text-align: center;
+  color: rgba(246, 239, 217, 0.75);
+  padding: 2rem 1rem;
+}
+
+.deleted__rack .jk-rack-inner {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.deleted--skin .deleted__list {
+  gap: clamp(6px, 1vh, 22px);
+}
+
+.deleted--skin .deleted-song {
+  position: relative;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  column-gap: clamp(8px, 0.9vw, 35px);
+  min-height: clamp(50px, 6.6vh, 142px);
+  padding: 0.4em clamp(10px, 1vw, 38px) 0.4em 0;
+  border: 0;
+  border-radius: 3px;
+  background:
+    repeating-linear-gradient(0deg, rgba(70, 64, 52, 0.04) 0 1px, rgba(70, 64, 52, 0) 1px 3px),
+    linear-gradient(180deg, #ebe7da 0%, #d9d3c1 45%, #c8c0aa 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 2px 5px rgba(0, 0, 0, 0.5);
+  color: #3b342c;
+}
+
+/* The printed rules, faded to grey. */
+.deleted--skin .deleted-song::before,
+.deleted--skin .deleted-song::after {
+  content: "";
+  position: absolute;
+  left: clamp(40px, 4vw, 154px);
+  right: 10px;
+  height: 3px;
+  border-top: 1.5px solid #9a8f80;
+  border-bottom: 0.75px solid #9a8f80;
+  pointer-events: none;
+}
+
+.deleted--skin .deleted-song::before {
+  top: 4px;
+}
+
+.deleted--skin .deleted-song::after {
+  bottom: 4px;
+}
+
+.deleted--skin .deleted-song__tab {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.7em;
+  padding: 0 0.4em;
+  border-radius: 3px 7px 7px 3px;
+  background: var(--jk-chrome-h);
+  box-shadow:
+    inset -1px 0 0 rgba(0, 0, 0, 0.4),
+    2px 0 4px rgba(0, 0, 0, 0.3);
+  color: #2a2a30;
+  font-size: clamp(13px, 1.8vh, 39px);
+}
+
+.deleted--skin .deleted-song__tab .jk-icon {
+  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.6));
+}
+
+.deleted--skin .deleted-song__title {
+  font-family: var(--jk-font-display);
+  font-weight: 600;
+  font-size: clamp(14px, 2vh, 43px);
+  line-height: 1.12;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+  color: #4a4239;
+}
+
+.deleted--skin .deleted-song__artist {
+  font-family: var(--jk-font-display);
+  font-size: clamp(11px, 1.55vh, 33px);
+  letter-spacing: 0.04em;
+  color: #7d5c55;
+}
+
+.deleted--skin .deleted-song__from {
+  font-family: var(--jk-font-display);
+  font-weight: 300;
+  font-size: clamp(10px, 1.25vh, 27px);
+  color: #6d6356;
+}
+
+.deleted--skin .deleted-song__meta {
+  font-family: var(--jk-font-display);
+  font-size: clamp(11px, 1.5vh, 32px);
+  line-height: 1.2;
+  color: #4a3f33;
+}
+
+.deleted--skin .deleted-song__size {
+  font-weight: 600;
+  color: #5a4c3c;
+}
+
+.deleted--skin .deleted-song__actions {
+  gap: clamp(4px, 0.45vw, 17px);
+}
+
+/* ---------- the confirmation before a delete: chrome round black glass ---------- */
+
+:root[data-skin="on"] .confirm {
+  width: min(42rem, 92vw);
+  padding: 6px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--jk-chrome);
+  color: var(--jk-cream);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 24px 60px rgba(0, 0, 0, 0.85),
+    0 0 0 1px #1a0d08;
+}
+
+:root[data-skin="on"] .confirm::backdrop {
+  background: rgba(5, 2, 8, 0.72);
+}
+
+:root[data-skin="on"] .confirm__face {
+  position: relative;
+  overflow: hidden;
+  padding: clamp(18px, 2.8vh, 56px) clamp(20px, 2.2vw, 64px) clamp(16px, 2.4vh, 48px);
+  border-radius: 11px;
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 0%, rgba(255, 61, 139, 0.14), rgba(255, 61, 139, 0) 70%),
+    var(--jk-glass-face);
+  box-shadow:
+    inset 0 2px 10px rgba(0, 0, 0, 0.9),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.85);
+}
+
+/* The reflection on the upper part of the glass. */
+:root[data-skin="on"] .confirm__face::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 38%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.015));
+  pointer-events: none;
+}
+
+:root[data-skin="on"] .confirm__title {
+  position: relative;
+  margin: 0 0 0.55em;
+  font-family: var(--jk-font-display);
+  font-weight: 500;
+  font-size: clamp(18px, 2.7vh, 58px);
+  line-height: 1.2;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #fffaf0;
+  text-shadow: 0 0 10px rgba(255, 61, 139, 0.45);
+}
+
+:root[data-skin="on"] .confirm__body {
+  position: relative;
+  font-family: var(--jk-font-lyrics);
+  font-size: clamp(14px, 1.9vh, 40px);
+  line-height: 1.45;
+  color: rgba(246, 239, 217, 0.88);
+}
+
+:root[data-skin="on"] .confirm__body strong {
+  color: #ffb4ac;
+}
+
+:root[data-skin="on"] .confirm__list {
+  color: rgba(246, 239, 217, 0.7);
+}
+
+:root[data-skin="on"] .confirm__note {
+  color: var(--jk-yellow);
+}
+
+:root[data-skin="on"] .confirm__actions {
+  position: relative;
+  gap: clamp(8px, 0.8vw, 30px);
+  margin-top: clamp(14px, 2.2vh, 46px);
 }
 
 /* ---------- stage: the lyrics fill the screen ---------- */

@@ -22,6 +22,8 @@ import type {
   AppSettings,
   AppSettingsChanges,
   CoverResult,
+  DeletedList,
+  DeleteResult,
   Device,
   ExportFormat,
   InspectResult,
@@ -32,10 +34,12 @@ import type {
   Lyrics,
   MetadataChanges,
   PlayerState,
+  PurgeResult,
   RealignAnchor,
   Recording,
   RecorderStatus,
   RecordingSession,
+  RestoreResult,
   SelfCheckResult,
   SessionStartOptions,
   SongDetail,
@@ -67,6 +71,13 @@ export interface Api {
   // 2. Library
   libraryList(): Promise<LibraryList>;
   songCover(songId: string, maxPx: number): Promise<CoverResult>;
+  /** Moves songs to Deleted songs (the loaded one is stopped and closed first). */
+  libraryDelete(songIds: string[]): Promise<DeleteResult>;
+  libraryDeletedList(): Promise<DeletedList>;
+  /** Back to their places in the Library (a free name next to it when taken). */
+  libraryRestore(deletedIds: string[]): Promise<RestoreResult>;
+  /** Deletes for good: some songs, or "all" (empties Deleted songs). Cannot be undone. */
+  libraryPurge(which: string[] | "all"): Promise<PurgeResult>;
   // 3. Playback
   songLoad(songId: string): Promise<SongDetail>;
   playerPlay(): Promise<void>;
@@ -195,6 +206,11 @@ export class TauriApi implements Api {
   appInfo = () => call<AppInfo>("app_info");
   libraryList = () => call<LibraryList>("library_list");
   songCover = (song_id: string, max_px: number) => call<CoverResult>("song_cover", { song_id, max_px });
+  libraryDelete = (song_ids: string[]) => call<DeleteResult>("library_delete", { song_ids });
+  libraryDeletedList = () => call<DeletedList>("library_deleted_list");
+  libraryRestore = (deleted_ids: string[]) => call<RestoreResult>("library_restore", { deleted_ids });
+  libraryPurge = (which: string[] | "all") =>
+    call<PurgeResult>("library_purge", which === "all" ? { all: true } : { deleted_ids: which });
   songLoad = (song_id: string) => call<SongDetail>("song_load", { song_id });
   playerPlay = () => call<void>("player_play");
   playerPause = () => call<void>("player_pause");

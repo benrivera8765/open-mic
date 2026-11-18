@@ -9,6 +9,7 @@ import type {
   AppInfo,
   AppSettings,
   AppSettingsChanges,
+  DeletedList,
   Device,
   LibraryList,
   Lyrics,
@@ -25,7 +26,7 @@ import type {
   StudioStatus,
 } from "../api/types";
 import { clampKey } from "../lib/keys";
-import { exportGainNotice } from "../lib/format";
+import { exportGainNotice, formatBytes } from "../lib/format";
 import { PlaybackClock } from "../lib/clock";
 import { Store, useSelector } from "./store";
 
@@ -54,6 +55,10 @@ export interface AppState {
   settings: AppSettings | null;
   library: LibraryList | null;
   libraryLoading: boolean;
+  /** Deleted songs (the Library's "Deleted songs" view); null until asked. */
+  deleted: DeletedList | null;
+  /** A confirmation dialog is open: the app-wide shortcuts stand aside. */
+  modal: boolean;
   song: SongDetail | null;
   /** Live song settings (optimistic: updated before the core confirms). */
   songSettings: SongSettings | null;
@@ -90,6 +95,8 @@ export const store = new Store<AppState>({
   settings: null,
   library: null,
   libraryLoading: false,
+  deleted: null,
+  modal: false,
   song: null,
   songSettings: null,
   player: null,
@@ -195,6 +202,7 @@ export async function init(theApi: Api): Promise<void> {
   });
   api.on("playback://error", (e) => toast(e.message, "error"));
   api.on("library://changed", () => void refreshLibrary());
+  api.on("library://deleted", (d) => store.set({ deleted: d }));
   api.on("recorder://level", (r) => store.set({ recorder: r }));
   api.on("recorder://session", (sess) => upsertRecordingSession(sess));
   api.on("recorder://preview", ({ path, playing }) =>
@@ -245,6 +253,90 @@ export async function refreshLibrary(): Promise<void> {
   store.set({ libraryLoading: true });
   const lib = await attempt(api.libraryList(), "Could not read the library");
   store.set({ libraryLoading: false, ...(lib ? { library: lib } : {}) });
+}
+
+// ---------------------------------------------------------------------------
+// Deleting songs (the owner's request of 2026-11-18; APP_API section 2). A delete moves
+// the song file to Deleted songs, from where it is restored or deleted for good. The
+// screens ask first (Library.tsx); these only carry out what was confirmed.
+// ---------------------------------------------------------------------------
+
+/** "Artist - Title" (or the title alone) for messages. */
+export function songLabel(s: { title: string; artist: string }): string {
+  const title = s.title || "Untitled";
+  return s.artist ? `${s.artist} - ${title}` : title;
+}
+
+export async function refreshDeleted(): Promise<void> {
+  if (!api) return;
+  const d = await attempt(api.libraryDeletedList(), "Could not read Deleted songs");
+  if (d) store.set({ deleted: d });
+}
+
+/** Moves songs to Deleted songs; true when at least one went. */
+export async function deleteSongs(songIds: string[]): Promise<boolean> {
+  if (!api || songIds.length === 0) return false;
+  const before = store.get().library?.songs ?? [];
+  const r = await attempt(api.libraryDelete(songIds), "Nothing was deleted");
+  if (!r) return false;
+  if (r.unloaded && store.get().song?.summary.song_id === r.unloaded) {
+    // The core stopped and closed it before moving the file.
+    clock.onEvent({ position_s: 0, playing: false }, performance.now());
+    const screen = store.get().screen;
+    store.set({ song: null, songSettings: null, ...(screen === "stage" || screen === "sync" ? { screen: "library" as Screen } : {}) });
+    kick();
+  }
+  for (const f of r.failed) {
+    const s = before.find((x) => x.song_id === f.id);
+    toast(`${s ? songLabel(s) : f.id}: ${f.message}`, "error");
+  }
+  if (r.deleted.length === 1) toast(`“${songLabel(r.deleted[0])}” moved to Deleted songs.`);
+  else if (r.deleted.length > 1) toast(`${r.deleted.length} songs moved to Deleted songs.`);
+  await Promise.all([refreshLibrary(), refreshDeleted()]);
+  return r.deleted.length > 0;
+}
+
+/** Puts deleted songs back into the Library. */
+export async function restoreSongs(deletedIds: string[]): Promise<boolean> {
+  if (!api || deletedIds.length === 0) return false;
+  const before = store.get().deleted?.songs ?? [];
+  const r = await attempt(api.libraryRestore(deletedIds), "Nothing was restored");
+  if (!r) return false;
+  for (const f of r.failed) {
+    const s = before.find((x) => x.deleted_id === f.id);
+    toast(`${s ? songLabel(s) : f.id}: ${f.message}`, "error");
+  }
+  if (r.restored.length === 1) {
+    const s = before.find((x) => x.deleted_id === r.restored[0].deleted_id);
+    toast(`“${s ? songLabel(s) : r.restored[0].song_id}” is back in the library.`);
+  } else if (r.restored.length > 1) toast(`${r.restored.length} songs are back in the library.`);
+  await Promise.all([refreshLibrary(), refreshDeleted()]);
+  return r.restored.length > 0;
+}
+
+/** Deletes for good (cannot be undone): some deleted songs, or "all". */
+export async function purgeSongs(which: string[] | "all"): Promise<boolean> {
+  if (!api || (which !== "all" && which.length === 0)) return false;
+  const before = store.get().deleted?.songs ?? [];
+  const r = await attempt(api.libraryPurge(which), "Nothing was deleted");
+  if (!r) return false;
+  for (const f of r.failed) {
+    const s = before.find((x) => x.deleted_id === f.id);
+    toast(`${s ? songLabel(s) : f.id}: ${f.message}`, "error");
+  }
+  if (r.purged.length > 0) {
+    const what = r.purged.length === 1 ? (() => {
+      const s = before.find((x) => x.deleted_id === r.purged[0]);
+      return s ? `“${songLabel(s)}”` : "1 song";
+    })() : `${r.purged.length} songs`;
+    toast(`${what} deleted for good (${formatBytes(r.freed_bytes)} freed).`);
+  }
+  await Promise.all([refreshLibrary(), refreshDeleted()]);
+  return r.purged.length > 0;
+}
+
+export function setModal(on: boolean): void {
+  store.set({ modal: on });
 }
 
 export async function refreshRecordings(): Promise<void> {

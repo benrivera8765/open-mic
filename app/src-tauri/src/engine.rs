@@ -205,6 +205,11 @@ pub mod fake {
         /// Key modes set, in order (kept apart from `calls`, which tests compare whole).
         pub key_modes: Mutex<Vec<KeyMode>>,
         pub key_cache: Mutex<Option<(std::path::PathBuf, u64)>>,
+        /// Keep the loaded song's file open until `unload`, as the real engine's reader
+        /// does; on Windows without delete sharing, so a move of the file fails while
+        /// it is loaded (tests of "release the song before moving it").
+        pub hold_open: std::sync::atomic::AtomicBool,
+        held: Mutex<Option<std::fs::File>>,
         st: Mutex<St>,
         tx: crossbeam_channel::Sender<EngineEvent>,
         rx: crossbeam_channel::Receiver<EngineEvent>,
@@ -217,6 +222,8 @@ pub mod fake {
                 calls: Mutex::new(Vec::new()),
                 key_modes: Mutex::new(Vec::new()),
                 key_cache: Mutex::new(None),
+                hold_open: std::sync::atomic::AtomicBool::new(false),
+                held: Mutex::new(None),
                 st: Mutex::new(St {
                     state: PlaybackState::Empty,
                     base_pos: 0.0,
@@ -267,6 +274,18 @@ pub mod fake {
                 EngineError::new("song_damaged", e.user_message(), e.to_string())
             })?;
             let m = f.manifest();
+            if self.hold_open.load(std::sync::atomic::Ordering::SeqCst) {
+                let mut o = std::fs::OpenOptions::new();
+                o.read(true);
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::OpenOptionsExt;
+                    // FILE_SHARE_READ | FILE_SHARE_WRITE: slot saves work, a delete or
+                    // rename does not while held.
+                    o.share_mode(3);
+                }
+                *self.held.lock().unwrap() = o.open(song).ok();
+            }
             let mut st = self.st.lock().unwrap();
             *st = St {
                 state: PlaybackState::Paused,
@@ -291,6 +310,7 @@ pub mod fake {
         }
         fn unload(&self) {
             self.record(Call::Unload);
+            *self.held.lock().unwrap() = None;
             let mut st = self.st.lock().unwrap();
             st.state = PlaybackState::Empty;
             st.since = None;

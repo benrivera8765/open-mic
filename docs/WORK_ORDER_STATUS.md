@@ -95,6 +95,7 @@ This review did not re-run any benchmark. It checked these facts directly:
 | Per-song settings remembered | DONE+VERIFIED (Windows) | D-80; core tests |
 | Lyrics timing offset (Bluetooth) | DONE / BUILT-NOT-VERIFIED (Bluetooth) | Per-song and per-device offsets (`SyncEditor.tsx:76,90`, D-91); no Bluetooth device was tested (HANDOFF section 3) |
 | Export backing track, lossless | DONE+VERIFIED | Wav32f bit-identical to the render; Flac24 within half a 24-bit LSB; gain lowered only when it would clip, and reported (playback.md 6, D-67) |
+| Delete songs from the library (owner's request of 18 Nov; not in the work order) | DONE+VERIFIED (Windows) | D-230..D-233 (D-233: independent verification, two fixes), APP_API 2.1: a delete moves the file to `<root>/Deleted/` (USB sticks have no Recycle Bin), restore or delete for good; the playing song is released first; crash-safe index, copy-verify-remove across volumes. `deleted.rs` and `tests/deleted_songs.rs`, `real_engine.rs`, `library-delete.test.tsx`; release app: `real-app-delete-songs.mjs`, 37 of 37 checks with files checked on disk (`$JK_BUILD/libdelete-live/`). The portable layout gains `Deleted/` (section 9 row 1), created on the first delete |
 
 ## 5. Section 4.4: lyrics ticker
 

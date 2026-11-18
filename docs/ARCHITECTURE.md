@@ -345,7 +345,7 @@ start-up either (the engine reports `no_device` on play).
 The app finds its root by walking up from the executable: on Windows the exe is in
 `<root>/Windows/`, on macOS the bundle is in `<root>/Mac/`. If `<root>/Library` exists
 (or `<root>/portable.txt`), the app is in portable mode and every write goes under
-`<root>`: `Library/`, `Recordings/`, `Exports/`, `Models/`, `Settings/` (settings.json,
+`<root>`: `Library/`, `Recordings/`, `Exports/`, `Models/`, `Deleted/`, `Settings/` (settings.json,
 recordings-index.json, `logs/`, self-check reports, and the WebView2 user-data folder
 `webview-windows/` on Windows). Nothing uses an absolute path that survives a restart;
 paths are stored relative to `<root>`. The mode is one of `portable`, `dev` (data in
@@ -367,6 +367,14 @@ Writes of song files and settings are atomic (unique temp file, fsync, rename wi
 write-through on Windows, parent-directory fsync on Unix; D-81), except the song file's
 settings slots, which are designed for in-place A/B updates (see the spec). Library
 scans ignore `._*` AppleDouble files, other dotfiles and unfinished `*.tmp-*` writes.
+
+`Deleted/` (D-230, the owner's request of 18 Nov 2026) is the app's own recycle bin on
+the stick, a sibling of `Library/`, created on the first delete: files deleted from a USB
+stick bypass the Windows Recycle Bin (and a Mac keeps them in a hidden `.Trashes` folder
+only until that Mac empties its Trash), so "delete" moves the song file there, and
+`Deleted/index.json` remembers where each came from. The Library scan and
+watcher never look inside it. The space it takes is shown in the Library header until the
+songs are deleted for good.
 
 ## 9. Naming
 
@@ -411,6 +419,16 @@ blocking pool, never on the main thread. The engine is reached through `AudioEng
 - **Library** (library.rs): recursive scan, summaries cached by (size, mtime), cover
   thumbnails cached in memory, a recursive file watcher coalescing bursts over 400 ms
   into `library://changed`, free space of the Library's volume.
+- **Deleted songs** (deleted.rs, D-230): `library_delete` first releases the song if it
+  is loaded (`Player::release_during`: no current song, engine paused and unloaded, then the
+  pending slot save flushed; the move runs under the load lock, D-233), waits until nobody holds the file (Windows: an open with no
+  sharing succeeds, at most 2 s), then moves it into `<root>/Deleted/` with a unique
+  name (`fs_atomic::rename_new`, never replacing; across volumes a verified copy, then the
+  original removed, else the copy removed). `Deleted/index.json` gets the entry, marked
+  with the operation in progress, before the move and settled after; `DeletedSongs::list`
+  (at start-up and before every operation) repairs an interrupted delete or restore
+  without ever removing the only copy of a song. Restore goes back to the original place
+  or a free name next to it; purge removes the file for good.
 - **Export** (export.rs): `render_offline` on a worker thread into `<root>/Exports/`,
   progress events, cancel.
 - **Recorder** (recorder.rs, recsession.rs, medialink.rs): jk-recorder session,

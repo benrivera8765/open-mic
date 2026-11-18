@@ -48,6 +48,10 @@ pub struct LibraryList {
     pub songs: Vec<SongSummary>,
     pub free_bytes: u64,
     pub total_bytes: u64,
+    /// Addition (2026-11-18): songs in Deleted songs and the space they still take on
+    /// the drive (src/deleted.rs; filled in by `Core::library_list`).
+    pub deleted_count: usize,
+    pub deleted_bytes: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -161,6 +165,8 @@ impl Library {
             songs,
             free_bytes,
             total_bytes,
+            deleted_count: 0,
+            deleted_bytes: 0,
         })
     }
 

@@ -34,7 +34,8 @@ interface AppInfo {
   os_version: string;                              // "Windows 11 26200", "macOS 13.6.9 (<build>)"
   portable: boolean; root: string | null;          // root shown for information only
   translocated: boolean;                           // macOS App Translocation detected
-  paths: { library: string; recordings: string; exports: string; settings: string; models: string | null };
+  paths: { library: string; recordings: string; exports: string; settings: string; models: string | null;
+           deleted: string };                      // (added 2026-11-18) Deleted songs, section 2.1
   capabilities: {
     studio: { available: boolean; reasons: string[]; gpu: string | null; vram_mb: number | null;
               checking: boolean };                 // (added) true until the background probe answers
@@ -72,7 +73,11 @@ payload kept from Stage 0).
 
 ## 2. Library
 
-`library_list() -> { songs: SongSummary[]; free_bytes: number; total_bytes: number }`
+`library_list() -> { songs: SongSummary[]; free_bytes: number; total_bytes: number; deleted_count: number; deleted_bytes: number }`
+
+`deleted_count` / `deleted_bytes` **(added 2026-11-18)**: the songs in Deleted songs (below)
+and the bytes they still take on the drive; `free_bytes` counts them as used until they are
+deleted for good.
 
 ```ts
 interface SongSummary {
@@ -94,7 +99,60 @@ writes, and caches summaries by (size, modification time). `free_bytes` /
 
 Event `library://changed` (no payload) when files appear, disappear or change
 (including a folder moved away); a burst of changes gives one event about 400 ms after
-its first change.
+its first change. The core also sends it after every delete, restore and purge below
+(the free space and the Deleted songs figures changed).
+
+### 2.1 Deleting songs (added 2026-11-18, the owner's request; DECISIONS D-230)
+
+Files deleted from a USB stick bypass the Windows Recycle Bin, so the app keeps its own:
+deleting a song **moves** its `.jksong` file (one self-contained file) out of `Library/`
+into `<root>/Deleted/` (portable mode; otherwise the data root's `Deleted/`), from where it
+is restored or deleted for good. `Deleted/` is created on the first delete, is never
+scanned as part of the Library, and holds `index.json` (written atomically): each song's
+original `song_id`, title, artist, album, length, size and deletion time. Studio outputs,
+recordings and exports are never touched.
+
+- `library_delete(song_ids: string[]) -> DeleteResult` (a single `song_id` is accepted
+  too). Ids that are not songs in the Library come back in `failed` (`not_found`); an
+  empty list rejects with `bad_request`. If the loaded song is one of them it is stopped
+  and closed first (the engine releases every handle on the file, then its pending
+  `player_set` save is written into it), and `unloaded` names it; `player_state` is then
+  `empty`. A file another program holds open is not moved (`in_use`, plain message).
+- `library_deleted_list() -> DeletedList`, newest first.
+- `library_restore(deleted_ids: string[]) -> RestoreResult` (or one `deleted_id`): back to
+  the original place (missing folders are made again), or, when that place is taken now,
+  to a free name next to it (`Title (2).jksong`; names are compared without letter case).
+- `library_purge(deleted_ids: string[]) | library_purge(all: true) -> PurgeResult`:
+  deletes for good. Cannot be undone; the UI asks a second time, saying so.
+
+```ts
+interface DeletedSong {
+  deleted_id: string;          // its file name in Deleted/ ("Title.jksong", "Title (2).jksong" on a clash)
+  original_song_id: string;    // where it was
+  restore_to: string;          // the song_id a restore gives it now (the original, or a free name next to it)
+  title: string; artist: string; album: string | null; duration_s: number;
+  file_bytes: number; deleted_ms: number;   // ms since 1970, UTC
+}
+interface DeletedList { songs: DeletedSong[]; count: number; total_bytes: number; folder: string }
+interface DeleteFailure { id: string; code: string; message: string }   // id: a song_id or a deleted_id
+interface DeleteResult { deleted: DeletedSong[]; failed: DeleteFailure[]; unloaded: string | null }
+interface RestoreResult { restored: { deleted_id: string; song_id: string }[]; failed: DeleteFailure[] }
+interface PurgeResult { purged: string[]; freed_bytes: number; failed: DeleteFailure[] }
+```
+
+Event `library://deleted`: a full `DeletedList` after every delete, restore or purge.
+
+Moves: a rename on the same volume (never replacing a file). If `Deleted/` is on another
+volume than the song (a Library folder linked elsewhere), the file is copied to a
+temporary name, flushed, read back and compared byte for byte, renamed into place, and
+only then is the original removed; if the original cannot be removed the copy is taken out
+again, so a song is never in two places or in none. The index entry is written, marked
+with the operation in progress, before a file moves, and settled after; the core repairs
+an interrupted delete or restore at the next start (or the next call): a move that did not
+happen is forgotten (the song is still in the Library), a finished one is settled, an
+interrupted copy is undone, a song file in `Deleted/` without an entry is listed (its
+original place is then the Library's top folder), and a leftover temporary copy older than
+an hour is removed. An unreadable `index.json` is kept as `index.json.bad`.
 
 ## 3. Loading and playback
 
@@ -498,6 +556,7 @@ reader: the UI uses a field when present and degrades when it is absent.
 | Conventions | Argument names for object parameters: `metadata_save(song_id, metadata)`, `export_backing(song_id, options: { format })`, `studio_lyrics_lookup(query)`, `studio_submit(job)`, `selfcheck_run(user_agent, silent)`. The core also accepts the flat forms noted in each section. |
 | 1 | `AppInfo.identifier`, `mode`, `mode_reason`, `webview_version`, `translocation_help`; `capabilities.studio.checking`; `capabilities.recorder.permission_explanation`, `settings_url`, `backend`. Command `root_choose()`. Internal: `ping`, `smoke_report`. |
 | 3 | `player_set` returns the effective `SongSettings`. `PlayerState.clipped`, `device_starved`, `output_peak_db`. `key_label` uses "→". |
+| 2 | 2026-11-18 (owner's request, section 2.1): `library_delete`, `library_deleted_list`, `library_restore`, `library_purge`; `LibraryList.deleted_count`, `deleted_bytes`; event `library://deleted`; `library://changed` also after those commands. Section 1: `AppInfo.paths.deleted`. |
 | 3 | 2026-11-18: `player_diagnostics()` (engine counters for soak tests; not used by the UI). |
 | 3, 5 | Key change render-ahead fallback (WORK_ORDER 4.5): `PlayerState.key_mode`, `key_preparing`, `key_note`; settings `audio.key_mode`, `key_cache_mb`, `key_benchmarks`; `playback://state` also on key-preparation changes. |
 | 4 | `device_set`'s `exclusive` is optional (false); refusal of exclusive mode rejects with `exclusive_unavailable` after opening shared. |

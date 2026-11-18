@@ -43,6 +43,7 @@ export const SHORTCUTS: [keys: string[], what: string][] = [
   [["F"], "Full screen stage"],
   [["Esc"], "Leave full screen, close a window"],
   [["Ctrl / ⌘", "F"], "Search the library"],
+  [["Delete"], "Library: delete the focused or current song, or the ticked ones (asks first; ⌘ + Backspace on a Mac)"],
   [["?"], "Show these shortcuts"],
   [["Space", "Enter"], "In tap-along: mark the start of the next word"],
   [["Backspace"], "In tap-along: take back the last tap"],

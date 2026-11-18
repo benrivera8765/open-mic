@@ -10,11 +10,12 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::deleted::{DeletedList, DeletedSong, DeletedSongs, Failure, Purged, Restored, ToDelete};
 use crate::engine::{AudioEngine, ExportFormat, MixParams, Renderer};
 use crate::error::{ApiError, ApiResult};
-use crate::events::EventSink;
+use crate::events::{EventSink, emit, names};
 use crate::export::{ExportRequest, ExportStarted, Exports};
-use crate::library::{Library, Watcher};
+use crate::library::{Library, LibraryList, Watcher};
 use crate::playback::Player;
 use crate::portable::{DataLayout, DataMode, Paths};
 use crate::recorder::RecorderCtl;
@@ -50,6 +51,8 @@ pub struct Core {
     pub sink: Arc<dyn EventSink>,
     pub settings: SettingsStore,
     pub library: Arc<Library>,
+    /// Deleted songs, `<root>/Deleted` (src/deleted.rs).
+    pub deleted: DeletedSongs,
     pub player: Arc<Player>,
     pub exports: Arc<Exports>,
     pub recorder: RecorderCtl,
@@ -92,6 +95,8 @@ pub struct PathsView {
     pub exports: String,
     pub settings: String,
     pub models: Option<String>,
+    /// Addition (2026-11-18): the Deleted songs folder (created on the first delete).
+    pub deleted: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -114,6 +119,22 @@ pub struct RecorderCapability {
     pub backend: &'static str,
 }
 
+/// `library_delete` result: the songs now in Deleted songs, the ones that could not be
+/// moved (with the reason), and the loaded song's id when it was stopped and closed.
+#[derive(Clone, Debug, Serialize)]
+pub struct DeleteResult {
+    pub deleted: Vec<DeletedSong>,
+    pub failed: Vec<Failure>,
+    pub unloaded: Option<String>,
+}
+
+/// `library_restore` result.
+#[derive(Clone, Debug, Serialize)]
+pub struct RestoreResult {
+    pub restored: Vec<Restored>,
+    pub failed: Vec<Failure>,
+}
+
 /// Shown when macOS runs the app from a translocated copy.
 pub const TRANSLOCATION_HELP: &str = "macOS opened Jukeoke from a temporary, read-only copy (this happens to apps \
 copied from a download or another computer), so it cannot see the songs next to it on the stick. Choose the \
@@ -134,6 +155,7 @@ impl Core {
         }
         let settings = SettingsStore::load(&paths.settings);
         let library = Arc::new(Library::new(paths.library.clone()));
+        let deleted = DeletedSongs::new(paths.deleted.clone(), paths.library.clone());
         let player = Arc::new(Player::new(
             o.engine,
             Arc::clone(&o.sink),
@@ -166,6 +188,7 @@ impl Core {
             sink: o.sink,
             settings,
             library,
+            deleted,
             player,
             exports,
             recorder,
@@ -206,6 +229,11 @@ impl Core {
                 if n > 0 {
                     crate::applog::info(&format!("removed {n} unfinished song writes"));
                 }
+                // Finishes or undoes a delete / restore an interruption cut off.
+                let d = me.deleted.list();
+                if d.count > 0 {
+                    crate::applog::info(&format!("{} deleted songs ({} bytes) in {}", d.count, d.total_bytes, d.folder));
+                }
                 crate::portable::remove_discarded_profiles(&me.paths.settings);
                 me.studio.probe_now();
             });
@@ -242,6 +270,7 @@ impl Core {
                 exports: s(&self.paths.exports),
                 settings: s(&self.paths.settings),
                 models: studio_possible.then(|| s(&self.paths.models)),
+                deleted: s(&self.paths.deleted),
             },
             capabilities: Capabilities {
                 studio: self.studio.capability(),
@@ -310,6 +339,92 @@ impl Core {
             });
         }
         r
+    }
+
+    // ---------------------------------------------------------------- library, deleted songs
+
+    /// `library_list`: the songs, free space, and what Deleted songs still holds.
+    pub fn library_list(&self) -> ApiResult<LibraryList> {
+        let mut list = self.library.list()?;
+        let d = self.deleted.list();
+        list.deleted_count = d.count;
+        list.deleted_bytes = d.total_bytes;
+        Ok(list)
+    }
+
+    /// `library_deleted_list`.
+    pub fn library_deleted_list(&self) -> DeletedList {
+        self.deleted.list()
+    }
+
+    fn deleted_changed(&self) {
+        emit(&*self.sink, names::LIBRARY_DELETED, &self.deleted.list());
+        // Free space, the song count and Deleted songs' size in the Library's header.
+        self.sink.emit_value(names::LIBRARY_CHANGED, Value::Null);
+    }
+
+    /// `library_delete(song_ids)`: moves songs into Deleted songs. The loaded song, if
+    /// it is one of them, is stopped and closed first (its pending settings written).
+    pub fn library_delete(&self, song_ids: &[String]) -> ApiResult<DeleteResult> {
+        if song_ids.is_empty() {
+            return Err(ApiError::bad_request("Choose at least one song to delete."));
+        }
+        let mut failed = Vec::new();
+        let mut targets: Vec<(String, PathBuf)> = Vec::new();
+        for id in song_ids {
+            if targets.iter().any(|(t, _)| t == id) {
+                continue;
+            }
+            match self.library.resolve(id) {
+                Ok(p) => targets.push((id.clone(), p)),
+                Err(e) => failed.push(Failure::new(id, &e)),
+            }
+        }
+        let paths: Vec<PathBuf> = targets.iter().map(|(_, p)| p.clone()).collect();
+        // The files move while no song can be loaded (a `song_load` racing with this
+        // waits, then finds the file gone).
+        let (unloaded, (deleted, more)) = self.player.release_during(&paths, || {
+            // Any other pending settings save goes to its file before files move.
+            self.player.saver.flush();
+            let items = targets
+                .into_iter()
+                .map(|(song_id, path)| ToDelete {
+                    summary: self.library.summary(&path),
+                    song_id,
+                    path,
+                })
+                .collect();
+            self.deleted.delete(items)
+        });
+        failed.extend(more);
+        if !deleted.is_empty() {
+            self.deleted_changed();
+        }
+        Ok(DeleteResult { deleted, failed, unloaded })
+    }
+
+    /// `library_restore(deleted_ids)`: back to their places in the Library.
+    pub fn library_restore(&self, deleted_ids: &[String]) -> ApiResult<RestoreResult> {
+        if deleted_ids.is_empty() {
+            return Err(ApiError::bad_request("Choose at least one song to restore."));
+        }
+        let (restored, failed) = self.deleted.restore(deleted_ids);
+        if !restored.is_empty() {
+            self.deleted_changed();
+        }
+        Ok(RestoreResult { restored, failed })
+    }
+
+    /// `library_purge(deleted_ids | all)`: deletes for good (cannot be undone).
+    pub fn library_purge(&self, deleted_ids: Option<&[String]>) -> ApiResult<Purged> {
+        if deleted_ids.is_some_and(<[String]>::is_empty) {
+            return Err(ApiError::bad_request("Choose at least one song to delete for good."));
+        }
+        let p = self.deleted.purge(deleted_ids);
+        if !p.purged.is_empty() {
+            self.deleted_changed();
+        }
+        Ok(p)
     }
 
     // ---------------------------------------------------------------- song file edits
