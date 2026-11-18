@@ -224,6 +224,8 @@ export interface Device {
 // ---------------------------------------------------------------------------
 
 export type MotionSetting = "system" | "reduce" | "full";
+/** How the lyrics ticker moves: "word" = smooth, paced by word (default); "letter" = exact, letter by letter. */
+export type LyricsMotion = "word" | "letter";
 export type LibrarySort = "title" | "artist" | "recent" | "key";
 
 export interface AppSettings {
@@ -235,6 +237,8 @@ export interface AppSettings {
     lyrics_text_size: number;
     /** 0..1 from the left, default 0.33. */
     marker_position: number;
+    /** Ticker pace (D-216): "word" (default) or "letter" (the letter-exact motion of D-94/D-95). */
+    lyrics_motion: LyricsMotion;
     colors: { sung: string; upcoming: string; marker: string };
     library_sort: LibrarySort;
     fullscreen_stage: boolean;

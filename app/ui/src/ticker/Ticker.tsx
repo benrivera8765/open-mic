@@ -9,7 +9,7 @@
 //     the window is hidden or minimised (frameloop.ts); clock events, seeks, resizes
 //     and setting changes restart it.
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import type { Lyrics } from "../api/types";
+import type { Lyrics, LyricsMotion } from "../api/types";
 import { lineIndexAt, lineText } from "../lib/lyrics";
 import { clock, getApiSync, onClockKick } from "../state/app";
 import { FrameLoop, type MinimisedSource } from "./frameloop";
@@ -25,6 +25,8 @@ export interface TickerProps {
   textSize: number;
   /** settings.ui.marker_position, 0..1. */
   marker: number;
+  /** settings.ui.lyrics_motion: "word" (smooth, paced by word; default) or "letter" (D-216). */
+  pace: LyricsMotion;
   colors: { sung: string; upcoming: string; marker: string };
 }
 
@@ -38,24 +40,44 @@ function windowMinimisedSource(): MinimisedSource | undefined {
   }
 }
 
-/** Debug/perf hook read by the headless screenshot script (scripts/screenshots.mjs). */
+/** One drawn frame, as recorded by `window.__jkTicker.trace`. */
+export interface TickerFrame {
+  /** performance.now() of the frame, ms. */
+  now: number;
+  /** Lyric time drawn, s. */
+  t: number;
+  /** Strip position under the marker, CSS px. */
+  x: number;
+  /** Screen x of the strip's origin (marker x - strip x), CSS px: what moves on screen. */
+  offset: number;
+}
+
+/** Frame trace for the real-app scripts; off (and free) unless a script starts it. */
+const trace = { on: false, max: 0, frames: [] as TickerFrame[] };
+
+/** Debug/perf hook read by the headless screenshot script (scripts/screenshots.mjs) and the real-app scripts. */
 declare global {
   interface Window {
     __jkTicker?: {
       stats: TickerStats;
+      pace: LyricsMotion;
       fontPx: number;
       fontScale: number;
       minLineScale: number;
       denseLines: number;
       glyphs: number;
       worstLookahead: number;
-      /** Runs the letter-under-the-marker check on the live layout (real fonts). */
+      /** Runs the letter (or, for the word pace, word) under-the-marker check on the live layout (real fonts). */
       verify: () => TickerVerifyReport;
+      /** Records every drawn frame from now on (at most `maxFrames`, default 10 minutes at 60 fps). */
+      traceStart: (maxFrames?: number) => void;
+      /** Stops recording and returns the frames recorded. */
+      traceTake: () => TickerFrame[];
     };
   }
 }
 
-export function Ticker({ lyrics, offsetS, textSize, marker, colors }: TickerProps) {
+export function Ticker({ lyrics, offsetS, textSize, marker, pace, colors }: TickerProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<TickerRenderer | null>(null);
@@ -126,8 +148,8 @@ export function Ticker({ lyrics, offsetS, textSize, marker, colors }: TickerProp
       return scratch.measureText(text).width;
     };
     const scale = Math.min(size.winW / 1440, size.winH / 900);
-    return layoutTicker(lyrics, { width: size.w, marker, fontPx: Math.max(12, textSize * scale) }, measure);
-  }, [lyrics, size.w, size.winW, size.winH, marker, textSize, style, fontEpoch]);
+    return layoutTicker(lyrics, { width: size.w, marker, fontPx: Math.max(12, textSize * scale), pace }, measure);
+  }, [lyrics, size.w, size.winW, size.winH, marker, textSize, pace, style, fontEpoch]);
 
   // Renderer and frame loop.
   useEffect(() => {
@@ -167,6 +189,7 @@ export function Ticker({ lyrics, offsetS, textSize, marker, colors }: TickerProp
     r.setLayout(layout, style);
     window.__jkTicker = {
       stats: r.stats,
+      pace: layout.pace,
       fontPx: layout.fontPx,
       fontScale: layout.fontScale,
       minLineScale: layout.minLineScale,
@@ -174,11 +197,26 @@ export function Ticker({ lyrics, offsetS, textSize, marker, colors }: TickerProp
       glyphs: layout.glyphs.length,
       worstLookahead: layout.worstLookahead,
       verify: () => verifyTickerLayout(layout),
+      traceStart: (maxFrames = 36000) => {
+        trace.frames = [];
+        trace.max = maxFrames;
+        trace.on = true;
+      },
+      traceTake: () => {
+        trace.on = false;
+        const out = trace.frames;
+        trace.frames = [];
+        return out;
+      },
     };
     const fl = loopRef.current!;
     fl.draw = (now) => {
       const t = clock.position(now) - offsetRef.current;
       r.draw(t);
+      if (trace.on && trace.frames.length < trace.max) {
+        const x = layout.motion.at(t);
+        trace.frames.push({ now, t, x, offset: size.w * layout.marker - x });
+      }
       // Screen-reader line (changes once per line, not per frame).
       const li = lineIndexAt(lyrics, t);
       if (li !== lineRef.current) {

@@ -32,6 +32,18 @@ pub enum Motion {
     Full,
 }
 
+/// How the lyrics ticker moves (docs/APP_API.md section 5; DECISIONS.md D-216).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LyricsMotion {
+    /// Smooth, paced by word: each word reaches the marker as it is sung (within
+    /// 40 ms) and glides past at its own pace. The owner's choice of 18 Nov 2026.
+    #[default]
+    Word,
+    /// Exact, letter by letter: every letter is under the marker while it is sung.
+    Letter,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LibrarySort {
@@ -73,6 +85,9 @@ pub struct UiSettings {
     pub lyrics_text_size: f64,
     /// 0..1 from the left.
     pub marker_position: f64,
+    /// Ticker pace: "word" (default) or "letter".
+    #[serde(default)]
+    pub lyrics_motion: LyricsMotion,
     pub colors: Colors,
     pub library_sort: LibrarySort,
     pub fullscreen_stage: bool,
@@ -121,6 +136,7 @@ impl Default for AppSettings {
                 // 64 px the 2-second lookahead rule shrinks fast songs more often).
                 lyrics_text_size: 56.0,
                 marker_position: 0.33,
+                lyrics_motion: LyricsMotion::Word,
                 colors: Colors {
                     sung: "#ff3d8b".into(),
                     upcoming: "#f6efd9".into(),
@@ -236,6 +252,7 @@ fn typed_ok(path: &str, v: &Value) -> bool {
     match path {
         "ui.motion" => serde_json::from_value::<Motion>(v.clone()).is_ok(),
         "ui.library_sort" => serde_json::from_value::<LibrarySort>(v.clone()).is_ok(),
+        "ui.lyrics_motion" => serde_json::from_value::<LyricsMotion>(v.clone()).is_ok(),
         "audio.key_mode" => serde_json::from_value::<KeyModeSetting>(v.clone()).is_ok(),
         _ if path.starts_with("audio.device_offsets_ms.") => v.is_number(),
         _ if path.starts_with("audio.key_benchmarks.") => v.is_number(),
@@ -434,6 +451,7 @@ mod tests {
         let v = serde_json::to_value(AppSettings::default()).unwrap();
         assert_eq!(v["ui"]["marker_position"], json!(0.33));
         assert_eq!(v["ui"]["motion"], json!("system"));
+        assert_eq!(v["ui"]["lyrics_motion"], json!("word"));
         assert_eq!(v["ui"]["library_sort"], json!("title"));
         assert_eq!(v["audio"]["device_id"], Value::Null);
         assert_eq!(v["audio"]["master_volume"], json!(1.0));
@@ -459,6 +477,43 @@ mod tests {
         assert_eq!(warnings.len(), 2, "{warnings:?}");
         let (s, _) = AppSettings::from_json_lenient(r#"{"audio": {"key_mode": "prerender"}}"#);
         assert_eq!(s.audio.key_mode, KeyModeSetting::Prerender);
+    }
+
+    #[test]
+    fn lyrics_motion_defaults_to_word_and_unknown_values_reset_alone() {
+        // A settings file from before the setting existed: the new default.
+        let (s, warnings) = AppSettings::from_json_lenient(r#"{"ui": {"marker_position": 0.4}}"#);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(s.ui.lyrics_motion, LyricsMotion::Word);
+        assert_eq!(s.ui.marker_position, 0.4);
+        // The letter pace is kept.
+        let (s, _) = AppSettings::from_json_lenient(r#"{"ui": {"lyrics_motion": "letter"}}"#);
+        assert_eq!(s.ui.lyrics_motion, LyricsMotion::Letter);
+        // A value this version does not know (or of the wrong type) falls back alone.
+        let (s, warnings) = AppSettings::from_json_lenient(
+            r#"{"ui": {"lyrics_motion": "syllable", "bubbles": false}}"#,
+        );
+        assert_eq!(s.ui.lyrics_motion, LyricsMotion::Word);
+        assert!(!s.ui.bubbles);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let (s, warnings) = AppSettings::from_json_lenient(r#"{"ui": {"lyrics_motion": 3}}"#);
+        assert_eq!(s.ui.lyrics_motion, LyricsMotion::Word);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        // settings_set takes "letter" and refuses an unknown name without changing anything.
+        let dir = scratch("lyrics-motion");
+        let store = SettingsStore::load_with_delay(&dir, Duration::from_millis(50));
+        let s = store
+            .set(&json!({"ui": {"lyrics_motion": "letter"}}))
+            .unwrap();
+        assert_eq!(s.ui.lyrics_motion, LyricsMotion::Letter);
+        assert!(
+            store
+                .set(&json!({"ui": {"lyrics_motion": "fast"}}))
+                .is_err()
+        );
+        assert_eq!(store.get().ui.lyrics_motion, LyricsMotion::Letter);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

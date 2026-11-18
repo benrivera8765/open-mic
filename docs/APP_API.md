@@ -214,6 +214,7 @@ interface AppSettings {
     skin: boolean; bubbles: boolean; motion: "system" | "reduce" | "full";
     lyrics_text_size: number;          // CSS px at 1440x900, scaled with the window
     marker_position: number;           // 0..1 from the left, default 0.33
+    lyrics_motion: "word" | "letter";  // ticker pace (D-216): smooth, paced by word | exact, letter by letter
     colors: { sung: string; upcoming: string; marker: string };
     library_sort: "title" | "artist" | "recent" | "key"; fullscreen_stage: boolean;
   };
@@ -228,8 +229,10 @@ interface AppSettings {
 
 Defaults (core and UI agree): `skin` true, `bubbles` true, `motion` "system" (follows
 the OS reduce-motion preference), `lyrics_text_size` 56, `marker_position` 0.33,
-`colors` sung `#ff3d8b`, upcoming `#f6efd9`, marker `#7dffd8`, `library_sort` "title",
-`fullscreen_stage` false; `device_id` null, `exclusive` false, `master_volume` 1.0
+`lyrics_motion` "word" (the owner's choice of 18 Nov 2026; a settings file written
+before the setting existed gets "word" too; "letter" is the letter-exact motion every
+earlier version had), `colors` sung `#ff3d8b`, upcoming `#f6efd9`, marker `#7dffd8`,
+`library_sort` "title", `fullscreen_stage` false; `device_id` null, `exclusive` false, `master_volume` 1.0
 (unity), `device_offsets_ms` {}, `key_mode` "auto", `key_cache_mb` 1024,
 `key_benchmarks` {}. Numbers are clamped (`lyrics_text_size` 12..400,
 `marker_position` 0.05..0.95, `master_volume` 0..1, offsets -5000..5000 ms,
@@ -399,6 +402,7 @@ reader: the UI uses a field when present and degrades when it is absent.
 | 3 | 2026-11-18: `player_diagnostics()` (engine counters for soak tests; not used by the UI). |
 | 3, 5 | Key change render-ahead fallback (WORK_ORDER 4.5): `PlayerState.key_mode`, `key_preparing`, `key_note`; settings `audio.key_mode`, `key_cache_mb`, `key_benchmarks`; `playback://state` also on key-preparation changes. |
 | 4 | `device_set`'s `exclusive` is optional (false); refusal of exclusive mode rejects with `exclusive_unavailable` after opening shared. |
+| 5 | 2026-11-18: `ui.lyrics_motion` ("word" default, "letter"), the ticker's pace (D-216). A reader without it behaves like "letter". |
 | 7 | `export_cancel(job_id)`. `export_backing` takes the format as `format` or inside `options`. `export://done` also carries `applied_gain_db` (negative when a Flac24 export was turned down to avoid clipping; 0 otherwise) and `peak` (largest absolute sample of the render before any export gain, linear). |
 | 8 | `recorder_start` returns a `RecorderStatus`; `recorder_request_permission` returns `{ permission }`. |
 | 9 | `StudioStatus.checking`; `StudioJob.stage_progress`, `error_code`; `studio_clear_finished()`; `studio_models_status(preset?)` / `studio_models_download(preset?)`; event `studio://status`. 2026-11-18: `pick_cover_image()`, `studio_cover_preview(path, max_px?)`, `metadata.cover_path` in `studio_submit`. |

@@ -181,6 +181,23 @@ describe("functional UI on the mock", () => {
     expect(accessibilityProblems()).toEqual([]);
   });
 
+  it("settings: lyrics motion is smooth by word by default and can be set to exact letters (D-216)", async () => {
+    store.set({ screen: "settings" });
+    await until(() => !!q(".settings"));
+    const select = qa(".settings select").find((s) => root.querySelector(`label[for="${s.id}"]`)?.textContent === "Lyrics motion") as HTMLSelectElement;
+    expect(select).toBeTruthy();
+    expect(select.value).toBe("word");
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["Smooth, paced by word", "Exact, letter by letter"]);
+    select.value = "letter";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await until(() => store.get().settings?.ui.lyrics_motion === "letter");
+    await wait(40); // the store changes at once, the core a timer tick later
+    expect((await api.settingsGet()).ui.lyrics_motion).toBe("letter");
+    changeSettings({ ui: { lyrics_motion: "word" } });
+    await until(() => store.get().settings?.ui.lyrics_motion === "word");
+    expect(accessibilityProblems()).toEqual([]);
+  });
+
   it("a fader moved just before opening another song is saved in the song it was moved on", async () => {
     // Found by the independent verifier: the throttled player_set reached the core
     // after song_load and was applied to the next song.

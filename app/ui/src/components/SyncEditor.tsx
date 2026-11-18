@@ -361,7 +361,7 @@ export function SyncEditor() {
         }
       >
         <div class="sync__preview">
-          <Ticker lyrics={d.lyrics} offsetS={(st.lyrics_offset_ms + devOff) / 1000} textSize={Math.min(ui.lyrics_text_size, 44)} marker={ui.marker_position} colors={ui.colors} />
+          <Ticker lyrics={d.lyrics} offsetS={(st.lyrics_offset_ms + devOff) / 1000} textSize={Math.min(ui.lyrics_text_size, 44)} marker={ui.marker_position} pace={ui.lyrics_motion ?? "word"} colors={ui.colors} />
         </div>
         <Offsets />
       </Section>

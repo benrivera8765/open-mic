@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Settings: look (skin, bubbles, motion), lyrics (text size, marker position,
+// Settings: look (skin, bubbles, motion), lyrics (motion, text size, marker position,
 // colours), timing offsets per output device, and information about this computer.
 // Saved by the core into <root>/Settings/settings.json.
-import type { KeyModeSetting, MotionSetting } from "../api/types";
+import type { KeyModeSetting, LyricsMotion, MotionSetting } from "../api/types";
 import { DEFAULT_APP_SETTINGS } from "../api/defaults";
 import { formatOffset } from "../lib/format";
 import { changeSettings, deviceOffsetKey, setOverlay, useApp } from "../state/app";
@@ -53,6 +53,16 @@ export function Settings() {
       </Section>
 
       <Section title="Lyrics">
+        <Select<LyricsMotion>
+          label="Lyrics motion"
+          value={ui.lyrics_motion ?? "word"}
+          options={[
+            { value: "word", label: "Smooth, paced by word" },
+            { value: "letter", label: "Exact, letter by letter" },
+          ]}
+          onChange={(v) => changeSettings({ ui: { lyrics_motion: v } })}
+        />
+        <p class="hint">Smooth: the words glide under the marker without stopping, slower for a held word and faster for quick ones, and each word reaches the marker as it is sung. Exact: every letter is under the marker exactly while it is sung, which makes the text speed up and slow down within words.</p>
         <Slider label="Text size" value={ui.lyrics_text_size} min={28} max={120} step={2} format={(v) => `${v} px`} onInput={(v) => changeSettings({ ui: { lyrics_text_size: v } }, 300)} />
         <p class="hint">Measured on a 1440 × 900 window and scaled with the window. If a fast passage would not leave at least 2 seconds of upcoming words on screen, the text is made smaller for that song.</p>
         <Slider

@@ -11,6 +11,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
     motion: "system",
     lyrics_text_size: 56,
     marker_position: 0.33,
+    lyrics_motion: "word",
     colors: { sung: "#ff3d8b", upcoming: "#f6efd9", marker: "#7dffd8" },
     library_sort: "title",
     fullscreen_stage: false,

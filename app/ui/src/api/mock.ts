@@ -14,6 +14,7 @@
 //   ?empty=1               empty library
 //   ?many=200              add generated filler songs (library performance)
 //   ?skin=0                start with the plain look (settings.ui.skin off)
+//   ?lyricsmotion=letter   start with the letter-exact ticker (settings.ui.lyrics_motion)
 //   ?exportpeak=1.95       peak of the simulated export render (linear; above full scale
 //                          a FLAC export reports the gain it applied, like the real core)
 // Handled by the UI (App.tsx `mockStartup`), not here:
@@ -30,6 +31,7 @@ import type {
   AppInfo,
   AppSettings,
   AppSettingsChanges,
+  LyricsMotion,
   Device,
   ExportFormat,
   InspectResult,
@@ -94,6 +96,8 @@ export interface MockOptions {
   many: number;
   /** settings.ui.skin at start (the jukebox look); the tests run both looks. */
   skin: boolean;
+  /** settings.ui.lyrics_motion at start (default "word", D-216). */
+  lyricsMotion: LyricsMotion;
   /** Simulated IPC latency for commands, ms. */
   latencyMs: number;
   /**
@@ -117,6 +121,7 @@ const DEFAULT_OPTIONS: MockOptions = {
   empty: false,
   many: 0,
   skin: true,
+  lyricsMotion: "word",
   latencyMs: 3,
   exportPeak: 0.89,
   now: () => performance.now(),
@@ -190,6 +195,7 @@ export class MockApi implements Api {
       this.o.recorder === "unavailable" ? "not_required" : this.o.platform === "macos" && this.o.recorder === "not_required" ? "not_determined" : this.o.recorder;
     this.modelsOnDisk = new Set(this.o.models === "present" ? [...PRESET_MODELS.full, ...LYRICS_MODELS] : []);
     this.settings.ui.skin = this.o.skin;
+    this.settings.ui.lyrics_motion = this.o.lyricsMotion;
     const lib = this.o.empty ? [] : [...demoLibrary(), ...fillerSongs(this.o.many)];
     this.songs = lib.map((demo) => ({ demo, settings: { ...demo.settings, levels: { ...demo.settings.levels } }, lyricsOverride: null, metadata: {} }));
     this.recordings = [
@@ -209,6 +215,8 @@ export class MockApi implements Api {
     if (r === "denied" || r === "not_determined" || r === "granted" || r === "unavailable") o.recorder = r;
     if (q.get("empty") === "1") o.empty = true;
     if (q.get("skin") === "0") o.skin = false;
+    const lm = q.get("lyricsmotion");
+    if (lm === "letter" || lm === "word") o.lyricsMotion = lm;
     const many = Number(q.get("many"));
     if (many > 0) o.many = Math.min(2000, Math.floor(many));
     const peak = Number(q.get("exportpeak"));
