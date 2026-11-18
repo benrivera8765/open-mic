@@ -122,9 +122,13 @@ normalised or limited, and exports are FLAC or 32-bit float WAV.
 
 | preset | what it does | model licences | earning money with the result |
 |---|---|---|---|
-| **Full** (default) | subtracts the lead vocal from the original: nothing else is lost | GPL-3.0 and Apache-2.0 | allowed by every model's licence |
-| Clean | an instrumental model: less vocal residue, sometimes less body | the instrumental model has no published licence | unclear: ask its author first |
-| Permissive | only MIT / Apache-2.0 models; backing vocals stay with the lead (no separate backing track) | MIT and Apache-2.0 | allowed |
+| **Full** (default) | subtracts the lead vocal from the original, so the band is not rebuilt (a little cymbal brightness can go with the voice); leaves less of the singer than Clean (measured lead residue -15.9 dB) | GPL-3.0 and Apache-2.0 | allowed by every model's licence |
+| Clean | an instrumental model rebuilds the music: slightly more of the singer left (-14.8 dB), cymbals a little brighter, the stereo image sometimes wider than the recording | the instrumental model has no published licence | unclear: ask its author first |
+| Permissive | only MIT / Apache-2.0 models; backing vocals are removed with the lead (no separate backing track) | MIT and Apache-2.0 | allowed |
+
+Only the Full models are on a prepared stick. Choosing Clean or Permissive in the Studio
+form shows which models are missing, their size and licence, and downloads them when you
+press the button.
 
 Every model, its source and its licence: [`MODELS.md`](MODELS.md). Model weights are
 downloaded by the app, never included in the repository or the app.

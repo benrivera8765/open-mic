@@ -1,5 +1,13 @@
 # Test results (local sweep, CI equivalent)
 
+**Latest re-run:** 18 November 2026, 05:18-05:51, after the preset-download pass (section
+8): `CARGO_TARGET_DIR=$JK_BUILD/target-presets bash scripts/local-ci.sh`, exit 0, log
+`$JK_BUILD/test-sweep/20261118-051847/`. Its counts are in the table of section 1 (the
+earlier figures are kept in brackets); `dist/` was rebuilt and proved again (sections 2
+and 3). Everything below that is not marked as re-run is from the run described next.
+An independent verification followed (06:00-06:35, section 8.1): two corrections (D-215),
+vitest 16 files, 179 passed; `dist/` rebuilt and proved again with them.
+
 **Run:** 18 November 2026, 02:04 to about 03:35 (local time), on the build PC: the final
 evidence pass after the gap-closing work (key cache, cover correction, minimised ticker,
 recorder honesty, Mac CI hardening, licence texts). The previous sweep (17-18 November,
@@ -37,15 +45,15 @@ clippy style warnings, all in `crates/jk-format`. CI does not fail on clippy war
 
 | Suite | Command | Result | Time |
 |---|---|---|---|
-| UI | `cd app/ui && npm ci && npm run build && npm test` | build OK (tsc, Vite, every JS file parses as ES2022, CSS check against Safari 16.4 and Chrome 120); vitest **15 files, 170 passed, 0 failed** | 14 s |
-| Rust | `cargo test --workspace --release --locked` | **194 passed, 0 failed, 0 ignored**, in 34 test binaries (doc tests included); re-run at 03:11 after the fix of section 5 item 3. The first run (02:53) stopped at `tests/keycache.rs` (43 passed, 1 failed, 12 binaries) | 281 s |
-| Clippy | `cargo clippy --workspace --locked` | 0 errors, **13 warnings**, all in `jk-format` (`verify.rs` 6, `writer.rs` 2, `flac.rs`, `header.rs`, `lyrics.rs`; the same 13 as before) | 88 s |
-| Mac type-check | `cargo check --target aarch64-apple-darwin --workspace --locked` (Zig as C compiler) | all 7 crates; **0 warnings, 0 errors** after the fix of section 5 item 4 (the first run had 1 warning, in `app/src-tauri/src/keymode.rs`). Rubber Band's C++ is skipped by design (no Apple SDK here) | 101 s |
-| Studio, CPU | `studio-venv python -m pytest tests -q -rs` (in `studio/`) | **229 passed, 1 skipped, 24 deselected** (the skipped test is the opt-in network test; the deselected ones are the GPU tests) | 108 s |
-| Studio, GPU | `studio-venv python -m pytest -m gpu tests -q -rs` | **24 passed** | 196 s |
-| Song format conformance | `bash tests/conformance/run.sh` | **PASS**, 92 checks ok | 19 s |
-| Portable smoke test | `bash app/scripts/portable-smoke-test.sh dist/Windows/Jukeoke.exe` | **RESULT: OK** (normal path, a `subst` drive letter, a forced start-up failure, nothing named jukeoke in %LOCALAPPDATA%, %APPDATA% or HKCU) | 279 s |
-| Lint | ShellCheck on all 29 `*.sh` files; actionlint on the 2 workflows | **0 findings** each | 3 s |
+| UI | `cd app/ui && npm ci && npm run build && npm test` | build OK (tsc, Vite, every JS file parses as ES2022, CSS check against Safari 16.4 and Chrome 120); vitest **16 files, 178 passed, 0 failed** (re-run; was 15 files, 170) | 16 s |
+| Rust | `cargo test --workspace --release --locked` | **196 passed, 0 failed, 0 ignored**, in 34 test binaries (re-run; was 194: the two new `studio_supervisor` preset tests). Earlier: re-run at 03:11 after the fix of section 5 item 3; the first run (02:53) stopped at `tests/keycache.rs` (43 passed, 1 failed, 12 binaries) | 329 s |
+| Clippy | `cargo clippy --workspace --locked` | 0 errors, **13 warnings**, all in `jk-format` (`verify.rs` 6, `writer.rs` 2, `flac.rs`, `header.rs`, `lyrics.rs`; the same 13 as before). The re-run found a 14th, a collapsible `if` in this pass's `app/src-tauri/src/studio.rs`; after the fix `local-ci.sh --only clippy` (log `$JK_BUILD/test-sweep/20261118-053751/`): **13 warnings, all in `jk-format`, 0 errors**, and `studio_supervisor` 17 passed again | 88 s |
+| Mac type-check | `cargo check --target aarch64-apple-darwin --workspace --locked` (Zig as C compiler) | all 7 crates; **0 warnings, 0 errors** (re-run: the same) after the fix of section 5 item 4 (the first run had 1 warning, in `app/src-tauri/src/keymode.rs`). Rubber Band's C++ is skipped by design (no Apple SDK here) | 101 s |
+| Studio, CPU | `studio-venv python -m pytest tests -q -rs` (in `studio/`) | **230 passed, 1 skipped, 24 deselected** (re-run; was 229: the new preset download test) (the skipped test is the opt-in network test; the deselected ones are the GPU tests) | 108 s |
+| Studio, GPU | `studio-venv python -m pytest -m gpu tests -q -rs` | **24 passed** (re-run: the same) | 193 s |
+| Song format conformance | `bash tests/conformance/run.sh` | **PASS**, 92 checks ok (re-run: the same) | 22 s |
+| Portable smoke test | `bash app/scripts/portable-smoke-test.sh dist/Windows/Jukeoke.exe` | **RESULT: OK** (re-run: OK, 275 s, on the exe built before the clippy fix; the final exe passed the dist proof's smoke test, section 3) (normal path, a `subst` drive letter, a forced start-up failure, nothing named jukeoke in %LOCALAPPDATA%, %APPDATA% or HKCU) | 279 s |
+| Lint | ShellCheck on all 29 `*.sh` files; actionlint on the 2 workflows | **0 findings** each (re-run: the same) | 3 s |
 | Offline renders, Windows half of the cross-platform comparison | `bash scripts/ci-render.sh <dir>`, then `scripts/ci-compare-renders.sh` against the Stage 0 Windows renders (`$JK_BUILD/ci-render-win`) | **18 renders, all byte-identical** to the earlier ones (max difference 0), after the Rubber Band patch of section 5 item 1 | 8 s |
 | Real-time allocations | `cargo test --release -p jk-engine --test rt_alloc -- --nocapture` (also part of the Rust row) | **0 allocations and 0 frees** on the render worker and the device thread in every phase; positive controls seen; also on the real WASAPI device at digital silence (docs/benchmarks/playback.md section 11) | 27 s |
 | 20 minutes in the real app | `node app/ui/scripts/real-app-soak.mjs ... 20 14 30` | **0 underruns, 0 device starved**, worker lead never below 140 ms, ticker 60.000 fps with 0 frames missing, 0 display frames over 25 ms; whole app 0.55 GB resident (playback.md section 12) | 20 min |
@@ -63,6 +71,21 @@ Notes on the Rust row:
 - `tests/rt_alloc.rs` (new) and the key-cache tests (new) are in it.
 
 ## 2. The dist/ folder
+
+**Re-built 18 November 05:39-05:45** after the preset-download pass (section 8), with the
+final code: `CARGO_TARGET_DIR=$JK_BUILD/target-presets bash scripts/make-dist.sh`, exit 0,
+log `$JK_BUILD/dist-build/20261118-053958/`. UI tests 178 passed in the build, 21 imported
+DLLs all part of Windows, runtime check not stale (tree hash `fb9d6831883f`), the same 15
+model files re-hashed, final checks OK; exe 12,694,030 bytes; total 8,119,009,393 bytes,
+8.634 GB on exFAT with 32 KB clusters, 10.542 GB with 128 KB. `Models/README.txt` now says
+what the app does: the Clean and Permissive models are not included and are downloaded
+through the Studio form when the user presses its button (template in
+`scripts/dist/dist_models.py`). **Re-built again 06:14-06:19** with the corrections of
+section 8.1 (log `$JK_BUILD/dist-build/20261118-061406/`, full output
+`$JK_BUILD/verify-final/make-dist.log`): exit 0, UI tests 179 passed in the build, 21 DLLs
+all part of Windows, runtime not stale (tree hash `228161fd1314`, changed by `presets.py`),
+15 model files re-hashed, final checks OK; total 8,119,009,490 bytes, 8.634 GB on exFAT
+with 32 KB clusters, 10.542 GB with 128 KB. The figures below are from the earlier build.
 
 `bash scripts/make-dist.sh` builds everything from this checkout into `dist/`, which git
 ignores. It was run three times in this pass: at 02:04 (before the Rubber Band patch), at
@@ -136,6 +159,18 @@ and every folder takes at least one.
   leaves `Models/` empty (WORK_ORDER 10).
 
 ## 3. Proof from a copy under another drive letter
+
+**Re-run 18 November 05:44-05:59** on the re-built `dist/`:
+`bash scripts/prove-dist.sh $JK_BUILD/dist-proof/inputs/cortez-feel-stripped-30s.wav`, log
+`$JK_BUILD/dist-proof/20261118-054430/`: **every step passed, 0 failed, 859 s**: smoke
+test 8 of 8, self-check 8 of 8 PASSED, runtime check 26 passed or informational / 0 failed,
+a real Studio job through the app in 54.2 s with `verify --strict` PASS (0 errors, 0
+warnings), 5 of 5 Library plays (min lookahead 2.08 s and 2.12 s, 0 underruns), 0 entries
+written by the app or the Studio in the per-user folders. **Re-run again 06:20-06:34** on the
+dist re-built with the section 8.1 corrections (log `$JK_BUILD/dist-proof/20261118-062022/`):
+the same steps, **0 failed, 841 s** (copy 8,119,009,490 bytes; smoke 8/8, self-check 8/8
+PASSED, runtime check 26/0, Studio job 54.3 s with `verify --strict` PASS, 5/5 plays, 0
+per-user entries by the app or the Studio). The table below is the earlier run.
 
 `bash scripts/prove-dist.sh $JK_BUILD/dist-proof/inputs/cortez-feel-stripped-30s.wav`, run
 2026-11-18 03:16-03:31 on the final `dist/`. Logs: `$JK_BUILD/dist-proof/20261118-031615/`
@@ -408,3 +443,91 @@ after the check reads the same files again; whether the OS cache serves that rea
 stick was not measured.
 **Not measured on a real stick** (none available); the stick's own read speed is the
 assumption.
+
+## 8. Preset downloads and never-clicked features in the real app (18 November, 05:00-06:00)
+
+Code changed in this pass: the Studio form asks for and downloads the models of the preset
+chosen in it (D-209), new preset hints (D-210), key-preparation progress that never steps
+back (D-211). Tests added: `app/ui/src/components/studio-models.test.tsx` (7 tests),
+`app/ui/src/key-prepare.test.tsx` (+1 test, +4 assertions in the note test),
+`app/src-tauri/tests/studio_supervisor.rs` (`models_follow_the_chosen_preset`,
+`a_permissive_download_does_not_mark_the_default_models_present`; the fake Studio now
+answers per preset), `studio/tests/test_server.py::test_models_status_and_download_follow_the_preset`
+(a real Studio process, file:// stand-ins for the weights, `.part` + SHA-256 + manifest).
+Before the sweep: `npx vitest run` 16 files, 178 passed; `cargo test --release -p jukeoke
+--test studio_supervisor` 17 passed (was 15); `pytest tests/test_server.py -k
+"follow_the_preset or models_missing or shutdown_during"` 3 passed.
+
+**Method.** `bash scripts/make-dist.sh` (exit 0, `$JK_BUILD/presets/make-dist.log`), then a
+copy of `dist/` (8,119,009,393 bytes; `Models/` holds the default set only) mapped with
+`subst Q:`, and `node app/ui/scripts/real-app-features.mjs Q:/Windows/Jukeoke.exe Q:/ <out>
+Q:\inputs\cortez-feel-stripped-30s.wav Q:\inputs\cover-test.jpg`: the release exe, driven
+over WebView2 DevTools, with `Settings/settings.json` set to the null output device
+("No audio output (null device)", 48 kHz) and master 0 before the start. Input: the 30 s CC
+BY excerpt of section 3; cover: a 600x600 JPEG drawn for this test (20,121 bytes). Logs and
+screenshots: `$JK_BUILD/presets/features-20261118-feat2/` (run 2, the one reported below),
+`.../features-20261118-feat1/` (run 1, stopped at the cover step: see "Cover" below). Each
+song was then checked with `jukeoke-cli verify --strict` and read back by an independent
+reader (`jukeoke_studio.jksong`, studio venv); the downloaded files were hashed again.
+
+| Feature | Result |
+|---|---|
+| Models before | `studio_models_status`: full all present; clean missing `bs_inst_resurrection_unwa` (204,483,033 B, "none published"); permissive missing `mel_roformer_kim` (913,106,900 B, MIT) |
+| **Clean preset, download through the form** | Choosing "Clean" in the form showed, under the preset choice: "One model for the Clean preset is not on this drive yet: 204 MB to download, once. Nothing is downloaded until you press the button. BS-RoFormer Resurrection Inst (unwa), 204 MB (needed for every song): licence: none published; commercial use unclear" and the button "Download 204 MB" (screenshot `studio-clean-notice.png`). Pressing it downloaded from the pinned URL `https://huggingface.co/pcunwa/BS-Roformer-Resurrection/resolve/8fc1a62f.../BS-Roformer-Resurrection-Inst.ckpt` (real network): run 1 106.8 s with 50 progress events, run 2 3.5 s with 7; then the notice went away and the toast said "Models for the Clean preset downloaded and checked." Re-hashed afterwards: SHA-256 `16311025...a7bac7a15` and size equal to the registry; manifest entry recorded with the URL and "licence: none published"; no `.part` file left |
+| **Clean song** | Added to the queue with preset clean, lyrics automatic: done; `Cortez - Feel (Stripped) excerpt, Clean.jksong`, manifest `preset: clean`, stems sum to source, 7 transcribed lines; `jukeoke-cli verify --strict`: **PASS, 0 errors, 0 warnings** |
+| **Permissive preset, download and song** | Notice: "One model for the Permissive licences only preset ... 913 MB ... Mel-Band RoFormer vocals (Kimberley Jensen), 913 MB (needed for every song): licence: MIT; commercial use allowed"; download 13.6 s, 25 progress events, from `https://huggingface.co/KimberleyJSN/melbandroformer/resolve/ac9b0614.../MelBandRoformer.ckpt`, SHA-256 `87201f4d...7c559e` equal to the registry. Song done, `preset: permissive`, `verify --strict` **PASS, 0 errors, 0 warnings**. Afterwards `models_present` (default preset) was still true |
+| **Recorder** (4a) | The demo song played on the null device at master 0 while the Recorder captured the real default device (Realtek, 48 kHz shared) for 10.5 s between the two button clicks: `Recording 2026-11-18 05-15-47.wav`, IEEE float (format tag 3), 2 channels, 48,000 Hz, 32-bit, 482,384 frames = 10.050 s; peak -120.5 dBFS (silence plus the driver's processing floor, see recorder.md); the Recordings list showed the same length, rate and channels. "Make a karaoke song from this" switched to the Studio with that file in the form; with "No lyrics" it was queued and finished (`Recording 2026-11-18 05-15-47.jksong`, `verify --strict` PASS). Run 1 gave the same (10.057 s) |
+| **Drag-and-drop** (4d) | A real OS drag-and-drop: `app/ui/scripts/ole-drop.ps1` starts a Windows OLE drag (DoDragDrop, CF_HDROP file list, as Explorer does) under a synthesized button press and moves the real pointer onto the app's window. The app received `tauri://drag-enter` and `tauri://drag-drop` with the path, the core's `WindowEvent::DragDrop` handler emitted `studio://dropped {"paths":["Q:\inputs\cortez-feel-stripped-30s.wav"]}` and the file appeared in the Studio form. 3 attempts: run 1 and a separate `--drop-only` run succeeded; in run 2 the helper found another window over the app at the drop point and cancelled the drag with Escape (its safety rule; the run then emitted `studio://dropped` from the page to continue). The helper now raises the app's window first (topmost, then normal), which the `--drop-only` run used. Not covered: dragging from Explorer itself (the drag source was the helper's window, with the same data format), several files at once, and dropping onto an inactive or minimised window |
+| **Cover** (4c) | The native file dialog cannot be automated. Its answer was supplied at the IPC boundary: `__TAURI_INTERNALS__.invoke` cannot be replaced (not writable, not configurable), so the page's `fetch` answered only `http://ipc.localhost/pick_cover_image` with the JPEG's path, as the core does (run 1 stopped here when it tried to replace `invoke`). Everything else was the real path: the click on "Choose a cover picture…", the UI's `pick()`, two `studio_cover_preview` calls (the form showed "Your picture: cover-test.jpg" and a JPEG thumbnail), `studio_submit` with `metadata.cover_path`, and the Studio writing it: the Clean song's `cover` chunk is `image/jpeg`, 20,121 bytes, SHA-256 equal to the file's (`75ce7452...a97c7`) |
+| **Sync editor "Re-align with Studio"** (4b) | On the Clean song (transcribed lyrics): line 1 "Please don't stand over here" changed to "Please jukebox stand over here" in the editor, "Re-align with Studio" (1.0 s, toast "Re-aligned. Check it, then save."), "Save into the song". Read back from the file: the active user-state slot holds `lyrics_override` (7 lines, source "transcribed", unchecked) whose line 1 is "Please jukebox stand over here" with "jukebox" timed 8.42-9.32 s (the replaced "don't" was 8.68-9.32 s); `jukeoke-cli info` shows the override and `verify --strict` still passes. Observation: the word before it, "Please", moved from 7.64-8.68 s to 1.58-8.42 s (alignment confidence 0.16): "jukebox" is not what is sung there, so the aligner stretched its neighbour; a real correction was not tried |
+| Page errors | none in either run |
+
+Not covered here: the native cover dialog itself, a drop from Explorer, the ticker in a
+minimised window, and anything audible (nothing was played aloud).
+
+The drive used the `dist/` built at 05:04-05:10. After it, clippy flagged a collapsible
+`if` in this pass's `models_status` (`app/src-tauri/src/studio.rs`); the fix has the same
+behaviour (`studio_supervisor` 17 passed again, clippy back to the 13 `jk-format`
+warnings), and `dist/` was rebuilt and proved again with it (sections 2 and 3). The full
+sweep of section 1 ran between the two builds.
+
+## 8.1 Independent verification of section 8 (18 November, 06:00-06:35)
+
+Re-run first: `npx vitest run` 16 files, 178 passed; `cargo test --release --locked -p
+jukeoke --test studio_supervisor` (`target-presets`) 17 passed, including both preset tests;
+`pytest tests/test_server.py -k "follow_the_preset or models_missing or shutdown_during"` 3
+passed. Counts in sections 1-3 and 8 were checked against their logs (`test-sweep/20261118-051847`
+and `-053751`, `presets/make-dist2.log`, `dist-proof/20261118-054430`): they match.
+
+**Release app, the dist of 05:39-05:45**, copied fresh (8,119,009,393 bytes), `subst Q:`,
+null device at master 0, driven over WebView2 DevTools (verifier scripts, not in the repo;
+output `$JK_BUILD/verify-final/`):
+
+| Check | Result |
+|---|---|
+| Clean with its weights absent | `studio_models_status`: full all present; clean missing only `bs_inst_resurrection_unwa` (204,483,033 B, "none published", unclear); `Q:/Models/bs_roformer_resurrection_inst.ckpt` absent. In the form: Full shows no notice; Permissive "... 913 MB ... licence: MIT; commercial use allowed"; Clean "One model for the Clean preset is not on this drive yet: 204 MB to download, once. Nothing is downloaded until you press the button. BS-RoFormer Resurrection Inst (unwa), 204 MB (needed for every song): licence: none published; commercial use unclear", button "Download 204 MB". Before the click: no `studio_models_download` request, 0 `studio://models` events, no file, no `.part`. The form asked `studio_models_status` with `{"preset":"clean"}` / `"permissive"` / `"full"` |
+| Download path | The already-downloaded file (`$JK_BUILD/models-cache`, same size and SHA-256 as the registry) was copied in after the notice appeared, so nothing was fetched a second time. The button then sent `studio_models_download {"preset":"clean"}`; the notice went away 0.08 s later; `studio_models_status` clean: all present; `models_present` (default) still true. The toast said "downloaded and checked" although nothing was downloaded or hashed at that moment (see below) |
+| Clean song | Queued from the form (lyrics automatic): done in 62.8 s; manifest `preset: clean`, stems sum to source; the Studio hashed the copied weights at first use (`Models/manifest.json`: SHA-256 `16311025...a7bac7a15`, URL pinned to revision `8fc1a62f...`, "none published"); `jukeoke-cli verify --strict`: PASS, 0 errors, 0 warnings |
+| Re-align, a genuine correction | The transcription's last line was "Cause I'm not her eye"; the JamendoLyrics annotation says "cause i'm not who i (should be)". Corrected to "Cause I'm not who I" in the Sync editor, "Re-align with Studio" (1.3 s), "Save into the song". Read back from the file: `lyrics_override` line 6 = Cause 28.26, I'm 28.56, not 28.74, who 29.02, I 29.48 s against annotated onsets (excerpt time) 28.29, 28.46, 28.73, 29.07, 29.34 s: errors -0.03, +0.10, +0.01, -0.05, +0.14 s (confidence 0.09-0.74); lines 0-5 kept their times; `verify --strict` PASS |
+| Key preparation progress (prerender, null device) | Sampled every 15 ms, raw `key_preparing` vs the note: the core's figure stepped down 20 times (always 1 point, between cache cells), the note 0 times. But after a seek while a key was being prepared, the core restarted from 0 % and the note kept the old figure until passed: 41 % held for 0.5 s after a seek at 41 %, 61 % for 0.5 s after a seek at 61 % (longer on slower computers). Fixed (D-215, below) |
+| Preset hints against separation.md | Clean and Permissive match. Full said "the band is left exactly as recorded" and "leaves the least of the singer of the three": separation.md 5.4 measures Full 0.61 / 1.05 dB low at 4-8 / 8-16 kHz (Clean 0.28 / 0.49), and Permissive was never measured against Full on lead residue. Fixed (D-215) |
+
+**Corrections made (D-215):** the Full hint in `Studio.tsx`, `PRESET_INFO` and README now
+says the band is not rebuilt, a little cymbal brightness can go with the voice, and Full
+leaves less of the singer than Clean; `monotonicPrepare` shows a drop of more than 2 points
+as it is within 1 s after a seek the UI asked for (`state/app.ts` `msSinceSeek`), and still
+holds the 1-point dips. Tests: `studio-models.test.tsx` (Full wording), `key-prepare.test.tsx`
+(+1 test). `npx vitest run`: **16 files, 179 passed**; `pytest tests/test_registry.py
+tests/test_server.py -k "preset or registry"` 28 passed. `dist/` rebuilt (section 2) and
+proved again (section 3).
+
+**The rebuilt dist in the release app** (fresh copy, `subst Q:`, null device, master 0): the
+three hints read as above; Clean with its weights absent shows the same notice. With
+prerender on, a key change and a seek through the UI's own shortcut while the key was half
+prepared (ArrowRight at 42 %, ArrowLeft at 61 %): the note went 42 % -> 0 % and 61 % -> 0 %
+with the core, and still held its 1- and 2-point dips (25/24, 52/51, 20/19, 21/19).
+
+Not covered by this check: a real second download of the Clean weights (the file was copied
+in; the real download is section 8's), a seek the core makes by itself, and anything audible.
+The toast after a download that found every file already present still says "downloaded and
+checked" (the file is hashed at first use instead); left as it is.

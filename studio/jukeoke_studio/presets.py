@@ -50,9 +50,11 @@ PRESETS: dict[str, dict[str, str]] = {
 PRESET_INFO: dict[str, dict] = {
     "full": {
         "title": "Full (default)",
-        "description": "The fullest backing track: the lead vocal is subtracted from the original "
-                       "recording, so nothing of the band is lost (faint traces of the singer can "
-                       "remain). Backing vocals are kept as their own stem.",
+        "description": "Subtracts the lead singer from the original recording, so the band is not "
+                       "rebuilt, though a little cymbal brightness can go with the voice (about 0.6-1 dB "
+                       "at 4-16 kHz). Leaves less of the singer than Clean (lead residue -15.9 dB against "
+                       "-14.8 dB; a faint trace can remain). Backing vocals are kept as their own stem. "
+                       "Licences GPL-3.0 and Apache-2.0: commercial use allowed.",
         "weights_licences": ["GPL-3.0", "Apache-2.0"],
         "commercial": "yes",
         "backing_vocals": True,
@@ -60,9 +62,11 @@ PRESET_INFO: dict[str, dict] = {
     },
     "clean": {
         "title": "Clean",
-        "description": "Uses a model that outputs the instrumental directly: less vocal residue, "
-                       "sometimes less body. One of its models has no published licence, so "
-                       "commercial use is unclear.",
+        "description": "A model rebuilds the music without the singing. Leaves slightly more of the "
+                       "singer than Full (-14.8 dB against -15.9 dB), keeps cymbals a little brighter "
+                       "(+0.3 to 0.6 dB at 4-16 kHz) and can make the sound wider than the recording "
+                       "(up to +3.1 dB side level). Backing vocals are kept. One model has no published "
+                       "licence: commercial use unclear.",
         "weights_licences": ["GPL-3.0", "Apache-2.0", "none published"],
         "commercial": "unclear",
         "backing_vocals": True,
@@ -70,10 +74,10 @@ PRESET_INFO: dict[str, dict] = {
     },
     "permissive": {
         "title": "Permissive licences only",
-        "description": "Only MIT / Apache-2.0 models. There is no permissively licensed model that "
+        "description": "Only MIT and Apache-2.0 models. There is no permissively licensed model that "
                        "splits the lead singer from the backing singers, so ALL vocals are removed "
                        "together: backing vocals and harmonies are missing from the karaoke mix "
-                       "(the backing-vocals stem is silent).",
+                       "(the backing-vocals stem is silent). Commercial use allowed.",
         "weights_licences": ["MIT", "Apache-2.0"],
         "commercial": "yes",
         "backing_vocals": False,

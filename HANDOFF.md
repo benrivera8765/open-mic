@@ -24,9 +24,9 @@ below is "built but not verified".
 listening checklist (section 6) is what only your ears can settle.
 
 **Nearly everything that can be built and tested on this PC is done.** A few things
-could still be checked or fixed here (a real drag-and-drop from Explorer, a few buttons
-no test has clicked, the missing download for the "Clean" preset's model, open points
-in the key cache; sections 3 and 4). The rest needs
+could still be checked here (a drag started in Explorer itself, the native file
+dialogs, the ticker in a really minimised window, open points in the key cache;
+sections 3 and 4). The rest needs
 you: a GitHub login (to build and test the Mac app), the MacBook, your ears, and a few
 licence decisions (section 8).
 
@@ -48,7 +48,7 @@ tests and fixed what it found.
 | Lyric alignment | JamendoLyrics, 20 English CC songs: word-onset median 0.036 s, 94.2 % within 0.3 s from text only; with line times 94.7 %; a few songs have words seconds off (worst 54 s text only, 25 s with line times); end-to-end songs: median 0.033-0.045 s, 100 % within 0.3 s, worst 0.20 s. Letter timing is only checked by synthetic tests (no dataset has it); English only | `docs/benchmarks/alignment.md`, `end-to-end.md` |
 | Key change accuracy | Pitch error at most 0.0015 cents for every step -12..+12 (sines and harmonic tones); length exact; no clipping of the test tones | `cargo test -p jk-dsp`, `docs/benchmarks/dsp.md` |
 | Key change smoothness | No click on key changes (largest step 1.31x the signal's own); 0 semitones is bit-identical to the plain mix | same |
-| Key change on slow computers | Settings > Key change: "Automatic / In real time / Render ahead and cache". Automatic measures Rubber Band's speed on each computer (8.6-9.8x real time here, so real time is used) and below 3x renders keys ahead into a cache on the stick (1 GiB by default, a soft cap), showing "Preparing key +2… 40%"; bit-identical to the real-time path; a computer slowed to about 0.7x played with 0 underruns where the real-time path had about 100 in 3 s. Open: the cap was exceeded (462 MB on a 200 MB cap), the progress figure can step back by about 1 %, and one unexplained cache miss in 10 runs of the test | `cargo test -p jk-engine --test keycache`, real-app run in prerender mode on the silent null device |
+| Key change on slow computers | Settings > Key change: "Automatic / In real time / Render ahead and cache". Automatic measures Rubber Band's speed on each computer (8.6-9.8x real time here, so real time is used) and below 3x renders keys ahead into a cache on the stick (1 GiB by default, a soft cap), showing "Preparing key +2… 40%"; bit-identical to the real-time path; a computer slowed to about 0.7x played with 0 underruns where the real-time path had about 100 in 3 s. Open: the cap was exceeded (462 MB on a 200 MB cap) and one unexplained cache miss in 10 runs of the test; the progress shown no longer steps back (the UI keeps the highest figure per key change, D-211) | `cargo test -p jk-engine --test keycache`, real-app run in prerender mode on the silent null device |
 | Key names | The detected key ("A major → B major (+2)") is right 59-80 % of the time on real guitar recordings and 67 % on synthetic pop progressions; full-band songs were not measured, so it is shown as a suggestion. The key change itself does not depend on it | `docs/benchmarks/analysis.md` |
 | Drum alignment | Unshifted drum path lands on exactly the right sample (offset 0); shifted band vs drums: mean offset at most 0.31 ms after correction (a phase vocoder cannot be exact; single impulses jitter up to 2 ms at -12) | impulse tests, `dsp.md` |
 | Smooth playback | Real app, 20 minutes, skin + bubbles + ticker on, key change every 30 s, 14 busy CPU threads: 0 underruns, 0 device starvation, worker never below 140 ms ahead, ticker 60.000 fps with 0 frames missing. Engine alone, 20 minutes with seeks too: 0 underruns, worker never below 131 ms ahead. Both played digital silence (master 0) on this PC's Realtek device | `app/ui/scripts/real-app-soak.mjs`, `jukeoke-cli play --load-threads 14`, `docs/benchmarks/playback.md` |
@@ -60,10 +60,10 @@ tests and fixed what it found.
 | Lyrics ticker | 0 wrong letters under the marker across whole songs at 1280, 1440, 2560 and 3840 px; upcoming text at least 2.0 s ahead on every test song at 1440x900 and 1280x800 (dense lines drawn smaller, down to 0.45x). Limits: the work order asks for 2-3 s and 2 s is the floor; a song denser than the rap test song falls below 2 s again; the rap song's 2.0 s comes from the test suite's text measurements, while the last real-app run on it (before the shrinking was added) measured 1.46 s and was not repeated | `npm test` ticker suite + real-app runs on the three end-to-end songs (letters) |
 | Recorder (Windows) | Captures at the device's own rate (48 kHz here); recordings started/stopped in silence are full length (within 64 frames over 20 s); no dropouts. Not bit-identical on this PC because its Realtek driver applies EQ/speaker effects to everything played (residual about -125 dBFS after a linear fit); Windows settings were not changed | `docs/benchmarks/recorder.md` |
 | Portability (Windows) | Runs from a different drive letter (subst), writes nothing to per-user folders (app and Studio; all caches go to the stick); exe needs only Windows' own DLLs. Exceptions: Windows itself records two "MuiCache" values and an audio setting in the registry for any program it runs; two graphics shader caches changed during a run and could not be attributed | portable smoke test, user-folder audits, `docs/STUDIO_RUNTIME.md` |
-| Size budget | Apps + Studio runtime + default models: 8.12 GB of files (dist/ proven from a copy under another drive letter: smoke test 8/8, self-check 8/8, a real Studio job, 0 per-user writes); 8.63 GB on an exFAT stick with 32 KB clusters (calculated, no real stick; 10.5 GB with 128 KB clusters, so START-HERE says to choose 32 KB); the first song made adds about 0.24 GB of NVIDIA cache; budget 12 GB, target 9 GB. Mac app not included (cannot be built here) | `scripts/make-dist.sh` size report |
+| Size budget | Apps + Studio runtime + default models: 8.12 GB of files (dist/ rebuilt and proven again on 18 Nov 05:44-05:59 from a copy under another drive letter: smoke test 8/8, self-check 8/8, a real Studio job with verify --strict PASS, 0 per-user writes, 0 failed); 8.63 GB on an exFAT stick with 32 KB clusters (calculated, no real stick; 10.5 GB with 128 KB clusters, so START-HERE says to choose 32 KB); the first song made adds about 0.24 GB of NVIDIA cache; budget 12 GB, target 9 GB. Mac app not included (cannot be built here) | `scripts/make-dist.sh` size report |
 | Weak computers | GPU hidden, Studio folder missing, a Studio that hangs or crashes: the app opens in under a second, plays, and says plainly why songs cannot be made here (for a hung Studio after 64.6 s, with the app responsive meanwhile); never hangs. Not tried: the "not enough memory" case and a real weak PC | end-to-end run, screenshots |
-| End to end | Three CC songs (48 kHz FLAC, float WAV, MP4 video) plus a corrupt file in one queue through the real app: three valid song files, the corrupt file failed in 0.04 s with a plain message and the queue went on | `docs/benchmarks/end-to-end.md` |
-| Tests | UI 170 passed; Rust (release) 194 passed; Mac type-check 7 of 7 crates; Studio 229 CPU + 24 GPU passed; song-format conformance pass (92 checks); portable smoke test OK; 18 of 18 offline renders byte-identical to the first day's; CI script tests 74 passed; ShellCheck/actionlint clean; clippy 13 style warnings | `docs/TEST_RESULTS.md` |
+| End to end | Three CC songs (48 kHz FLAC, float WAV, MP4 video) plus a corrupt file in one queue through the real app: three valid song files, the corrupt file failed in 0.04 s with a plain message and the queue went on. On 18 Nov the Clean and Permissive presets also went through the real app: missing model shown with size and licence, downloaded from its pinned URL (SHA-256 checked), one valid song each | `docs/benchmarks/end-to-end.md`, `docs/TEST_RESULTS.md` section 8 |
+| Tests | UI 178 passed; Rust (release) 196 passed; Mac type-check 7 of 7 crates; Studio 230 CPU + 24 GPU passed; song-format conformance pass (92 checks); portable smoke test OK; ShellCheck/actionlint clean; clippy 13 style warnings (local sweep re-run 18 Nov 05:18-05:51); not re-run then: 18 of 18 offline renders byte-identical, CI script tests 74 passed | `docs/TEST_RESULTS.md` |
 
 ## 3. Built but not verified, and why
 
@@ -94,16 +94,21 @@ tests and fixed what it found.
   drive-letter test used `subst` on NTFS. On a real stick the first song made on each
   PC re-checks the 3.8 GB of models once; estimated 20-40 s extra on a USB 3 stick,
   about 2 minutes on USB 2 (not measured). A slow stick was not tried.
-- **App features no test drove in the real app**: dropping files from Explorer onto
-  the Studio (jobs were submitted by command), the Recorder's "Make a karaoke song from
-  this" button, the Sync editor's realign through the Studio, the native cover-picture
-  dialog, and the ticker pausing in a really minimised window. Each is covered by unit
-  or mock tests only.
+- **App features not fully driven in the real app**: the native file dialogs (the
+  cover picker's answer was supplied at the app's IPC boundary; everything after it ran
+  for real), a drag started in Explorer itself (a real Windows OLE drag from a helper
+  window reached the app's drop handler and the Studio form; several files at once was
+  not tried), re-align with a genuine correction (only a substituted word was tried),
+  and the ticker pausing in a really minimised window. Driven for real in the release
+  app on 18 Nov: recording -> "Make a karaoke song from this" -> a valid song; re-align
+  -> saved correction in the song file; cover replacement -> the song's cover is the
+  chosen JPEG byte for byte (docs/TEST_RESULTS.md section 8).
 - **Bluetooth latency** and other output devices: only this PC's Realtek speakers
   (and a silent null device) were used.
-- **Online lyrics lookup and model downloads from the internet through the app**:
-  tested against local and mocked sources; the real endpoints were not exercised end
-  to end.
+- **Online lyrics lookup through the app**: tested against local and mocked sources;
+  the real LRCLIB endpoint was not exercised end to end. Model downloads through the app
+  were exercised against the real pinned URLs for the Clean (204 MB) and Permissive
+  (913 MB) weights, SHA-256 checked, each followed by a valid song.
 
 ## 4. Not done
 
@@ -113,10 +118,6 @@ tests and fixed what it found.
   cannot be checked yet.
 - No Intel Mac build (not needed now).
 - Your own songs: `test-songs/` was empty, so Creative Commons songs stood in.
-- The "Clean" and "Permissive" presets cannot get their models through the app: the
-  Studio screen asks for model status and downloads without naming a preset, so only
-  the default "Full" set can be fetched (found in review by reading the code, not run).
-  `dist/Models/README.txt` says otherwise.
 - Two of the work order's section 9 proofs have not run at all: "same audio on both
   systems" (only Windows renders exist) and "the owner's Mac" (minimum macOS of every
   binary, no unguarded newer API, memory, screenshots, self-check on a runner).
@@ -134,11 +135,13 @@ tests and fixed what it found.
     its best setting (about 90 dB) whenever the key is not 0.
   - **Lyrics lookahead** is 2 s at best, not 2-3 s, and denser songs fall below 2 s
     (section 2, Lyrics ticker).
-  - **`dist/Models` bundles 3.8 GB of model weights**, although the work order says
-    weights are never bundled. Fine for your own stick (their licences allow it), but
-    the decision is not recorded in `DECISIONS.md`, which also lacks the other
-    packaging choices (for example the 32 KB clusters).
-  - **Key cache open points** (section 2, Key change on slow computers).
+  - **`dist/Models` bundles 3.8 GB of model weights** (the default set), although the
+    work order says weights are never bundled: a deliberate exception for your own
+    stick so it works offline (their licences allow it), recorded in D-212.
+    `release.yml` ships no weights.
+  - **Key cache open points**: the cache size cap can be overshot, and one unexplained
+    cache miss in 10 test runs (section 2, Key change on slow computers). The progress
+    figure no longer steps back (D-211, D-215).
 
 ## 5. Putting it on a USB stick
 
@@ -189,11 +192,9 @@ Use headphones or good speakers. Write down what you hear; a later session can a
 2. **Full vs Clean preset.** Make one song with each (Studio > preset). "Full"
    removes the singer better by measurement; "Clean" keeps slightly more cymbal
    shimmer (0.3-0.6 dB at 4-16 kHz). Listen for dull cymbals or a hollow midrange.
-   Clean's model is not on the stick, and the app cannot fetch it yet: its only
-   download button gets the default "Full" set (section 4), so a Clean song fails with
-   "models missing" until a later session fixes that (licence: section 8 item 3).
-   Note that the Studio screen's own description says "Clean" leaves less voice over,
-   which is the opposite of what was measured.
+   Clean's model is not on the stick: choose Clean in the Studio form and press its
+   download button (204 MB; the form says "licence: none published; commercial use
+   unclear" first, section 8 item 3).
 3. **Key change at +2, -2, +5, -5** (and +12/-12 once): listen for a phasey or
    watery sound, smeared drums or cymbals, and anything odd in the 40 ms crossfade
    when you change key while playing, and right after a seek at a shifted key. The
@@ -270,8 +271,9 @@ Use headphones or good speakers. Write down what you hear; a later session can a
    themselves (the release workflow already packages no Studio). See
    `THIRD_PARTY_LICENSES.md`.
 3. **The "Clean" preset's model has no published licence** (commercial use unclear).
-   It is not on the stick and would be downloaded only on request (the app has no
-   button for it yet, section 4). Keep it, or drop the preset.
+   It is not on the stick; it is downloaded only when you choose Clean in the Studio
+   form and press the download button, and the form states the licence first. Keep it,
+   or drop the preset.
    The default "Full" preset uses only models whose licences allow commercial use.
 4. **Git history.** The first 17 commits contain this PC's user folder name in a
    path in `PROGRESS.md`, and every commit carries your name and your GitHub no-reply

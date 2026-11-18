@@ -454,6 +454,90 @@ def test_models_missing_are_reported_and_never_downloaded(root, tmp_path):
         st.close()
 
 
+def test_models_status_and_download_follow_the_preset(root, tmp_path):
+    """The Studio screen asks about and downloads the preset chosen in its form: "clean"
+    lists and fetches only its own missing model (the default preset's are already on the
+    drive), "permissive" its own; every file goes through the .part + SHA-256 + rename
+    path and is recorded in the manifest. Local file:// URLs stand in for Hugging Face;
+    the lyrics models count as present."""
+    models = root / "Models"
+    models.mkdir()
+    src = tmp_path / "weights"
+    src.mkdir()
+    specs = {}
+    for mid, licence, commercial in (("t_full_vocals", "GPL-3.0", "yes"), ("t_clean_inst", "none published", "unclear"),
+                                     ("t_perm_vocals", "MIT", "yes")):
+        data = (mid.encode() * 5000)[:40_000]
+        (src / f"{mid}.ckpt").write_bytes(data)
+        specs[mid] = ((src / f"{mid}.ckpt").as_uri(), f"{mid}.ckpt", hashlib.sha256(data).hexdigest(), len(data),
+                      licence, commercial)
+    shutil.copy(src / "t_full_vocals.ckpt", models / "t_full_vocals.ckpt")  # the default preset is on the drive
+    code = ("import runpy, sys\n"
+            "from jukeoke_studio import presets\n"
+            "from jukeoke_studio.modelzoo import hfmodels, registry\n"
+            "from jukeoke_studio.modelzoo.registry import ModelSpec, WeightFile\n"
+            f"for mid, (url, fn, sha, size, lic, com) in {specs!r}.items():\n"
+            "    registry.MODELS[mid] = ModelSpec(id=mid, title=mid.upper(), arch='bs_roformer', role='vocals',"
+            " files=(WeightFile(url, fn, sha, size),), outputs=('vocals',), licence=lic, commercial=com,"
+            " source='https://example.invalid', author='test')\n"
+            "presets.PRESETS.update({'full': {'vocals': 't_full_vocals'},"
+            " 'clean': {'instrumental': 't_clean_inst', 'vocals': 't_full_vocals'},"
+            " 'permissive': {'vocals': 't_perm_vocals'}})\n"
+            "hfmodels.missing = lambda m, d=None: False\n"
+            f"sys.argv = ['jukeoke_studio', 'serve', '--root', {str(root)!r}, '--models-dir', {str(models)!r}]\n"
+            "runpy.run_module('jukeoke_studio', run_name='__main__', alter_sys=True)\n")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("JUKEOKE_")}
+    env["JUKEOKE_STUDIO_FAKE_HW"] = "ok"
+    p = subprocess.Popen([sys.executable, "-I", "-c", code], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, env=env, cwd=str(tmp_path))
+    seen: list[dict] = []
+
+    def ask(msg, timeout=60):
+        p.stdin.write((json.dumps(msg) + "\n").encode())
+        p.stdin.flush()
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            m = json.loads(p.stdout.readline())
+            seen.append(m)
+            if m.get("id") == msg["id"] and m.get("type") != "models.progress":
+                return m
+        raise AssertionError(f"no answer to {msg}")
+
+    try:
+        assert ask({"type": "hello", "id": "h", "protocol": 1})["type"] == "hello.ok"
+        full = ask({"type": "models.status", "id": "s1", "preset": "full"})
+        assert full["preset"] == "full" and full["all_present"] is True and full["download_bytes"] == 0
+        clean = ask({"type": "models.status", "id": "s2", "preset": "clean"})
+        assert clean["preset"] == "clean" and clean["all_present"] is False
+        gone = [m for m in clean["models"] if not m["present"]]
+        assert [(m["name"], m["licence"], m["commercial"], m["size_bytes"]) for m in gone] == [
+            ("t_clean_inst", "none published", "unclear", 40_000)]
+        assert clean["download_bytes"] == 40_000
+        r = ask({"type": "models.download", "id": "d1", "preset": "clean"})
+        assert r["type"] == "models.download.result" and r["ok"] is True and r["downloaded"] == ["t_clean_inst"]
+        assert (models / "t_clean_inst.ckpt").read_bytes() == (src / "t_clean_inst.ckpt").read_bytes()
+        assert not (models / "t_perm_vocals.ckpt").exists(), "only the chosen preset's models"
+        assert ask({"type": "models.status", "id": "s3", "preset": "clean"})["all_present"] is True
+        perm = ask({"type": "models.status", "id": "s4", "preset": "permissive"})
+        assert perm["all_present"] is False and perm["download_bytes"] == 40_000
+        r = ask({"type": "models.download", "id": "d2", "preset": "permissive"})
+        assert r["ok"] is True and r["downloaded"] == ["t_perm_vocals"]
+        manifest = json.loads((models / "manifest.json").read_text(encoding="utf-8"))
+        for mid in ("t_clean_inst", "t_perm_vocals"):
+            assert manifest[f"{mid}.ckpt"]["sha256"] == specs[mid][2] and not manifest[f"{mid}.ckpt"].get("bad")
+        assert not [n for n in os.listdir(models) if n.endswith(".part")]
+        bad = ask({"type": "models.download", "id": "d3", "preset": "nope"})
+        assert bad["type"] == "error" and bad["error"]["code"] == "bad_request"
+        ask({"type": "shutdown", "id": "x"})
+        p.wait(15)
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait(10)
+    err = p.stderr.read().decode("utf-8", "replace")
+    assert "Traceback" not in err, err
+
+
 # ---------------------------------------------------------------------- portability
 
 def test_portable_environment_points_every_cache_into_the_stick(tmp_path):

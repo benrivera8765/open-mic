@@ -389,10 +389,16 @@ export async function togglePlay(): Promise<void> {
   if (st === "playing") await pause();
   else if (store.get().song) await play();
 }
+let lastSeekAt = Number.NEGATIVE_INFINITY;
+/** Milliseconds since the last seek this UI asked for (the key-preparation note uses it, D-215). */
+export function msSinceSeek(): number {
+  return performance.now() - lastSeekAt;
+}
 export async function seek(positionS: number): Promise<void> {
   if (!api || !store.get().song) return;
   const dur = store.get().song!.summary.duration_s;
   const p = Math.max(0, Math.min(dur, positionS));
+  lastSeekAt = performance.now();
   clock.jump(p, performance.now());
   kick();
   await attempt(api.playerSeek(p));

@@ -38,6 +38,7 @@ import type {
   SongDetail,
   SongSettings,
   StudioModelsStatus,
+  StudioPreset,
   StudioStatus,
   StudioSubmitRequest,
 } from "./types";
@@ -97,8 +98,10 @@ export interface Api {
   studioLyricsLookup(query: LyricsLookupQuery): Promise<{ results: LookupResult[] }>;
   studioSubmit(request: StudioSubmitRequest): Promise<{ job_id: string }>;
   studioCancel(jobId: string): Promise<void>;
-  studioModelsStatus(): Promise<StudioModelsStatus>;
-  studioModelsDownload(): Promise<void>;
+  /** The models of one quality preset (the one chosen in the form), plus the lyrics models. */
+  studioModelsStatus(preset: StudioPreset): Promise<StudioModelsStatus>;
+  /** Downloads that preset's missing models; resolves when the download has finished. */
+  studioModelsDownload(preset: StudioPreset): Promise<void>;
   pickFiles(): Promise<string[]>;
   // 10. Self-check (`silent`: digital silence instead of the -60 dBFS tone; a core addition)
   selfcheckRun(userAgent: string, silent?: boolean): Promise<SelfCheckResult>;
@@ -207,8 +210,8 @@ export class TauriApi implements Api {
   studioSubmit = (request: StudioSubmitRequest) =>
     call<{ job_id: string }>("studio_submit", { [ARG_NAMES.studio_submit]: request });
   studioCancel = (job_id: string) => call<void>("studio_cancel", { job_id });
-  studioModelsStatus = () => call<StudioModelsStatus>("studio_models_status");
-  studioModelsDownload = () => call<void>("studio_models_download");
+  studioModelsStatus = (preset: StudioPreset) => call<StudioModelsStatus>("studio_models_status", { preset });
+  studioModelsDownload = (preset: StudioPreset) => call<void>("studio_models_download", { preset });
   pickFiles = () => call<string[]>("pick_files");
   pickCoverImage = () => call<string | null>("pick_cover_image");
   studioCoverPreview = (path: string, max_px: number) => call<CoverResult>("studio_cover_preview", { path, max_px });
