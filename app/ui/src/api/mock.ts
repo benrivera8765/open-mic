@@ -7,7 +7,9 @@
 // URL switches (for trying states by hand and for screenshots):
 //   ?platform=macos        Mac app: no Studio, recorder asks for "Screen Recording"
 //   ?studio=off            Studio unavailable on Windows (reasons shown)
-//   ?models=missing        Studio available but its models are not downloaded
+//   ?models=missing        Studio available but none of its models are downloaded (by
+//                          default the "full" preset and the lyrics models are present and
+//                          the "clean" / "permissive" ones are not, as on the owner's stick)
 //   ?recorder=denied|not_determined|unavailable
 //   ?empty=1               empty library
 //   ?many=200              add generated filler songs (library performance)
@@ -46,7 +48,9 @@ import type {
   SongSettings,
   SongSummary,
   StudioJob,
+  StudioModelInfo,
   StudioModelsStatus,
+  StudioPreset,
   StudioStatus,
   StudioSubmitRequest,
 } from "./types";
@@ -54,6 +58,32 @@ import { STUDIO_STAGES } from "./types";
 import { DEFAULT_APP_SETTINGS } from "./defaults";
 import { cloneLyrics, editLineText, lyricsText } from "../lib/lyrics";
 import { keyLabel } from "../lib/keys";
+
+const NEEDED_FOR: Record<string, string> = { separation: "every song", alignment: "every song with lyrics", transcription: "songs without lyrics (transcription)" };
+/** The model list the mock's Studio reports (names, sizes and licences of the real registry). */
+const MOCK_MODELS: Record<string, StudioModelInfo> = Object.fromEntries(
+  (
+    [
+      ["vocals", "bs_roformer_anvuew_ft1", "BS-RoFormer vocals ft1 (anvuew)", "bs_roformer_ft1_anvuew_sdr_12.55.ckpt", 204_493_312, "GPL-3.0", "yes", "separation"],
+      ["karaoke", "bs_karaoke_anvuew", "BS-RoFormer Karaoke (anvuew)", "karaoke_bs_roformer_anvuew.ckpt", 204_486_925, "GPL-3.0", "yes", "separation"],
+      ["drums", "bs_roformer_4stems_syh", "BS-RoFormer 4 stems FT (SYH99999)", "bs_roformer_4stems_ft_syh.pth", 527_245_586, "Apache-2.0", "yes", "separation"],
+      ["instrumental", "bs_inst_resurrection_unwa", "BS-RoFormer Resurrection Inst (unwa)", "bs_roformer_resurrection_inst.ckpt", 204_483_033, "none published", "unclear", "separation"],
+      ["vocals", "mel_roformer_kim", "Mel-Band RoFormer vocals (Kimberley Jensen)", "MelBandRoformer_kim.ckpt", 913_106_900, "MIT", "yes", "separation"],
+      ["alignment", "facebook/wav2vec2-large-960h-lv60-self", "wav2vec2 large 960h lv60 self", "pytorch_model.bin", 1_262_055_246, "Apache-2.0", "yes", "alignment"],
+      ["transcription", "mobiuslabsgmbh/faster-whisper-large-v3-turbo", "Whisper large-v3-turbo", "model.bin", 1_617_884_929, "MIT", "yes", "transcription"],
+    ] as const
+  ).map(([key, name, title, file, size_bytes, licence, commercial, task]) => [
+    name,
+    { key, name, title, file, size_bytes, present: false, licence, commercial, task, needed_for: NEEDED_FOR[task] },
+  ]),
+);
+/** studio/jukeoke_studio/presets.py PRESETS (separation models per preset). */
+const PRESET_MODELS: Record<StudioPreset, string[]> = {
+  full: ["bs_roformer_anvuew_ft1", "bs_karaoke_anvuew", "bs_roformer_4stems_syh"],
+  clean: ["bs_inst_resurrection_unwa", "bs_roformer_anvuew_ft1", "bs_karaoke_anvuew", "bs_roformer_4stems_syh"],
+  permissive: ["mel_roformer_kim", "bs_roformer_4stems_syh"],
+};
+const LYRICS_MODELS = ["facebook/wav2vec2-large-960h-lv60-self", "mobiuslabsgmbh/faster-whisper-large-v3-turbo"];
 
 export interface MockOptions {
   platform: "windows" | "macos";
@@ -150,14 +180,15 @@ export class MockApi implements Api {
   private permission: RecorderPermission;
   private jobs: StudioJob[] = [];
   private jobTicker: unknown = null;
-  private modelsPresent: boolean;
+  /** Model names on the simulated drive (MOCK_MODELS keys). */
+  private modelsOnDisk: Set<string>;
   private nextId = 1;
 
   constructor(options: Partial<MockOptions> = {}) {
     this.o = { ...DEFAULT_OPTIONS, ...options };
     this.permission =
       this.o.recorder === "unavailable" ? "not_required" : this.o.platform === "macos" && this.o.recorder === "not_required" ? "not_determined" : this.o.recorder;
-    this.modelsPresent = this.o.models === "present";
+    this.modelsOnDisk = new Set(this.o.models === "present" ? [...PRESET_MODELS.full, ...LYRICS_MODELS] : []);
     this.settings.ui.skin = this.o.skin;
     const lib = this.o.empty ? [] : [...demoLibrary(), ...fillerSongs(this.o.many)];
     this.songs = lib.map((demo) => ({ demo, settings: { ...demo.settings, levels: { ...demo.settings.levels } }, lyricsOverride: null, metadata: {} }));
@@ -601,7 +632,7 @@ export class MockApi implements Api {
       available,
       reasons: available ? [] : ["The Studio is not available on this computer. Songs are created on a stronger computer and played anywhere."],
       running: this.jobs.some((j) => j.state === "running"),
-      models_present: this.modelsPresent,
+      models_present: this.presetPresent("full"),
       queue: this.jobs.map((j) => ({ ...j })),
     });
   }
@@ -653,7 +684,7 @@ export class MockApi implements Api {
 
   studioSubmit(request: StudioSubmitRequest): Promise<{ job_id: string }> {
     if (!this.studioAvailable()) return this.reject(fail("no_gpu", "The Studio is not available on this computer."));
-    if (!this.modelsPresent) return this.reject(fail("models_missing", "The separation models are not downloaded yet. Download them first (about 1.6 GB)."));
+    if (!this.presetPresent(request.preset ?? "full")) return this.reject(fail("models_missing", "The models for this quality preset are not downloaded yet. Download them first."));
     if ((request.lyrics.mode === "text" && !request.lyrics.text?.trim()) || (request.lyrics.mode === "lrc" && !request.lyrics.lrc?.trim())) {
       return this.reject(fail("lyrics_missing", "No lyrics were given. Paste them, choose an .lrc file, or pick Automatic."));
     }
@@ -725,30 +756,48 @@ export class MockApi implements Api {
     return this.reply(undefined);
   }
 
-  studioModelsStatus(): Promise<StudioModelsStatus> {
+  /** Every separation model of `preset` is on the simulated drive. */
+  private presetPresent(preset: StudioPreset): boolean {
+    return PRESET_MODELS[preset].every((m) => this.modelsOnDisk.has(m));
+  }
+
+  /** Like the real Studio: the preset's separation models plus the two lyrics models. */
+  private modelsFor(preset: StudioPreset): StudioModelInfo[] {
+    return [...PRESET_MODELS[preset], ...LYRICS_MODELS].map((name) => ({ ...MOCK_MODELS[name], present: this.modelsOnDisk.has(name) }));
+  }
+
+  studioModelsStatus(preset: StudioPreset): Promise<StudioModelsStatus> {
+    const models = this.modelsFor(preset);
     return this.reply({
-      models: [
-        { key: "vocals", name: "Vocal separation (RoFormer)", file: "vocals.ckpt", size_bytes: 639_000_000, present: this.modelsPresent, licence: "MIT", commercial: "yes" },
-        { key: "karaoke", name: "Lead / backing vocal split", file: "karaoke.ckpt", size_bytes: 428_000_000, present: this.modelsPresent, licence: "MIT", commercial: "yes" },
-        { key: "drums", name: "Drum separation", file: "drums.ckpt", size_bytes: 310_000_000, present: this.modelsPresent, licence: "MIT", commercial: "yes" },
-        { key: "align", name: "Letter alignment (wav2vec2)", file: "align.bin", size_bytes: 1_260_000_000, present: this.modelsPresent, licence: "Apache-2.0", commercial: "yes" },
-      ],
-      all_present: this.modelsPresent,
+      preset,
+      models,
+      all_present: models.every((m) => m.present),
+      download_bytes: models.filter((m) => !m.present).reduce((a, m) => a + m.size_bytes, 0),
     });
   }
 
-  studioModelsDownload() {
-    let done = 0;
-    const total = 2_637_000_000;
-    const h = this.o.setInterval(() => {
-      done = Math.min(total, done + 160_000_000);
-      this.emit("studio://models", { name: "Vocal separation (RoFormer)", done_bytes: done, total_bytes: total });
-      if (done >= total) {
-        this.o.clearInterval(h);
-        this.modelsPresent = true;
-      }
-    }, 100);
-    return this.reply(undefined);
+  /** Resolves when the download has finished, like the real core. */
+  studioModelsDownload(preset: StudioPreset): Promise<void> {
+    const missing = this.modelsFor(preset).filter((m) => !m.present);
+    return new Promise((resolve) => {
+      if (missing.length === 0) return resolve();
+      let k = 0;
+      let done = 0;
+      const h = this.o.setInterval(() => {
+        const m = missing[k];
+        done = Math.min(m.size_bytes, done + Math.max(1, Math.ceil(m.size_bytes / 4)));
+        this.emit("studio://models", { name: m.file, done_bytes: done, total_bytes: m.size_bytes });
+        if (done >= m.size_bytes) {
+          this.modelsOnDisk.add(m.name);
+          k += 1;
+          done = 0;
+          if (k >= missing.length) {
+            this.o.clearInterval(h);
+            resolve();
+          }
+        }
+      }, 25);
+    });
   }
 
   pickCoverImage() {

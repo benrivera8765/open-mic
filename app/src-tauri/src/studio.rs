@@ -38,6 +38,9 @@ use crate::events::{EventSink, emit, names};
 
 /// Protocol version this app speaks (docs/STUDIO_PROTOCOL.md).
 pub const PROTOCOL: u64 = 1;
+/// The Studio's default quality preset (STUDIO_PROTOCOL `hello.ok` `default_preset`):
+/// `StudioStatus.models_present` is about this preset's models.
+pub const DEFAULT_PRESET: &str = "full";
 /// Crashes tolerated within [`CRASH_WINDOW`] before automatic restarts stop.
 pub const MAX_CRASHES: usize = 3;
 pub const CRASH_WINDOW: Duration = Duration::from_secs(600);
@@ -398,7 +401,7 @@ impl Studio {
         let ok = matches!(avail, Avail::Yes { .. });
         lock(&self.state).avail = avail;
         if ok {
-            match self.request(json!({"type": "models.status", "preset": "full"}), cfg.request_timeout) {
+            match self.request(json!({"type": "models.status", "preset": DEFAULT_PRESET}), cfg.request_timeout) {
                 Ok(r) => {
                     lock(&self.state).models_present =
                         r.get("all_present").and_then(Value::as_bool).unwrap_or(false);
@@ -708,9 +711,6 @@ impl Studio {
                 }),
             );
         }
-        if t == "models.download.result" && msg.get("ok").and_then(Value::as_bool) == Some(true) {
-            lock(&self.state).models_present = true;
-        }
         if let Some(id) = msg.get("id").and_then(Value::as_str) {
             let tx = lock(&self.state).pending.get(id).map(|(_, tx)| tx.clone());
             if let Some(tx) = tx {
@@ -907,7 +907,7 @@ impl Studio {
         if !Path::new(path).is_file() {
             return Err(ApiError::new("not_found", "That file could not be found."));
         }
-        let preset = obj.get("preset").and_then(Value::as_str).unwrap_or("full");
+        let preset = obj.get("preset").and_then(Value::as_str).unwrap_or(DEFAULT_PRESET);
         if !matches!(preset, "full" | "clean" | "permissive") {
             return Err(ApiError::bad_request(
                 "The quality preset must be \"full\", \"clean\" or \"permissive\".",
@@ -1148,22 +1148,31 @@ impl Studio {
         self.call(msg, None)
     }
 
-    /// `studio_models_status`.
+    /// `studio_models_status(preset)`: the models of that preset (the one chosen in the
+    /// Studio form) plus the lyrics models. `StudioStatus.models_present` stays the
+    /// answer for the default preset only, so asking about "clean" or "permissive" never
+    /// changes it.
     pub fn models_status(self: &Arc<Self>, preset: &str) -> ApiResult<Value> {
         let r = self.call(json!({"type": "models.status", "preset": preset}), None)?;
-        if let Some(all) = r.get("all_present").and_then(Value::as_bool) {
+        if let Some(all) = r.get("all_present").and_then(Value::as_bool).filter(|_| preset == DEFAULT_PRESET) {
             lock(&self.state).models_present = all;
         }
         Ok(r)
     }
 
-    /// `studio_models_download`: progress arrives as `studio://models` events; this
-    /// waits until the download has finished (10 minutes without progress = timeout).
+    /// `studio_models_download(preset)`: downloads that preset's missing models (and the
+    /// lyrics models); progress arrives as `studio://models` events; this waits until the
+    /// download has finished (10 minutes without progress = timeout). Then
+    /// `models_present` is asked again for the default preset: a "permissive" download
+    /// does not bring the default preset's models.
     pub fn models_download(self: &Arc<Self>, preset: &str) -> ApiResult<Value> {
         let r = self.call(
             json!({"type": "models.download", "preset": preset}),
             Some(Duration::from_secs(600)),
         )?;
+        if let Err(e) = self.models_status(DEFAULT_PRESET) {
+            crate::applog::warn(&format!("studio models.status after a download: {e}"));
+        }
         self.emit_status();
         Ok(r)
     }

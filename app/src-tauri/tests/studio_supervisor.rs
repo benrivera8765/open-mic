@@ -230,6 +230,52 @@ fn requests_inspect_lookup_models_realign() {
     assert_eq!(parsed.lines[1].text(), "little star");
 }
 
+/// The Studio form asks about and downloads the models of the preset chosen in it
+/// (STUDIO_PROTOCOL 4; the core used to be called without a preset, so "clean" and
+/// "permissive" could never be fetched). `models_present` stays about the default preset.
+#[test]
+fn models_follow_the_chosen_preset() {
+    let Some(f) = fixture("presets", &[("FAKE_STUDIO_MODELS", "present")], |_| {}) else { return };
+    assert!(f.studio.status().models_present, "the default preset's models are on the drive");
+    let clean = f.studio.models_status("clean").unwrap();
+    assert_eq!(clean["preset"], "clean");
+    assert_eq!(clean["all_present"], false);
+    let missing: Vec<&str> = clean["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["present"] == false)
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(missing, ["fake-inst"]);
+    assert_eq!(clean["models"][1]["licence"], "none published");
+    assert_eq!(clean["models"][1]["commercial"], "unclear");
+    assert!(f.studio.status().models_present, "asking about another preset leaves models_present alone");
+
+    let r = f.studio.models_download("clean").unwrap();
+    assert_eq!(r["downloaded"], json!(["fake-inst"]), "only the chosen preset's missing model");
+    assert_eq!(f.studio.models_status("clean").unwrap()["all_present"], true);
+    assert_eq!(f.studio.models_status("permissive").unwrap()["all_present"], false);
+    let r = f.studio.models_download("permissive").unwrap();
+    assert_eq!(r["downloaded"], json!(["fake-perm-vocals"]));
+    let names: Vec<String> = f.sink.of("studio://models").iter().map(|e| e["name"].as_str().unwrap().to_string()).collect();
+    assert_eq!(names, ["fake-inst.ckpt", "fake-inst.ckpt", "fake-inst.ckpt", "fake-perm-vocals.ckpt", "fake-perm-vocals.ckpt", "fake-perm-vocals.ckpt"]);
+    assert_eq!(f.studio.models_status("bogus").unwrap_err().code, "bad_request");
+}
+
+/// A download of another preset does not claim the default preset's models are present.
+#[test]
+fn a_permissive_download_does_not_mark_the_default_models_present() {
+    let Some(f) = fixture("presets-missing", &[("FAKE_STUDIO_MODELS", "missing")], |_| {}) else { return };
+    assert!(!f.studio.status().models_present);
+    f.studio.models_download("permissive").unwrap();
+    assert!(!f.studio.status().models_present, "permissive shares no vocal model with full");
+    f.studio.models_download("clean").unwrap();
+    assert!(f.studio.status().models_present, "clean brings the default preset's models too");
+    let st = f.sink.of("studio://status");
+    assert_eq!(st.last().unwrap()["models_present"], true);
+}
+
 #[test]
 fn probe_says_no_gpu() {
     let Some(f) = fixture("nogpu", &[("FAKE_STUDIO_PROBE", "no_gpu")], |_| {}) else { return };

@@ -421,15 +421,25 @@ export interface StudioSubmitRequest {
 export interface StudioModelInfo {
   key: string;
   name: string;
+  /** Plain model name (the real Studio sends it; older cores and the mock may not). */
+  title?: string;
   file: string;
   size_bytes: number;
   present: boolean;
+  /** "GPL-3.0", "MIT", "Apache-2.0", or "none published". */
   licence: string;
+  /** "yes", "no" or "unclear" (MODELS.md). */
   commercial: string;
+  /** "separation", "alignment" or "transcription". */
+  task?: string;
+  needed_for?: string;
 }
 export interface StudioModelsStatus {
+  /** The preset the answer is for (the Studio echoes it). */
+  preset?: StudioPreset;
   models: StudioModelInfo[];
   all_present: boolean;
+  download_bytes?: number;
 }
 
 export interface StudioModelsEvent {

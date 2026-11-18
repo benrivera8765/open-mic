@@ -1,10 +1,13 @@
 # Models
 
 Every machine-learning model Jukeoke can download, where it comes from, its licence,
-and whether that licence allows commercial use. Weights are **never** committed or
-bundled: the Studio downloads them on first use into `Models/` (portable) or
-`$JK_BUILD/models-cache` (development) and refuses any file whose SHA-256 differs from
-the one below. The machine-readable source of truth is
+and whether that licence allows commercial use. Weights are **never** committed and
+never in a release archive (`release.yml` packages no weights): the Studio downloads them
+when the user asks into `Models/` (portable) or `$JK_BUILD/models-cache` (development) and
+refuses any file whose SHA-256 differs from the one below. The one exception is the
+owner's own stick: `scripts/make-dist.sh` copies the default `full` set, the alignment
+model and the transcription model (3.8 GB, all licences allow copying) into `dist/Models`
+so that stick works offline (D-212). The machine-readable source of truth is
 `studio/jukeoke_studio/modelzoo/registry.py`; `studio/tests/test_registry.py` fails if this
 file and the registry disagree.
 
@@ -43,7 +46,11 @@ adds 204 MB; `permissive` is 1.44 GB (913 + 527 MB). Every preset also needs the
 alignment model (1.26 GB) and, for songs without lyrics, Whisper large-v3-turbo
 (1.62 GB) - see "Lyrics alignment and transcription" below. The app downloads only when
 the user asks (protocol `models.download`); a song whose models are missing fails with
-`models_missing` instead of downloading silently.
+`models_missing` instead of downloading silently. The Studio form asks for the models of
+the preset chosen in it: when some are missing it lists each one with its size and
+licence (for `clean`: "licence: none published; commercial use unclear") and downloads
+that preset's models only when the user presses the button. A prepared stick carries the
+`full` set only (D-212).
 
 `PRESETS` / `PRESET_INFO` in `studio/jukeoke_studio/presets.py` are the source of truth
 for the presets (the descriptions the app shows come from `PRESET_INFO`).

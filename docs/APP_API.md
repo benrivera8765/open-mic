@@ -163,7 +163,9 @@ previous key keeps playing until enough is rendered (5 s ahead with a renderer f
 than 1.1x real time, otherwise to the end of the song), then the same 40 ms crossfade
 switches. In prerender mode the drum level stays live (unless "shift drums" is on);
 any other level change is rendered like a key (`reason: "mix"`). The UI shows
-"Preparing key +2… 40%" from `key_preparing`. After the song has ended, a new key is
+"Preparing key +2… 40%" from `key_preparing`; `progress` can dip by about 1 % between
+cache cells, so the UI shows the highest figure seen for the same `semitones` and
+`reason` and starts again when either changes or `key_preparing` is null (D-211); within 1 s after a UI seek, which restarts `progress` from the new position, a drop of more than 2 points is shown as it is (D-215). After the song has ended, a new key is
 prepared from the start (where `player_play` restarts) and `key_preparing` clears as
 soon as it is ready there; the switch happens when play starts.
 
@@ -328,7 +330,12 @@ Event `recorder://level` about 20 times per second while recording: a `RecorderS
   the queue.
 - `studio_models_status(preset?)`, `studio_models_download(preset?)` - `preset`
   defaults to "full"; the results are the Studio's `models.status` /
-  `models.download` results (STUDIO_PROTOCOL section 4) without the envelope.
+  `models.download` results (STUDIO_PROTOCOL section 4) without the envelope. The UI
+  always passes the preset chosen in the Studio form (2026-11-18, D-209), so "clean" and
+  "permissive" get their own models; `studio_models_download` resolves when the download
+  has finished. `StudioStatus.models_present` is about the default preset only: asking
+  about another preset never changes it, and after every download the core asks again
+  for the default preset (a "permissive" download does not bring the default models).
 - `pick_files() -> string[]` (native file dialog: audio and video types) and drag-and-drop
   of files onto the window (Tauri drag-drop event `studio://dropped { paths }`).
 - `pick_cover_image() -> string | null` **(added)** - native file dialog for one JPEG or

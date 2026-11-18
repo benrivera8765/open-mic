@@ -9,7 +9,7 @@
 import { useRef } from "preact/hooks";
 import type { KeyPreparing } from "../api/types";
 import { KEY_MAX, KEY_MIN, keyLabel, signed } from "../lib/keys";
-import { setKey, shiftKey, useApp } from "../state/app";
+import { msSinceSeek, setKey, shiftKey, useApp } from "../state/app";
 
 /** "Preparing key +2… 40%" while a key (or mix) is rendered ahead (WORK_ORDER 4.5). */
 export function keyPrepareText(p: KeyPreparing | null | undefined): string | null {
@@ -18,10 +18,34 @@ export function keyPrepareText(p: KeyPreparing | null | undefined): string | nul
   return p.reason === "mix" ? `Preparing the new mix (key ${signed(p.semitones)})… ${pct}%` : `Preparing key ${signed(p.semitones)}… ${pct}%`;
 }
 
+/**
+ * The progress shown never steps backwards within one key change: the core's figure can
+ * dip by about 1 % (HANDOFF 2, key change on slow computers), so the note keeps the
+ * highest value shown so far for the same key and reason, and starts again from the
+ * core's figure for a new key, a new reason, or after the preparation has ended.
+ * A seek restarts the core's figure from the new position (measured in the release app:
+ * 41 % -> 0 %), so shortly after a seek (`afterSeek`) a drop of more than 2 points is
+ * shown as it is instead of holding the old figure (D-215).
+ */
+export function monotonicPrepare(prev: KeyPreparing | null, next: KeyPreparing | null | undefined, afterSeek = false): KeyPreparing | null {
+  if (!next) return null;
+  const progress = Number.isFinite(next.progress) ? next.progress : 0;
+  if (prev && prev.semitones === next.semitones && prev.reason === next.reason) {
+    if (afterSeek && progress < prev.progress - 0.02) return { ...next, progress };
+    return { ...next, progress: Math.max(prev.progress, progress) };
+  }
+  return { ...next, progress };
+}
+
+/** How long after a seek a drop in the core's figure counts as a restart (D-215). */
+const SEEK_RESTART_MS = 1000;
+
 /** The previous key keeps playing meanwhile; shown next to the key control. */
 export function KeyPrepareNote() {
-  const prep = useApp((s) => s.player?.key_preparing ?? null);
-  const text = keyPrepareText(prep);
+  const raw = useApp((s) => s.player?.key_preparing ?? null);
+  const shown = useRef<KeyPreparing | null>(null);
+  shown.current = monotonicPrepare(shown.current, raw, msSinceSeek() < SEEK_RESTART_MS);
+  const text = keyPrepareText(shown.current);
   if (!text) return null;
   return (
     <p class="key-prepare" role="status" title="This computer renders the new key ahead so playback never stutters; the previous key plays until it is ready.">

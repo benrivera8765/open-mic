@@ -17,11 +17,30 @@ import { formatBytes, formatRate, formatTime } from "../lib/format";
 import { addToStudio, getApiSync, loadSong, refreshStudio, removeFromStudio, toast, useApp } from "../state/app";
 import { Note, Progress, Section, Select } from "./common";
 
-const PRESETS: { value: StudioPreset; label: string; hint: string }[] = [
-  { value: "full", label: "Full (recommended)", hint: "Removes only the lead singer from the original recording: nothing else is lost, a faint trace of the voice can remain." },
-  { value: "clean", label: "Clean", hint: "A model rebuilds the music without the singer: less voice left over, sometimes a little less body." },
-  // studio/jukeoke_studio/presets.py PRESET_INFO["permissive"]; the core already accepted it.
-  { value: "permissive", label: "Permissive licences only", hint: "Only MIT / Apache-2.0 models. No such model can tell the lead singer from the backing singers, so every voice is removed: backing vocals and harmonies are missing." },
+// What each preset does, in the measured terms of docs/benchmarks/separation.md (ccMixter
+// lead/backing set, 18 mixes): lead singer left in the karaoke mix -15.9 dB with "full"
+// against -14.8 dB with "clean" (lower is less voice); "full" loses about 0.6-1 dB at
+// 4-16 kHz against the true karaoke mix (the vocal estimate carries some cymbal energy),
+// "clean" 0.3-0.6 dB less than that, and "clean" widens the stereo image (side-to-mid
+// +0.38 dB on average, up to +3.1 dB). "permissive" was not measured against these, so
+// "full" is compared with "clean" only (D-215).
+// Licences: MODELS.md; studio/jukeoke_studio/presets.py PRESET_INFO says the same.
+export const PRESETS: { value: StudioPreset; label: string; hint: string }[] = [
+  {
+    value: "full",
+    label: "Full (recommended)",
+    hint: "Subtracts the lead singer from the original recording, so the band is not rebuilt, though a little cymbal brightness can go with the voice. Leaves less of the singer than Clean (a faint trace can remain); backing vocals are kept. Licences GPL-3.0 and Apache-2.0: commercial use allowed.",
+  },
+  {
+    value: "clean",
+    label: "Clean",
+    hint: "A model rebuilds the music without the singing. Leaves slightly more of the singer than Full, keeps cymbals a little brighter, and can make the sound wider than the recording; backing vocals are kept. One model has no published licence: commercial use unclear.",
+  },
+  {
+    value: "permissive",
+    label: "Permissive licences only",
+    hint: "Only MIT and Apache-2.0 models. None of them can tell the lead singer from the backing singers, so every voice is removed: backing vocals and harmonies are missing. Commercial use allowed.",
+  },
 ];
 
 const STAGE_LABELS: Record<string, string> = { decode: "Read", separate: "Separate", lyrics: "Lyrics", align: "Align", analyse: "Key & tempo", write: "Save" };
@@ -70,37 +89,87 @@ function Unavailable({ reasons }: { reasons: string[] }) {
   );
 }
 
-function Models() {
-  const present = useApp((s) => s.studio?.models_present ?? true);
+/** "licence: GPL-3.0; commercial use allowed", "licence: none published; commercial use unclear". */
+export function licenceWords(m: { licence: string; commercial: string }): string {
+  const licence = !m.licence || /^none/i.test(m.licence) ? "none published" : m.licence;
+  const use = m.commercial === "yes" ? "commercial use allowed" : m.commercial === "no" ? "non-commercial use only" : "commercial use unclear";
+  return `licence: ${licence}; ${use}`;
+}
+
+/** Every notice re-reads its status after any download (two forms can share models). */
+const modelsChanged = new Set<() => void>();
+
+/**
+ * The models of one quality preset (the one chosen in the form; STUDIO_PROTOCOL 4): shown
+ * only when some are missing from this drive. It names each missing model with its size
+ * and licence, and downloads them only when the user presses the button: nothing is
+ * downloaded silently, and a song whose models are missing fails with "models missing".
+ */
+export function ModelsNotice({ preset }: { preset: StudioPreset }) {
   const [status, setStatus] = useState<StudioModelsStatus | null>(null);
   const [progress, setProgress] = useState<{ name: string; done: number; total: number } | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [seq, setSeq] = useState(0);
   useEffect(() => {
-    if (present) return;
-    void getApiSync().studioModelsStatus().then(setStatus).catch(() => undefined);
-    return getApiSync().on("studio://models", (e) => {
-      setProgress({ name: e.name, done: e.done_bytes, total: e.total_bytes });
-      if (e.total_bytes > 0 && e.done_bytes >= e.total_bytes) void refreshStudio();
-    });
-  }, [present]);
-  if (present) return null;
+    const bump = () => setSeq((n) => n + 1);
+    modelsChanged.add(bump);
+    return () => void modelsChanged.delete(bump);
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    setStatus(null);
+    getApiSync()
+      .studioModelsStatus(preset)
+      .then((r) => !cancelled && setStatus(r))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [preset, seq]);
+  useEffect(() => {
+    if (!downloading) return;
+    return getApiSync().on("studio://models", (e) => setProgress({ name: e.name, done: e.done_bytes, total: e.total_bytes }));
+  }, [downloading]);
   const missing = status?.models.filter((m) => !m.present) ?? [];
+  if (!status || missing.length === 0) return null;
   const bytes = missing.reduce((a, m) => a + m.size_bytes, 0);
+  const presetName = PRESETS.find((p) => p.value === preset)?.label.replace(/ \(recommended\)$/, "") ?? preset;
+  const download = async () => {
+    setDownloading(true);
+    setProgress(null);
+    try {
+      await getApiSync().studioModelsDownload(preset);
+      toast(`Models for the ${presetName} preset downloaded and checked.`);
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    } finally {
+      setDownloading(false);
+      setProgress(null);
+      for (const f of modelsChanged) f();
+      void refreshStudio();
+    }
+  };
   return (
-    <Note kind="warn">
-      The Studio's models are not on this drive yet{bytes ? ` (${formatBytes(bytes)} to download, once)` : ""}. They are only downloaded when you ask.{" "}
-      {progress ? (
-        <Progress value={progress.total ? progress.done / progress.total : 0} label={`Downloading ${progress.name}`} />
+    <div class="note note--warn studio__models-notice" data-preset={preset}>
+      <p>
+        {missing.length === 1 ? "One model" : `${missing.length} models`} for the <strong>{presetName}</strong> preset {missing.length === 1 ? "is" : "are"} not on this drive yet: {formatBytes(bytes)} to download, once. Nothing is downloaded until you press the button.
+      </p>
+      <ul class="studio__models">
+        {missing.map((m) => (
+          <li key={m.file}>
+            {m.title ?? m.name}, {formatBytes(m.size_bytes)}
+            {m.needed_for ? ` (needed for ${m.needed_for})` : ""}: {licenceWords(m)}
+          </li>
+        ))}
+      </ul>
+      {downloading ? (
+        <Progress value={progress && progress.total ? progress.done / progress.total : 0} label={progress ? `Downloading ${progress.name}` : "Starting the download"} />
       ) : (
-        <button type="button" class="button button--small" onClick={() => void getApiSync().studioModelsDownload().catch((e) => toast(errorMessage(e), "error"))}>
-          Download models
+        <button type="button" class="button button--small" onClick={() => void download()}>
+          Download {formatBytes(bytes)}
         </button>
       )}
-      {missing.length > 0 && (
-        <span class="studio__models">
-          {missing.map((m) => `${m.name} (${m.licence}${m.commercial === "yes" ? "" : ", non-commercial"})`).join(" · ")}
-        </span>
-      )}
-    </Note>
+    </div>
   );
 }
 
@@ -377,6 +446,7 @@ function ImportItem({ path }: { path: string }) {
             </label>
           ))}
         </fieldset>
+        {studioOnline && <ModelsNotice preset={preset} />}
         <Select label="Language" value={language} options={LANGUAGES} onChange={setLanguage} />
 
         <div class="row">
@@ -451,7 +521,7 @@ export function Studio() {
   return (
     <div class="studio">
       <Section title="Studio: make a karaoke song">
-        <Models />
+        {inbox.length === 0 && !(studio?.models_present ?? true) && <ModelsNotice preset="full" />}
         <div
           class={`studio__drop${over ? " studio__drop--over" : ""}`}
           onDragOver={(e) => {

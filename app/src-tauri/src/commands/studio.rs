@@ -82,18 +82,19 @@ pub async fn studio_clear_finished(state: State<'_, AppState>) -> ApiResult<()> 
     Ok(())
 }
 
-/// `studio_models_status(preset?)`.
+/// `studio_models_status(preset?)`: the UI passes the preset chosen in the Studio form;
+/// absent means the default preset.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn studio_models_status(state: State<'_, AppState>, preset: Option<String>) -> ApiResult<Value> {
     let core = state.core.clone();
-    blocking(move || core.studio.models_status(preset.as_deref().unwrap_or("full"))).await
+    blocking(move || core.studio.models_status(preset.as_deref().unwrap_or(crate::studio::DEFAULT_PRESET))).await
 }
 
 /// `studio_models_download(preset?)`: progress as `studio://models` events.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn studio_models_download(state: State<'_, AppState>, preset: Option<String>) -> ApiResult<Value> {
     let core = state.core.clone();
-    blocking(move || core.studio.models_download(preset.as_deref().unwrap_or("full"))).await
+    blocking(move || core.studio.models_download(preset.as_deref().unwrap_or(crate::studio::DEFAULT_PRESET))).await
 }
 
 /// `studio_realign(song_id, text, anchors) -> Lyrics` (also stored as the song's

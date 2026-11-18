@@ -41,7 +41,14 @@ INVALID = '<>:"/\\|?*'
 _out_lock = threading.Lock()
 _jobs: dict[str, dict] = {}
 _queue: "queue.Queue[str]" = queue.Queue()
-_models_present = os.environ.get("FAKE_STUDIO_MODELS", "present") == "present"
+# Separation models per preset (like studio/jukeoke_studio/presets.py: "clean" adds one
+# model to "full", "permissive" shares none of full's vocal models). FAKE_STUDIO_MODELS:
+# "present" = the default preset's models are on the drive (as on the owner's stick),
+# "missing" = none are.
+_PRESET_MODELS = {"full": ["fake-vocals"], "clean": ["fake-vocals", "fake-inst"], "permissive": ["fake-perm-vocals"]}
+_LICENCES = {"fake-vocals": ("GPL-3.0", "yes"), "fake-inst": ("none published", "unclear"),
+             "fake-perm-vocals": ("MIT", "yes")}
+_on_disk: set = set(_PRESET_MODELS["full"]) if os.environ.get("FAKE_STUDIO_MODELS", "present") == "present" else set()
 _session: dict = {}
 
 
@@ -140,7 +147,6 @@ def worker() -> None:
 
 def handle(msg: dict) -> bool:
     """Returns False when the server should exit."""
-    global _models_present
     t = msg.get("type")
     rid = msg.get("id")
     if t == "hello":
@@ -166,17 +172,31 @@ def handle(msg: dict) -> bool:
             send({"type": "probe.result", "id": rid, "ok_for_studio": True, "cuda": True,
                   "gpu": "Fake GPU 9000", "vram_mb": 16303, "compute_capability": "12.0", "ram_mb": 32652,
                   "reasons": []})
-    elif t == "models.status":
-        send({"type": "models.status.result", "id": rid, "all_present": _models_present,
-              "models": [{"key": "vocals", "name": "fake-vocals", "file": "fake.ckpt", "size_bytes": 1000,
-                          "present": _models_present, "licence": "MIT", "commercial": "yes"}]})
-    elif t == "models.download":
-        for done in (0, 500, 1000):
-            send({"type": "models.progress", "id": rid, "name": "fake-vocals", "done_bytes": done,
-                  "total_bytes": 1000})
-            time.sleep(STEP_S)
-        _models_present = True
-        send({"type": "models.download.result", "id": rid, "ok": True})
+    elif t in ("models.status", "models.download"):
+        preset = msg.get("preset") or "full"
+        if preset not in _PRESET_MODELS:
+            error(rid, "bad_request", f"Unknown quality preset {preset!r}.")
+            return True
+        names = _PRESET_MODELS[preset]
+        if t == "models.status":
+            models = [{"key": "vocals", "name": n, "file": f"{n}.ckpt", "size_bytes": 1000, "present": n in _on_disk,
+                       "licence": _LICENCES[n][0], "commercial": _LICENCES[n][1], "task": "separation",
+                       "needed_for": "every song"} for n in names]
+            send({"type": "models.status.result", "id": rid, "preset": preset, "models": models,
+                  "all_present": all(m["present"] for m in models),
+                  "download_bytes": sum(m["size_bytes"] for m in models if not m["present"])})
+        else:
+            downloaded = []
+            for n in names:
+                if n in _on_disk:
+                    continue
+                for done in (0, 500, 1000):
+                    send({"type": "models.progress", "id": rid, "name": f"{n}.ckpt", "done_bytes": done,
+                          "total_bytes": 1000})
+                    time.sleep(STEP_S)
+                _on_disk.add(n)
+                downloaded.append(n)
+            send({"type": "models.download.result", "id": rid, "ok": True, "downloaded": downloaded})
     elif t == "inspect":
         path = msg.get("input", "")
         if not os.path.isfile(path):
