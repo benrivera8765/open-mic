@@ -122,10 +122,12 @@ Required chunks: `manifest`, and every chunk the manifest refers to.
 - `analysis.key`: `tonic` is one of `C C# D D# E F F# G G# A A# B` (sharps only;
   players may display flats), `mode` is `major` or `minor`, `confidence` 0..1. Null if
   unknown. `tempo_bpm` is a number or null.
-- `preset`: which Studio quality preset made the stems (`full` or `clean`, see
-  `docs/benchmarks/separation.md`).
-- `stems_sum_to_source`: true when all stems at unity sum back to the source
-  (the `full` preset).
+- `preset`: which Studio quality preset made the stems (`full`, `clean` or
+  `permissive`, see `docs/benchmarks/separation.md` and `MODELS.md`; `permissive`
+  uses MIT / Apache-2.0 models only and leaves `backing_vocals` silent). Readers accept
+  any string (a newer Studio may add presets); `jukeoke-cli verify` warns on others.
+- `stems_sum_to_source`: true when all stems at unity sum back to the source (every
+  preset of the current Studio: `other` is computed as the residual).
 
 ### 4.2 Stems
 

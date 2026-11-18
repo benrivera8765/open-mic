@@ -29,7 +29,7 @@ Quality numbers, speed and VRAM for each model: `docs/benchmarks/separation.md`.
 |---|---|---|---|---|---|
 | **`full` preset (default)** | `bs_roformer_anvuew_ft1` (GPL-3.0) | `bs_karaoke_anvuew` (GPL-3.0) | `bs_roformer_4stems_syh` (Apache-2.0) | original minus vocals | **yes**, every model |
 | `clean` preset (option) | same | same | same | `bs_inst_resurrection_unwa` (no licence) | **unclear** because of the instrumental model |
-| MIT / Apache only (no GPL weights) | `mel_roformer_kim` (MIT), -0.6 dB vocal SDR | none measured: keep `bs_karaoke_anvuew` (GPL) or skip the lead/backing split | `bs_roformer_4stems_syh` (Apache-2.0) | - | yes |
+| `permissive` preset (option): MIT / Apache-2.0 weights only | `mel_roformer_kim` (MIT), -0.63 dB vocal SDR vs the default | **none**: no permissively licensed lead/backing splitter exists, so ALL vocals go to `lead_vocal` and `backing_vocals` is silent (no backing vocals or harmonies in the karaoke mix; the app's preset description says so) | `bs_roformer_4stems_syh` (Apache-2.0) | original minus vocals | yes, every model |
 | best measured, licence ignored (`separate.BEST_MEASURED`) | `bs_roformer_leap_xe_vocals` (+0.2 dB) | `bs_karaoke_frazer_becruily` (1 dB less lead residue, better backing; 0.55 dB lower lead SDR) | `scnet_xl_ihf_zfturbo` (+0.8 dB) | `bs_inst_resurrection_unwa` | **unclear** for all four |
 
 The default preset therefore needs no decision from the owner: all three models allow
@@ -39,7 +39,17 @@ earns money is the owner's call (ask the authors first). GPL-3.0 weights are fin
 this GPL-3.0 app; a closed-source fork could not ship them.
 
 Download sizes: the default `full` preset is 0.94 GB (204 + 204 + 527 MB); `clean`
-adds 204 MB.
+adds 204 MB; `permissive` is 1.44 GB (913 + 527 MB). Every preset also needs the
+alignment model (1.26 GB) and, for songs without lyrics, Whisper large-v3-turbo
+(1.62 GB) - see "Lyrics alignment and transcription" below. The app downloads only when
+the user asks (protocol `models.download`); a song whose models are missing fails with
+`models_missing` instead of downloading silently.
+
+`PRESETS` / `PRESET_INFO` in `studio/jukeoke_studio/presets.py` are the source of truth
+for the presets (the descriptions the app shows come from `PRESET_INFO`).
+`COMMERCIAL_USE_PRESETS` lists the presets whose every model allows commercial use
+(`full`, `permissive`); it replaces the earlier `PERMISSIVE_PRESETS`, whose name was
+misleading because `full` uses GPL-3.0 weights.
 
 ## Separation (Studio)
 
@@ -101,11 +111,15 @@ package (MIT).
 
 ## Lyrics alignment and transcription (Studio)
 
-Chosen and measured by the alignment work (`docs/benchmarks/alignment.md`); pinned there
-by Hugging Face commit (`studio/jukeoke_studio/align.py` `MODEL_INFO`,
-`studio/jukeoke_studio/transcribe.py` `WHISPER_MODELS`), not by the separation registry.
-The SHA-256 below is of the main weight file in the pinned revision, computed on
-2026-11-17 from the copies downloaded under `$JK_BUILD/align-venv/models/hf`.
+Chosen and measured by the alignment work (`docs/benchmarks/alignment.md`); pinned by
+Hugging Face commit with the SHA-256 and size of **every** file the Studio loads in
+`studio/jukeoke_studio/modelzoo/hfmodels.py` (the downloader and the loaders use it;
+`align.py` `MODEL_INFO` and `transcribe.py` `WHISPER_MODELS` keep the measured
+calibration). They live in `<Models>/hf/models--<org>--<name>/snapshots/<commit>/` and
+are loaded from that folder directly (no Hugging Face name resolution, offline). The
+SHA-256 below is of the main weight file in the pinned revision, computed on 2026-11-17
+from the copies downloaded under `$JK_BUILD/align-venv/models/hf`. The `.bin` checkpoint
+of wav2vec2 is a pickle; transformers 5.23 loads it with `torch.load(weights_only=True)`.
 
 | model | use | source (pinned revision) | licence | commercial | weight file | SHA-256 |
 |---|---|---|---|---|---|---|

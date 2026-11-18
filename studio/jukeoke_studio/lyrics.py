@@ -186,8 +186,10 @@ def lines_from_lrc_doc(doc: lrcmod.LrcDocument) -> list[Line]:
 def from_lrc(text: str, source: str = SOURCE_LRC, language: str | None = "en") -> Lyrics:
     doc = lrcmod.parse_lrc(text)
     lines = lines_from_lrc_doc(doc)
-    if not lines:
-        # A file without timestamps: treat it as plain text rather than failing.
+    if not doc.lines:
+        # A file without timestamps: treat it as plain text rather than failing. (Only
+        # then: an LRC whose timed lines are all empty or section headers has no lyrics,
+        # and reading its raw "[00:05.00][Chorus]" lines as text would invent some.)
         lines = parse_plain_text(text)
     meta = {"lrc_tags": doc.tags} if doc.tags else {}
     return Lyrics(lines=lines, source=source, checked=True, language=language, meta=meta)
@@ -535,34 +537,61 @@ def from_lookup_result(result: dict, language: str | None = "en") -> Lyrics | No
 # --------------------------------------------------------------------------------------
 
 
+#: Values the app may pass as ``lyrics.source`` (protocol section 7): where the text or
+#: LRC it hands over came from. ``online:<service>`` for a lookup result, ``embedded``
+#: for the file's own lyrics shown by ``inspect``.
+_SOURCE_RE = regex.compile(r"^(?:user_text|lrc|embedded|online:[a-z0-9][a-z0-9_.-]{0,31})$")
+
+
+def valid_source(source: str | None) -> bool:
+    return source is None or bool(_SOURCE_RE.match(source))
+
+
 def resolve_lyrics(mode: str, *, lrc: str | None = None, text: str | None = None,
                    media_path: str | Path | None = None, transcribe=None,
-                   language: str | None = "en") -> Lyrics | None:
+                   language: str | None = "en", source: str | None = None) -> Lyrics | None:
     """Pick the lyrics for a job.
 
     ``mode``: ``auto`` (lrc, text, embedded, then ``transcribe()``), ``lrc``, ``text``
     or ``none`` (returns None). ``transcribe`` is a zero-argument callable returning
     :class:`Lyrics` (source ``transcribed``, unchecked); it is only called when needed.
+    ``source`` labels what the caller passed as ``lrc`` / ``text`` (for example
+    ``online:lrclib`` when the app hands over a lookup result, or ``embedded``); by
+    default ``lrc`` and ``user_text``.
+
+    In ``auto``, a source that is given but holds no singable line after normalisation
+    (only section headers, blank lines or timestamps) falls through to the next source
+    instead of skipping straight to transcription (verifier finding).
     Raises :class:`LyricsMissing` when the requested source is empty.
     """
     mode = (mode or "auto").lower()
+    if not valid_source(source):
+        raise ValueError(f"unknown lyrics source: {source!r}")
+
+    def from_given_lrc() -> Lyrics:
+        return from_lrc(lrc, source=source or SOURCE_LRC, language=language)
+
+    def from_given_text() -> Lyrics:
+        lyr = from_text(text, source=source or SOURCE_USER_TEXT, language=language)
+        return lyr
+
     if mode == "none":
         return None
     if mode == "lrc":
         if not (lrc and lrc.strip()):
             raise LyricsMissing("No LRC lyrics were given.")
-        lyr = from_lrc(lrc, language=language)
+        lyr = from_given_lrc()
     elif mode == "text":
         if not (text and text.strip()):
             raise LyricsMissing("No lyrics text was given.")
-        lyr = from_text(text, language=language)
+        lyr = from_given_text()
     elif mode == "auto":
         lyr = None
         if lrc and lrc.strip():
-            lyr = from_lrc(lrc, language=language)
-        elif text and text.strip():
-            lyr = from_text(text, language=language)
-        elif media_path is not None:
+            lyr = from_given_lrc()
+        if (lyr is None or not lyr.lines) and text and text.strip():
+            lyr = from_given_text()
+        if (lyr is None or not lyr.lines) and media_path is not None:
             lyr = from_embedded(media_path, language=language)
         if (lyr is None or not lyr.lines) and transcribe is not None:
             lyr = transcribe()

@@ -9,7 +9,14 @@ volume, so a pulled USB stick never leaves a half file under the real name).
 ``<models_dir>/manifest.json`` records, for every file we placed: model id, source URL,
 size, SHA-256 and the UTC time it was verified. Later runs trust a file whose size and
 modification time still match the manifest entry, so a 1.7 GB checkpoint is not
-re-hashed on every song; ``verify=True`` forces a full re-hash.
+re-hashed on every song; ``verify=True`` forces a full re-hash. Pickled weights are
+never trusted this way: :func:`read_verified` hashes the exact bytes that are then
+unpickled (separate.py).
+
+Nothing downloads unless the caller says so: ``ensure_model(..., allow_download=False)``
+(the default) raises :class:`~jukeoke_studio.errors.ModelsMissing` for a missing file.
+The protocol's ``models.download`` request is the only path in the Studio that passes
+``allow_download=True`` (separation-stream verifier finding: no silent downloads).
 """
 
 from __future__ import annotations
@@ -17,11 +24,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 import urllib.request
 from pathlib import Path
 from typing import Callable
 
+from ..errors import ModelChecksum, ModelsMissing
 from .registry import ModelSpec, WeightFile
 
 USER_AGENT = "jukeoke-studio/0.1 (open-source karaoke app; model download)"
@@ -65,7 +74,12 @@ def _load_manifest(models_dir: Path) -> dict:
 
 
 def _save_manifest(models_dir: Path, manifest: dict) -> None:
-    tmp = models_dir / (MANIFEST + ".tmp")
+    # A temporary name per process and thread: a job loading its models and a
+    # ``models.download`` thread can save at the same moment, and with one shared
+    # "manifest.json.tmp" the second os.replace failed (FileNotFoundError -> the job
+    # failed with write_failed). Verifier finding. Last writer wins; a lost entry only
+    # means one extra re-hash later.
+    tmp = models_dir / f"{MANIFEST}.tmp-{os.getpid()}-{threading.get_ident()}"
     tmp.write_text(json.dumps(manifest, indent=1, sort_keys=True), encoding="utf-8")
     os.replace(tmp, models_dir / MANIFEST)
 
@@ -81,31 +95,43 @@ def _is_verified(path: Path, wf: WeightFile, manifest: dict, verify: bool) -> bo
     return sha256_of(path) == wf.sha256
 
 
-def _download(wf: WeightFile, dest: Path, progress: Progress | None) -> None:
+def _download(wf: WeightFile, dest: Path, progress: Progress | None,
+              should_stop: Callable[[], bool] | None = None) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
     req = urllib.request.Request(wf.url, headers={"User-Agent": USER_AGENT})
     h = hashlib.sha256()
     done = 0
-    with urllib.request.urlopen(req, timeout=120) as r, open(part, "wb") as out:  # noqa: S310
-        total = int(r.headers.get("Content-Length") or wf.size or 0)
-        last = 0.0
-        while True:
-            block = r.read(1 << 22)
-            if not block:
-                break
-            out.write(block)
-            h.update(block)
-            done += len(block)
-            if progress and time.monotonic() - last > 0.5:
-                progress(wf.filename, done, total)
-                last = time.monotonic()
-        out.flush()
-        os.fsync(out.fileno())
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r, open(part, "wb") as out:  # noqa: S310
+            total = int(r.headers.get("Content-Length") or wf.size or 0)
+            last = 0.0
+            while True:
+                block = r.read(1 << 22)
+                if not block:
+                    break
+                if should_stop is not None and should_stop():
+                    raise InterruptedError("download stopped")
+                out.write(block)
+                h.update(block)
+                done += len(block)
+                if progress and time.monotonic() - last > 0.5:
+                    progress(wf.filename, done, total)
+                    last = time.monotonic()
+            out.flush()
+            os.fsync(out.fileno())
+    except BaseException:
+        # Network error, stop or shutdown: never leave a half file behind.
+        part.unlink(missing_ok=True)
+        raise
     digest = h.hexdigest()
     if digest != wf.sha256:
         part.unlink(missing_ok=True)
-        raise IOError(f"{wf.filename}: SHA-256 mismatch (got {digest}, expected {wf.sha256}); "
-                      f"the file at {wf.url} is not the one Jukeoke was tested with")
+        raise ModelChecksum(
+            "A downloaded model file was not the expected one, so it was not used. Try the "
+            "download again later.",
+            f"{wf.filename}: SHA-256 mismatch (got {digest}, expected {wf.sha256}); "
+            f"the file at {wf.url} is not the one Jukeoke was tested with")
     if wf.size and done != wf.size:
         part.unlink(missing_ok=True)
         raise IOError(f"{wf.filename}: size {done} != expected {wf.size}")
@@ -114,17 +140,45 @@ def _download(wf: WeightFile, dest: Path, progress: Progress | None) -> None:
         progress(wf.filename, done, done)
 
 
-def ensure_model(spec: ModelSpec, models_dir: Path | None = None, *, verify: bool = False,
-                 progress: Progress | None = None) -> list[Path]:
-    """Return local paths of ``spec``'s files, downloading and verifying any missing one."""
+def missing_files(spec: ModelSpec, models_dir: Path | None = None) -> list[WeightFile]:
+    """Files of ``spec`` that are not on disk (by name and size; no hashing, so it is
+    fast enough for ``models.status``)."""
     models_dir = Path(models_dir) if models_dir else default_models_dir()
+    out = []
+    for wf in spec.files:
+        p = models_dir / wf.filename
+        try:
+            ok = p.is_file() and (not wf.size or p.stat().st_size == wf.size)
+        except OSError:
+            ok = False
+        if not ok:
+            out.append(wf)
+    return out
+
+
+def ensure_model(spec: ModelSpec, models_dir: Path | None = None, *, verify: bool = False,
+                 progress: Progress | None = None, allow_download: bool = False,
+                 should_stop: Callable[[], bool] | None = None) -> list[Path]:
+    """Return local paths of ``spec``'s files, verifying them (SHA-256, or the manifest's
+    size + mtime record). A missing or changed file is downloaded only with
+    ``allow_download=True``; otherwise :class:`ModelsMissing` is raised."""
+    models_dir = Path(models_dir) if models_dir else default_models_dir()
+    if not allow_download:
+        gone = [wf.filename for wf in spec.files if not (models_dir / wf.filename).is_file()]
+        if gone:
+            raise ModelsMissing([spec.id], f"{spec.id}: not in {models_dir}: {gone}")
     models_dir.mkdir(parents=True, exist_ok=True)
     manifest = _load_manifest(models_dir)
     paths = []
     for wf in spec.files:
         dest = models_dir / wf.filename
         if not _is_verified(dest, wf, manifest, verify):
-            _download(wf, dest, progress)
+            if not allow_download:
+                raise ModelChecksum(
+                    "A model file on this drive is damaged or not the expected one. Download "
+                    "the models again from the Studio screen.",
+                    f"{dest}: SHA-256 differs from the registry ({wf.sha256})")
+            _download(wf, dest, progress, should_stop)
         st = dest.stat()
         manifest[wf.filename] = {
             "model": spec.id, "url": wf.url, "sha256": wf.sha256, "size": st.st_size,
@@ -135,3 +189,17 @@ def ensure_model(spec: ModelSpec, models_dir: Path | None = None, *, verify: boo
         paths.append(dest)
     _save_manifest(models_dir, manifest)
     return paths
+
+
+def read_verified(path: Path, wf: WeightFile) -> bytes:
+    """The bytes of ``path`` after checking their SHA-256 against ``wf``. Used for
+    pickled weights (demucs ``.th``): the exact bytes that were hashed are the bytes that
+    get unpickled, so a file swapped after an earlier check is never loaded."""
+    data = Path(path).read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != wf.sha256:
+        raise ModelChecksum(
+            "A model file on this drive is damaged or not the expected one. Download the "
+            "models again from the Studio screen.",
+            f"{path}: SHA-256 {digest} != {wf.sha256}; refusing to unpickle it")
+    return data

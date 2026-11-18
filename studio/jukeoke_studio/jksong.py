@@ -684,7 +684,8 @@ def write_song(path: str | os.PathLike, *, stems: list[StemInput], sample_rate: 
                user_state: dict | None = None, extra_chunks: Iterable[tuple[str, str, bytes]] = (),
                manifest_extra: dict | None = None, slot_size: int = DEFAULT_SLOT_SIZE,
                compression_level: int = FLAC_COMPRESSION_LEVEL,
-               source: np.ndarray | None = None, residual_role: str = "other") -> dict:
+               source: np.ndarray | None = None, residual_role: str = "other",
+               on_stem: Callable[[str], None] | None = None) -> dict:
     """Encodes the stems (gain rule, 24-bit FLAC with seek table) and writes a complete
     ``.jksong`` atomically. Returns the manifest that was written.
 
@@ -698,6 +699,9 @@ def write_song(path: str | os.PathLike, *, stems: list[StemInput], sample_rate: 
     unity then sum back to the source within half an LSB of the residual stem, instead
     of accumulating each stem's quantisation error and the float32 rounding of a
     residual computed upstream.
+
+    ``on_stem(role)`` is called after each stem is encoded (progress; it may raise to
+    stop, e.g. a cancelled job: nothing has been written to disk at that point).
     """
     if not stems:
         raise ValueError("at least one stem is required")
@@ -735,12 +739,16 @@ def write_song(path: str | os.PathLike, *, stems: list[StemInput], sample_rate: 
             decoded_sum += q.T * (gain / FULL_SCALE)
         encoded[s.role] = (encode_flac24(q, sample_rate, compression_level=compression_level), gain, peak)
         del q
+        if on_stem is not None:
+            on_stem(s.role)
     if source is not None:
         residual = source.astype(np.float64) - decoded_sum
         del decoded_sum
         q, gain, peak = quantize_stem(residual)
         encoded[residual_role] = (encode_flac24(q, sample_rate, compression_level=compression_level), gain, peak)
         del q, residual
+        if on_stem is not None:
+            on_stem(residual_role)
 
     chunks: list[tuple[str, str, bytes]] = []
     stem_entries = []

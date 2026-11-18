@@ -375,7 +375,11 @@ fn check_manifest_schema(v: &Value, song: &SongFile, r: &mut VerifyReport) {
     }
     let mut err = |m: String| r.errors.push(format!("manifest: {m}"));
     match o.get("preset") {
-        Some(Value::String(p)) if p == "full" || p == "clean" => {}
+        // The Studio's presets (studio/jukeoke_studio/presets.py, SONG_FORMAT 4.1).
+        // "permissive" (MIT / Apache-2.0 models only) was added by the Studio pipeline
+        // stream; without it every permissive song failed `verify --strict` on this
+        // warning (found in the end-to-end integration).
+        Some(Value::String(p)) if matches!(p.as_str(), "full" | "clean" | "permissive") => {}
         Some(Value::String(p)) => r.warnings.push(format!("manifest: unknown preset '{p}'")),
         _ => err("preset must be a string".into()),
     }

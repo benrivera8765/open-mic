@@ -198,6 +198,22 @@ describe("functional UI on the mock", () => {
     await loadSong(first);
   });
 
+  it("studio: opens once the background probe answers, although app_info said 'checking'", async () => {
+    // The real core answers app_info() before its Studio probe has finished, then sends
+    // studio://status (end-to-end run: the screen stayed on "Still checking..." for good).
+    const info = store.get().info!;
+    const checking = { available: false, reasons: ["Still checking whether this computer can run the Studio..."], gpu: null, vram_mb: null, checking: true };
+    store.set({ screen: "studio", info: { ...info, capabilities: { ...info.capabilities, studio: checking } } });
+    await until(() => !!q(".studio--unavailable"));
+    expect(q(".studio--unavailable")!.textContent).toMatch(/Still checking/);
+    const st = await api.studioStatus();
+    (api as unknown as { emit: (event: string, payload: unknown) => void }).emit("studio://status", { ...st, checking: false });
+    await until(() => !q(".studio--unavailable") && !!byText("button", "Choose files…"));
+    expect(store.get().info!.capabilities.studio.available).toBe(true);
+    expect(store.get().info!.capabilities.studio.checking).toBeFalsy();
+    await until(() => store.get().info!.capabilities.studio.gpu !== null); // app_info() fetched again
+  });
+
   it("studio: queues a picked file and shows every stage", async () => {
     store.set({ screen: "studio" });
     await until(() => !!byText("button", "Choose files…"));
@@ -207,6 +223,56 @@ describe("functional UI on the mock", () => {
     byText("button", "Add to queue")!.click();
     await until(() => qa(".studio__job").length === 1);
     expect(qa(".studio__stage").map((e) => e.textContent)).toEqual(["Read", "Separate", "Lyrics", "Align", "Key & tempo", "Save"]);
+  });
+
+  it("studio: lyrics from the online lookup are labelled online:<service>, pasted ones are not", async () => {
+    // Verifier finding: the UI never sent lyrics.source, so a lookup result was saved as
+    // "lrc" / "user_text" (STUDIO_PROTOCOL 7 asks for "online:lrclib").
+    const sent: { lyrics: { mode: string; source?: string | null } }[] = [];
+    const orig = api.studioSubmit.bind(api);
+    api.studioSubmit = (r) => {
+      sent.push(JSON.parse(JSON.stringify(r)));
+      return orig(r);
+    };
+    try {
+      store.set({ screen: "studio", studioInbox: [] });
+      await until(() => !!byText("button", "Choose files…"));
+      byText("button", "Choose files…")!.click();
+      await until(() => !!byText("button", "Look up lyrics online"));
+      byText("button", "Look up lyrics online")!.click();
+      await until(() => !!byText("button", "Use timed lyrics"));
+      byText("button", "Use timed lyrics")!.click();
+      await wait();
+      byText("button", "Add to queue")!.click();
+      await until(() => sent.length === 1);
+      expect(sent[0].lyrics.mode).toBe("lrc");
+      expect(sent[0].lyrics.source).toBe("online:lrclib");
+
+      // Same file again; a lookup result first, then the user switches to pasting text:
+      // the online label must not stick.
+      byText("button", "Choose files…")!.click();
+      await until(() => !!byText("button", "Look up lyrics online"));
+      byText("button", "Look up lyrics online")!.click();
+      await until(() => !!byText("button", "Use text"));
+      byText("button", "Use text")!.click();
+      await wait();
+      const radio = qa("input[type=radio]").find((e) => (e as HTMLInputElement).value === "text" && e.closest("label")?.textContent?.includes("Paste")) as HTMLInputElement;
+      const auto = qa("input[type=radio]").find((e) => (e as HTMLInputElement).value === "auto") as HTMLInputElement;
+      auto.click();
+      await wait();
+      radio.click();
+      await wait();
+      const ta = q<HTMLTextAreaElement>("textarea")!;
+      ta.value = "My own words\nTyped by hand";
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+      await wait();
+      byText("button", "Add to queue")!.click();
+      await until(() => sent.length === 2);
+      expect(sent[1].lyrics.mode).toBe("text");
+      expect(sent[1].lyrics.source ?? null).toBeNull();
+    } finally {
+      api.studioSubmit = orig;
+    }
   });
 });
 

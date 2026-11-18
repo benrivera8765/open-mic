@@ -317,11 +317,30 @@ fn packaged_studio_command_line_and_models_dir() {
     assert_eq!(cfg.program, studio_dir.join("python").join("python.exe"));
     assert_eq!(cfg.cwd, studio_dir);
     let args: Vec<String> = cfg.args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
-    assert_eq!(args, ["-I", "-X", "utf8", "-m", "jukeoke_studio", "serve"]);
-    let models = cfg.env.iter().find(|(k, _)| k == "JUKEOKE_MODELS_DIR").map(|(_, v)| PathBuf::from(v));
-    assert_eq!(models, Some(root.join("Models")));
+    let s = |p: PathBuf| p.to_string_lossy().into_owned();
+    assert_eq!(
+        args,
+        [
+            "-I".to_string(), "-X".into(), "utf8".into(), "-m".into(), "jukeoke_studio".into(), "serve".into(),
+            "--root".into(), s(root.clone()), "--models-dir".into(), s(root.join("Models")),
+            "--temp-dir".into(), s(paths.tmp.join("studio")),
+        ]
+    );
+    let var = |name: &str| cfg.env.iter().find(|(k, _)| k == name).map(|(_, v)| PathBuf::from(v));
+    assert_eq!(var("JUKEOKE_MODELS_DIR"), Some(root.join("Models")));
     assert_eq!(cfg.models_dir, root.join("Models"));
     assert!(cfg.log_path.starts_with(root.join("Settings")));
+    // Portable (WORKING ORDER 4.8): every cache and temporary folder of the Studio's
+    // libraries points into the stick, never into the user's profile.
+    for name in ["HF_HOME", "TORCH_HOME", "XDG_CACHE_HOME", "CUDA_CACHE_PATH", "NUMBA_CACHE_DIR", "MPLCONFIGDIR"] {
+        let v = var(name).unwrap_or_else(|| panic!("{name} not set"));
+        assert!(v.starts_with(root.join("Settings").join("cache")), "{name} = {v:?}");
+    }
+    for name in ["TMP", "TEMP", "TMPDIR"] {
+        assert_eq!(var(name), Some(paths.tmp.join("studio")), "{name}");
+    }
+    assert_eq!(var("HF_HUB_CACHE"), Some(root.join("Models").join("hf")));
+    assert_eq!(var("HF_HUB_OFFLINE"), Some(PathBuf::from("1")));
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -346,5 +365,120 @@ fn closing_the_app_does_not_wait_for_a_slow_start() {
     assert!(took < Duration::from_secs(3), "shutdown waited {took:?}");
     probe.join().unwrap();
     assert!(!studio.running());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A 16-bit stereo PCM WAV of a 440 Hz tone (generated; nothing committed).
+fn write_wav(path: &Path, seconds: f64, rate: u32) {
+    let frames = (seconds * rate as f64) as u32;
+    let mut data = Vec::with_capacity(frames as usize * 4);
+    for i in 0..frames {
+        let v = (0.3 * (2.0 * std::f64::consts::PI * 440.0 * i as f64 / rate as f64).sin() * 32767.0) as i16;
+        data.extend_from_slice(&v.to_le_bytes());
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut w = Vec::new();
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    w.extend_from_slice(&2u16.to_le_bytes()); // channels
+    w.extend_from_slice(&rate.to_le_bytes());
+    w.extend_from_slice(&(rate * 4).to_le_bytes());
+    w.extend_from_slice(&4u16.to_le_bytes());
+    w.extend_from_slice(&16u16.to_le_bytes());
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    w.extend_from_slice(&data);
+    std::fs::write(path, w).unwrap();
+}
+
+/// The supervisor against the REAL Studio (studio/jukeoke_studio, the developer venv,
+/// started exactly as the app does in dev mode): hello, the real capability probe,
+/// models.status, inspect, a whole job (with the Studio's stand-in models, so it takes
+/// seconds instead of minutes: JUKEOKE_STUDIO_STUB=1), realign, the portable caches,
+/// and a clean stop. Skipped when $JK_BUILD/studio-venv is missing.
+#[test]
+fn real_studio_in_dev_mode() {
+    let Some(jk) = std::env::var_os("JK_BUILD").map(PathBuf::from) else {
+        eprintln!("SKIPPED real_studio_in_dev_mode: JK_BUILD not set");
+        return;
+    };
+    if !jk.join("studio-venv/Scripts/python.exe").is_file() || std::env::var_os("JK_STUDIO_PYTHON").is_some() {
+        eprintln!("SKIPPED real_studio_in_dev_mode: no Studio venv (or JK_STUDIO_PYTHON overrides it)");
+        return;
+    }
+    let dir = scratch("realstudio");
+    let paths = jukeoke_lib::portable::Paths {
+        library: dir.join("Library"),
+        recordings: dir.join("Recordings"),
+        exports: dir.join("Exports"),
+        settings: dir.join("Settings"),
+        models: dir.join("Models"),
+        logs: dir.join("Settings/logs"),
+        tmp: dir.join("Settings/tmp"),
+    };
+    std::fs::create_dir_all(&paths.library).unwrap();
+    let mut cfg = StudioConfig::locate(None, true, &paths, &dir, "0.1.0-test").expect("dev Studio");
+    assert_eq!(cfg.program, jk.join("studio-venv/Scripts/python.exe"));
+    assert!(cfg.args.iter().any(|a| a == "--root"));
+    // Dev mode reuses the weights already downloaded for development.
+    assert_eq!(cfg.models_dir, jk.join("models-cache"));
+    cfg.env.push(("JUKEOKE_STUDIO_STUB".into(), "1".into()));
+    cfg.start_timeout = Duration::from_secs(120);
+    let sink = Arc::new(RecordingSink::default());
+    let studio = Studio::new(Ok(cfg), sink.clone());
+    let t = std::time::Instant::now();
+    studio.probe_now();
+    let cap = studio.capability();
+    eprintln!("measured: real Studio start + probe {:?}: {cap:?}", t.elapsed());
+    assert!(!cap.reasons.iter().any(|r| r.contains("did not answer")), "{cap:?}");
+    if !cap.available {
+        // A PC without a usable GPU: the plain explanation is the expected answer.
+        assert!(cap.reasons.iter().all(|r| r.contains("stronger computer")), "{cap:?}");
+        eprintln!("SKIPPED the job part: this computer cannot run the Studio");
+        studio.shutdown();
+        return;
+    }
+    assert!(cap.gpu.is_some() && cap.vram_mb.unwrap_or(0) > 0);
+
+    let wav = dir.join("Tone Song.wav");
+    write_wav(&wav, 6.0, 48000);
+    let info = studio.inspect(&wav.display().to_string()).unwrap();
+    assert_eq!(info["sample_rate"], 48000);
+    assert_eq!(info["codec"], "pcm_s16le");
+    assert_eq!(info["lossy"], false);
+    let ms = studio.models_status("permissive").unwrap();
+    assert_eq!(ms["all_present"], true, "{ms}");
+
+    let id = studio
+        .submit(&json!({"input": wav.display().to_string(), "preset": "permissive", "language": "en",
+                        "metadata": {"title": "Tone", "artist": "Real Studio"},
+                        "lyrics": {"mode": "text", "text": "one two three\nfour five six", "source": "user_text"}}))
+        .unwrap();
+    let j = wait_for(Duration::from_secs(120), || {
+        studio.status().queue.into_iter().find(|j| j.job_id == id).filter(|j| matches!(j.state, "done" | "failed"))
+    })
+    .expect("job finished");
+    assert_eq!(j.state, "done", "{j:?}");
+    assert_eq!(j.output_song_id.as_deref(), Some("Real Studio - Tone.jksong"));
+    let song_path = paths.library.join("Real Studio - Tone.jksong");
+    let song = jk_format::SongFile::open(&song_path).unwrap();
+    drop(song);
+    let lyrics = studio
+        .realign(&song_path, "one two three\nfour five six", &json!([{"line": 1, "start": 3.0}]))
+        .unwrap();
+    assert_eq!(lyrics["lines"][1]["start"], 3.0);
+    // Portable: the Studio's caches and temporary files stayed inside the data folder.
+    assert!(dir.join("Settings/tmp/studio").is_dir());
+    assert!(std::fs::read_dir(dir.join("Settings/tmp/studio")).unwrap().all(|e| {
+        let n = e.unwrap().file_name().to_string_lossy().into_owned();
+        !n.starts_with("job-") // job scratch folders are removed
+    }));
+    studio.shutdown();
+    assert!(!studio.running());
+    let log = std::fs::read_to_string(paths.logs.join("studio.log")).unwrap();
+    assert!(log.contains("Studio 0.1.0 serving"), "{log}");
     let _ = std::fs::remove_dir_all(dir);
 }

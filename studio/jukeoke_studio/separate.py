@@ -15,8 +15,17 @@ Design rules (WORK_ORDER section 5, docs/ARCHITECTURE.md section 5):
 * Models run in full fp32 by default, with TF32 *disabled*. ``precision="fp16"`` etc.
   exist only so the benchmark can measure the difference.
 * The original audio is never resampled. If the source rate differs from the model's
-  (44.1 kHz for every model here), only the model input and its estimate are
-  resampled (soxr, VHQ) and residual stems are computed at the native rate.
+  (44.1 kHz for every model here), the mix is resampled once to the model rate (soxr
+  VHQ) and every model runs there, *including the karaoke model on the vocal estimate*
+  and the drum model on ``mix - vocals``; each final estimate (vocals, lead, drums,
+  instrumental) is then resampled back to the native rate exactly once. Residual stems
+  are computed at the native rate. Every one of these conversions is listed in
+  ``SeparationResult.provenance()["resampling"]``. (Verifier finding: before, the lead
+  and backing stems of a 48 kHz song went 44.1 -> 48 -> 44.1 -> 48 kHz.)
+* Weights are never downloaded here unless the caller passes ``allow_download=True``;
+  a missing file raises :class:`~jukeoke_studio.errors.ModelsMissing` (protocol code
+  ``models_missing``). The Studio's ``models.download`` request is the only path that
+  downloads.
 * Presets are built so that the four stems sum back to the input (WORK_ORDER 4.1:
   "fuller" versus "cleaner" instrumental):
 
@@ -32,6 +41,12 @@ Design rules (WORK_ORDER section 5, docs/ARCHITECTURE.md section 5):
       and ``lead_vocal = mix - I - backing`` takes everything else (the lead plus
       whatever the instrumental model discarded). Karaoke mix: ``I + backing`` (on) or
       ``I`` (off). Less residue, possibly less body.
+  ``permissive``
+      Only MIT / Apache-2.0 weights (no GPL, nothing unlicensed): ``V`` from Kim's
+      Mel-Band RoFormer (MIT), drums from SYH99999's BS-RoFormer (Apache-2.0) on
+      ``mix - V``, ``other`` the residual. No permissively licensed lead/backing
+      splitter exists (MODELS.md), so ``lead_vocal = V`` holds *all* vocals and
+      ``backing_vocals`` is silent: the karaoke mix has no backing vocals.
 
 Which model plays which role is chosen in :data:`PRESETS`; the benchmark in
 ``studio/bench/separation_bench.py`` is what those choices are based on
@@ -51,48 +66,16 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .errors import NO_HOOKS, Hooks
 from .modelzoo import registry
-from .modelzoo.download import ensure_model, sha256_of  # noqa: F401  (re-exported for callers)
+from .modelzoo.download import ensure_model, read_verified, sha256_of  # noqa: F401  (re-exported)
 from .modelzoo.registry import ModelSpec
 
 STEMS = ("lead_vocal", "backing_vocals", "drums", "other")
 
-#: Model choice per preset and role. See docs/benchmarks/separation.md for the numbers
-#: (MUSDB18-HQ test and a ccMixter lead/backing set, measured on the RTX 5070 Ti):
-#:
-#: * vocals ``bs_roformer_anvuew_ft1`` (GPL-3.0): 0.23 dB below the best downloadable
-#:   vocal model (unwa Leap Xe, no licence) and the best one whose licence allows
-#:   commercial use.
-#: * karaoke ``bs_karaoke_anvuew`` (GPL-3.0) at overlap 8: at the shipped overlaps 0.55 dB
-#:   ahead of the best unlicensed model (frazer & becruily) on lead SDR in mixes; that one
-#:   leaves about 1 dB less lead residue in the karaoke mix and keeps backing vocals better.
-#: * drums ``bs_roformer_4stems_syh`` (Apache-2.0): +1.1 dB over HT-Demucs; SCNet XL IHF
-#:   is 0.8 dB better still but its weights are trained on non-commercial MUSDB18-HQ.
-#: * instrumental (clean preset only) ``bs_inst_resurrection_unwa`` (no licence): the
-#:   best direct-instrumental model measured, but still below "full" on SDR and residue.
-#:
-#: Every model in "full" allows commercial use; "clean" needs one with no published
-#: licence (see MODELS.md).
-PRESETS: dict[str, dict[str, str]] = {
-    "full": {
-        "vocals": "bs_roformer_anvuew_ft1",
-        "karaoke": "bs_karaoke_anvuew",
-        "drums": "bs_roformer_4stems_syh",
-    },
-    "clean": {
-        "instrumental": "bs_inst_resurrection_unwa",
-        "vocals": "bs_roformer_anvuew_ft1",
-        "karaoke": "bs_karaoke_anvuew",
-        "drums": "bs_roformer_4stems_syh",
-    },
-}
-
-#: Same structure, restricted to models whose licence allows commercial use
-#: (MODELS.md "commercial: yes"). No direct-instrumental model with such a licence comes
-#: close in quality, so there is no permissive "clean" preset.
-PERMISSIVE_PRESETS: dict[str, dict[str, str]] = {
-    "full": dict(PRESETS["full"]),
-}
+# Presets live in presets.py (no torch import there); re-exported here.
+from .presets import (COMMERCIAL_USE_PRESETS, PERMISSIVE_LICENCES, PRESET_INFO,  # noqa: E402,F401
+                      PRESETS)
 
 #: Highest measured quality per role regardless of licence (all "unclear": no licence
 #: published). For karaoke it is a trade rather than a clear win: frazer & becruily leaves
@@ -166,13 +149,17 @@ def _fade_window(size: int, fade: int, device) -> torch.Tensor:
 
 
 def demix_overlap_add(net: Callable[[torch.Tensor], torch.Tensor], mix: torch.Tensor, chunk: int,
-                      overlap: int, batch_size: int = 1, num_stems: int = 1) -> torch.Tensor:
+                      overlap: int, batch_size: int = 1, num_stems: int = 1,
+                      on_chunk: Callable[[int, int], None] | None = None) -> torch.Tensor:
     """Run ``net`` over ``mix`` ``[C, T]`` in overlapping chunks; returns ``[S, C, T]`` float32.
 
     Same scheme as ZFTurbo's MSST ``demix`` (MIT), so the scores are comparable with
     published ones: reflect-pad by ``chunk - step`` at both ends, chunks every
     ``chunk // overlap`` samples, linear fades of ``chunk // 10`` at chunk edges (none at
     the very start/end of the track), weighted average where chunks overlap.
+
+    ``on_chunk(done, total)`` is called after every batch (progress and cooperative
+    cancellation: it may raise to stop).
     """
     channels, length = mix.shape
     step = max(1, chunk // max(1, overlap))
@@ -214,6 +201,8 @@ def demix_overlap_add(net: Callable[[torch.Tensor], torch.Tensor], mix: torch.Te
                     w[-fade:] = 1
             result[..., s:s + n] += out[j, ..., :n] * w[:n]
             counter[s:s + n] += w[:n]
+        if on_chunk is not None:
+            on_chunk(min(b + batch_size, len(starts)), len(starts))
     est = result / counter
     if padded:
         est = est[..., border:-border]
@@ -260,13 +249,14 @@ class LoadedModel:
     device: torch.device
     sha256: tuple[str, ...]
 
-    def __call__(self, audio: torch.Tensor, overlap: int | None, batch_size: int) -> dict[str, torch.Tensor]:
+    def __call__(self, audio: torch.Tensor, overlap: int | None, batch_size: int,
+                 on_chunk: Callable[[int, int], None] | None = None) -> dict[str, torch.Tensor]:
         """``audio`` ``[2, T]`` float32 on device at the model rate -> {output name: [2, T]}."""
         spec = self.spec
         if spec.arch == "htdemucs":
             return self._demucs(audio)
         est = demix_overlap_add(self.net, audio, spec.chunk_size, overlap or spec.overlap,
-                                batch_size, num_stems=len(spec.outputs))
+                                batch_size, num_stems=len(spec.outputs), on_chunk=on_chunk)
         return dict(zip(spec.outputs, est))
 
     def _demucs(self, audio: torch.Tensor) -> dict[str, torch.Tensor]:
@@ -287,14 +277,24 @@ class LoadedModel:
         return dict(zip(self.net.sources, out))
 
 
-def load_model(spec: ModelSpec, models_dir: Path | None, device: torch.device) -> LoadedModel:
-    paths = ensure_model(spec, models_dir)
+def load_model(spec: ModelSpec, models_dir: Path | None, device: torch.device,
+               allow_download: bool = False) -> LoadedModel:
+    """Loads ``spec`` onto ``device``. Missing weights raise ``ModelsMissing`` unless
+    ``allow_download`` (the Studio never sets it for a song: see the module docstring)."""
+    paths = ensure_model(spec, models_dir, allow_download=allow_download)
     if spec.arch == "htdemucs":
+        import io
+
         from demucs.states import load_model as demucs_load
 
-        # The .th package is a pickle; it is only loaded after its SHA-256 matched the
-        # official file published by Meta (see registry).
-        net = demucs_load(str(paths[0]))
+        # The .th package is a pickle (demucs needs weights_only=False: it stores the
+        # model class). It is unpickled only from bytes whose SHA-256 was checked in
+        # this very call against the official file published by Meta (registry), never
+        # on the strength of the manifest's size/mtime record (verifier finding).
+        data = read_verified(paths[0], spec.files[0])
+        package = torch.load(io.BytesIO(data), map_location="cpu", weights_only=False)
+        del data
+        net = demucs_load(package)
     else:
         from .modelzoo.roformer import BSRoformer, MelBandRoformer
         from .modelzoo.scnet import SCNet
@@ -319,8 +319,8 @@ class ModelRun:
     model: str
     seconds: float
     input_seconds: float
-    resampled: bool
-    sample_rate: int | None = None  # rate of the audio handed to run_model
+    resampled: bool                 # the model's input was a resampled copy of the source
+    sample_rate: int | None = None  # rate of the source audio
     model_rate: int | None = None   # rate the network ran at (differs => resampled)
     overlap: int | None = None      # chunk overlap actually used (None for HT-Demucs)
 
@@ -334,6 +334,8 @@ class SeparationResult:
     runs: list[ModelRun] = field(default_factory=list)
     extras: dict[str, np.ndarray] = field(default_factory=dict)  # e.g. "vocals", "instrumental"
     precision: str = "fp32"
+    #: Every sample-rate conversion that touched a stem (SONG_FORMAT 4.3 ``resampling``).
+    resampling: list[dict] = field(default_factory=list)
 
     def provenance(self) -> dict:
         """What made these stems, shaped like docs/SONG_FORMAT.md section 4.3.
@@ -343,11 +345,12 @@ class SeparationResult:
         ``studio``, ``source`` and ``created_utc``). ``models`` has one entry per weight
         file of every model that ran (``task``, ``name``, ``file``, ``sha256``,
         ``licence``, ``source_url`` as in the spec, plus ``commercial``, ``overlap`` and
-        ``precision``); ``resampling`` lists every model input/estimate that was
-        resampled (empty for a 44.1 kHz source). Only models that actually ran are listed.
+        ``precision``); ``resampling`` lists every conversion: the mix to the model rate
+        (once) and each final estimate back to the native rate (once each); empty for a
+        44.1 kHz source. Only models that actually ran are listed.
         """
         overlap_of = {r.model: r.overlap for r in self.runs}
-        out: dict = {"preset": self.preset, "models": [], "resampling": []}
+        out: dict = {"preset": self.preset, "models": [], "resampling": [dict(r) for r in self.resampling]}
         for role, mid in self.models.items():
             spec = registry.get(mid)
             for f in spec.files:
@@ -355,12 +358,6 @@ class SeparationResult:
                     "task": role, "name": mid, "title": spec.title, "file": f.filename,
                     "sha256": f.sha256, "licence": spec.licence, "commercial": spec.commercial,
                     "source_url": f.url, "overlap": overlap_of.get(mid), "precision": self.precision})
-        role_of = {mid: role for role, mid in self.models.items()}
-        for r in self.runs:
-            if r.resampled:
-                out["resampling"].append({
-                    "what": f"input of model {r.model} ({role_of.get(r.model, '?')}) and its estimate",
-                    "from_hz": r.sample_rate, "to_hz": r.model_rate, "method": "soxr VHQ"})
         return out
 
 
@@ -370,7 +367,7 @@ class Separator:
     """Loads models on demand and runs the separation presets on float32 arrays.
 
     Args:
-        models_dir: where weights live / are downloaded to (default: see
+        models_dir: where weights live (default: see
             :func:`jukeoke_studio.modelzoo.download.default_models_dir`).
         device: "cuda", "cuda:1", "cpu" or None (CUDA if available).
         precision: "fp32" (default, the only setting used for real songs), or "tf32",
@@ -381,11 +378,14 @@ class Separator:
         batch_size: chunks per network call (speed/VRAM only).
         keep_loaded: keep models on the GPU between calls (fast for a queue of songs; see
             the benchmark's timing section for the VRAM this takes).
+        allow_download: download missing weights (benchmarks, ``models fetch``). False by
+            default: a missing model raises ``ModelsMissing`` instead of a silent
+            download (the protocol's ``models.download`` is the only way songs get them).
     """
 
     def __init__(self, models_dir: Path | str | None = None, device: str | None = None,
                  precision: str = "fp32", overlap: int | None = None, batch_size: int = 1,
-                 keep_loaded: bool = True):
+                 keep_loaded: bool = True, allow_download: bool = False):
         self.models_dir = Path(models_dir) if models_dir else None
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         if precision not in PRECISIONS:
@@ -394,68 +394,119 @@ class Separator:
         self.overlap = overlap
         self.batch_size = batch_size
         self.keep_loaded = keep_loaded
+        self.allow_download = allow_download
         self._loaded: dict[str, LoadedModel] = {}
+        self.load_seconds = 0.0
 
     # -- model management
     def model(self, model_id: str) -> LoadedModel:
         if model_id not in self._loaded:
             if not self.keep_loaded:
                 self.unload()
-            self._loaded[model_id] = load_model(registry.get(model_id), self.models_dir, self.device)
+            t0 = time.perf_counter()
+            self._loaded[model_id] = load_model(registry.get(model_id), self.models_dir, self.device,
+                                                allow_download=self.allow_download)
+            self.load_seconds += time.perf_counter() - t0
         return self._loaded[model_id]
 
     def unload(self) -> None:
+        """Frees every model (and the CUDA cache) - called between pipeline stages."""
         self._loaded.clear()
+        import gc
+
+        gc.collect()
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
 
-    # -- one model on an array
-    def run_model(self, model_id: str, audio: np.ndarray, sr: int,
-                  runs: list[ModelRun] | None = None) -> dict[str, np.ndarray]:
-        """Apply one model to float32 ``[channels, frames]`` audio at ``sr``.
+    def missing_models(self, preset: str = "full", models: dict[str, str] | None = None) -> list[str]:
+        """Model ids of ``preset`` whose weights are not on disk (no hashing)."""
+        from .modelzoo.download import missing_files
 
-        Returns every output of the model as float32 at ``sr`` with the input's length and
-        channel count. Mono is processed as dual-mono and averaged back; more than two
-        channels are processed as consecutive stereo pairs.
-        """
+        choice = {role: (models or {}).get(role, mid) for role, mid in PRESETS[preset].items()}
+        return [mid for mid in dict.fromkeys(choice.values())
+                if missing_files(registry.get(mid), self.models_dir)]
+
+    # -- one model on an array at its own rate (no resampling here)
+    def _apply(self, model_id: str, audio: np.ndarray, sr: int, runs: list[ModelRun] | None,
+               source_rate: int, hooks: Hooks = NO_HOOKS) -> dict[str, np.ndarray]:
+        """``audio`` float32 ``[channels, frames]`` already at the model's rate ``sr``.
+        Mono is processed as dual-mono and averaged back; more than two channels as
+        consecutive stereo pairs."""
         audio = np.asarray(audio, dtype=np.float32)
         if audio.ndim != 2:
             raise ValueError("audio must be [channels, frames]")
         ch, frames = audio.shape
         if ch == 1:
-            out = self.run_model(model_id, np.repeat(audio, 2, axis=0), sr, runs)
+            out = self._apply(model_id, np.repeat(audio, 2, axis=0), sr, runs, source_rate, hooks)
             return {k: v.mean(axis=0, keepdims=True) for k, v in out.items()}
         if ch > 2:
             pairs = [audio[i:i + 2] if i + 1 < ch else np.repeat(audio[i:i + 1], 2, axis=0)
                      for i in range(0, ch, 2)]
-            outs = [self.run_model(model_id, p, sr, runs) for p in pairs]
+            outs = []
+            for n, p in enumerate(pairs):
+                outs.append(self._apply(model_id, p, sr, runs, source_rate,
+                                        hooks.sub(n / len(pairs), (n + 1) / len(pairs))))
             return {k: np.concatenate([o[k] for o in outs], axis=0)[:ch] for k in outs[0]}
 
+        hooks.check()
         lm = self.model(model_id)
         msr = lm.spec.sample_rate
-        x = resample(audio, sr, msr)
+        if sr != msr:
+            raise ValueError(f"{model_id} runs at {msr} Hz, got {sr} Hz")
+        on_chunk = None
+        if hooks is not NO_HOOKS and isinstance(lm, LoadedModel):
+            def on_chunk(done: int, total: int) -> None:
+                hooks.progress(done / max(1, total))
         t0 = time.perf_counter()
         with torch.inference_mode(), precision_mode(self.precision, self.device):
-            est = lm(torch.from_numpy(x).to(self.device), self.overlap, self.batch_size)
+            x = torch.from_numpy(np.ascontiguousarray(audio)).to(self.device)
+            if on_chunk is None:
+                est = lm(x, self.overlap, self.batch_size)
+            else:
+                est = lm(x, self.overlap, self.batch_size, on_chunk=on_chunk)
             est = {k: v.float().cpu().numpy() for k, v in est.items()}
+            del x
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         dt = time.perf_counter() - t0
         if runs is not None:
             used_overlap = None if lm.spec.arch == "htdemucs" else (self.overlap or lm.spec.overlap)
-            runs.append(ModelRun(model_id, dt, frames / sr, sr != msr, sr, msr, used_overlap))
-        return {k: _fit_length(resample(v, msr, sr), frames).astype(np.float32, copy=False)
+            runs.append(ModelRun(model_id, dt, frames / sr, source_rate != msr, source_rate, msr,
+                                 used_overlap))
+        return {k: _fit_length(v, frames).astype(np.float32, copy=False) for k, v in est.items()}
+
+    def model_rate(self, model_id: str) -> int:
+        """The rate ``model_id`` runs at (loads it: it is about to be used anyway)."""
+        return int(self.model(model_id).spec.sample_rate)
+
+    # -- one model on an array (resampling in and out if needed)
+    def run_model(self, model_id: str, audio: np.ndarray, sr: int,
+                  runs: list[ModelRun] | None = None, hooks: Hooks = NO_HOOKS) -> dict[str, np.ndarray]:
+        """Apply one model to float32 ``[channels, frames]`` audio at ``sr``.
+
+        Returns every output of the model as float32 at ``sr`` with the input's length and
+        channel count (resampled in and out when ``sr`` is not the model's rate; used by
+        the benchmarks; :meth:`separate` resamples each signal only once).
+        """
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.ndim != 2:
+            raise ValueError("audio must be [channels, frames]")
+        msr = self.model_rate(model_id)
+        x = resample(audio, sr, msr)
+        est = self._apply(model_id, x, msr, runs, sr, hooks)
+        return {k: _fit_length(resample(v, msr, sr), audio.shape[1]).astype(np.float32, copy=False)
                 for k, v in est.items()}
 
     # -- presets
     def separate(self, mix: np.ndarray, sr: int, preset: str = "full",
-                 models: dict[str, str] | None = None) -> SeparationResult:
+                 models: dict[str, str] | None = None, hooks: Hooks = NO_HOOKS) -> SeparationResult:
         """Split ``mix`` (float32 ``[channels, frames]``) into lead / backing / drums / other.
 
         ``models`` overrides the preset's model per role (keys as in :data:`PRESETS`).
         Roles the preset does not use (e.g. ``instrumental`` from :data:`BEST_MEASURED`
         with ``full``) are ignored, so the provenance lists only models that ran; a role
-        no preset knows (a typo) is an error.
+        no preset knows (a typo) is an error. ``hooks`` receives progress (0..1 over the
+        whole separation) and can cancel between chunks.
         All four stems sum back to ``mix`` (to float32 rounding); see the module docstring.
         """
         if preset not in PRESETS:
@@ -466,26 +517,104 @@ class Separator:
             raise ValueError(f"unknown model role(s) {sorted(unknown)}; known: {sorted(known_roles)}")
         choice = {role: (models or {}).get(role, mid) for role, mid in PRESETS[preset].items()}
         mix = np.ascontiguousarray(mix, dtype=np.float32)
+        if mix.ndim != 2:
+            raise ValueError("mix must be [channels, frames]")
+        frames = mix.shape[1]
         runs: list[ModelRun] = []
+        resampling: list[dict] = []
         mix64 = mix.astype(np.float64)
 
-        vocals = self.run_model(choice["vocals"], mix, sr, runs)["vocals"]
-        lead = lead_estimate = self.run_model(choice["karaoke"], vocals, sr, runs)["lead"]
-        backing = (vocals.astype(np.float64) - lead).astype(np.float32)
-        if preset == "full":
-            band = (mix64 - vocals).astype(np.float32)
+        # The mix at each model rate, converted once per rate.
+        at_rate: dict[int, np.ndarray] = {sr: mix}
+
+        def mix_at(rate: int) -> np.ndarray:
+            if rate not in at_rate:
+                at_rate[rate] = resample(mix, sr, rate)
+                resampling.append({"what": "the original mix, as input of the separation models "
+                                           "(converted once; the original itself is kept)",
+                                   "from_hz": sr, "to_hz": rate, "method": "soxr VHQ"})
+            return at_rate[rate]
+
+        def to_native(x: np.ndarray, rate: int, what: str) -> np.ndarray:
+            if rate == sr:
+                return x
+            resampling.append({"what": what, "from_hz": rate, "to_hz": sr, "method": "soxr VHQ"})
+            return _fit_length(resample(x, rate, sr), frames).astype(np.float32, copy=False)
+
+        # Progress weights per model run (relative GPU time, docs/benchmarks/separation.md
+        # section 6.5: the karaoke model at overlap 8 is the slowest step).
+        plan = [r for r in ("vocals", "karaoke", "instrumental", "drums") if r in choice]
+        weight = {"vocals": 1.0, "karaoke": 2.0, "instrumental": 1.0, "drums": 1.0}
+        total_w = sum(weight[r] for r in plan)
+        spans, acc = {}, 0.0
+        for r in plan:
+            spans[r] = (acc / total_w, (acc + weight[r]) / total_w)
+            acc += weight[r]
+        messages = {"vocals": "Separating the vocals from the band",
+                    "karaoke": "Separating the lead vocal from the backing vocals",
+                    "instrumental": "Separating the instrumental",
+                    "drums": "Separating the drums"}
+
+        def step(role: str) -> Hooks:
+            a, b = spans[role]
+            h = hooks.sub(a, b, messages[role])
+            h.progress(0.0, messages[role])
+            return h
+
+        vm = choice["vocals"]
+        vr = self.model_rate(vm)
+        vocals_m = self._apply(vm, mix_at(vr), vr, runs, sr, step("vocals"))["vocals"]
+        vocals = to_native(vocals_m, vr, f"vocal estimate of {vm}")
+
+        if "karaoke" in choice:
+            km = choice["karaoke"]
+            kr = self.model_rate(km)
+            # The karaoke model runs on the vocal estimate at the model rate: no trip
+            # through the native rate in between.
+            kin = vocals_m if kr == vr else resample(vocals_m, vr, kr)
+            if kr != vr:
+                resampling.append({"what": f"vocal estimate of {vm} as input of {km}",
+                                   "from_hz": vr, "to_hz": kr, "method": "soxr VHQ"})
+            lead_m = self._apply(km, kin, kr, runs, sr, step("karaoke"))["lead"]
+            lead = lead_estimate = to_native(lead_m, kr, f"lead-vocal estimate of {km}")
+            backing = (vocals.astype(np.float64) - lead).astype(np.float32)
         else:
-            band = self.run_model(choice["instrumental"], mix, sr, runs)["instrumental"]
+            # No lead/backing split (permissive preset): every vocal is "lead".
+            lead = lead_estimate = vocals
+            backing = np.zeros_like(mix)
+
+        if "instrumental" in choice:
+            im = choice["instrumental"]
+            ir = self.model_rate(im)
+            band_m = self._apply(im, mix_at(ir), ir, runs, sr, step("instrumental"))["instrumental"]
+            band = to_native(band_m, ir, f"instrumental estimate of {im}")
+            band_rate = ir
             # The lead stem absorbs everything that is neither band nor backing, so the
             # four stems still add up to the mix.
             lead = (mix64 - band - backing).astype(np.float32)
-        drums = self.run_model(choice["drums"], band, sr, runs)["drums"]
+        else:
+            band = (mix64 - vocals).astype(np.float32)
+            # The drum model's input at the vocal model's rate: mix - vocals, both already
+            # there, so the band is not resampled again.
+            band_m = (mix_at(vr).astype(np.float64) - vocals_m).astype(np.float32)
+            band_rate = vr
+
+        dm = choice["drums"]
+        dr = self.model_rate(dm)
+        din = band_m if dr == band_rate else resample(band_m, band_rate, dr)
+        if dr != band_rate:
+            resampling.append({"what": f"band estimate as input of {dm}",
+                               "from_hz": band_rate, "to_hz": dr, "method": "soxr VHQ"})
+        drums_m = self._apply(dm, din, dr, runs, sr, step("drums"))["drums"]
+        drums = to_native(drums_m, dr, f"drum estimate of {dm}")
+        del at_rate, vocals_m, band_m, din, drums_m
         # The residual stem takes what the estimates did not: computed in float64 from
         # the float32 stems so the float32 sum of the four stems equals the mix to within
         # float32 rounding.
         other = (mix64 - lead.astype(np.float64) - backing - drums).astype(np.float32)
+        hooks.progress(1.0)
         stems = {"lead_vocal": lead, "backing_vocals": backing, "drums": drums, "other": other}
         return SeparationResult(stems, sr, preset, choice, runs,
                                 extras={"vocals": vocals, "instrumental": band,
                                         "lead_estimate": lead_estimate},
-                                precision=self.precision)
+                                precision=self.precision, resampling=resampling)
