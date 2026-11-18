@@ -47,9 +47,12 @@ Read this first in every session. Then DECISIONS.md, then docs/ARCHITECTURE.md.
   - Fixed: VRAM held after a failed or cancelled job (D-163), realign anchor dropping (D-164), the UI's online-lyrics label (D-165), two small races (D-166). UI vitest 122 passed, tsc clean.
   - Stale after these fixes: `$JK_BUILD/e2e-stick/Windows/Studio` (built before them) and its `Jukeoke.exe`. Rebuild both before the next stick or dist build. The Rust studio_supervisor tests were not re-run by the verifier (no Rust code changed).
 
+- 2026-11-17 Studio stage (commit 0bb924b), verified twice: `serve` protocol server + pipeline; relocatable runtime runs from any drive letter; apps+runtime+models 8.66 GB; end to end through the real app on 3 CC songs (48 kHz FLAC, float WAV, MP4) + corrupt file: ~3 min per 4-min song, word onsets median 0.033-0.045 s, 100 % within 0.3 s; weak-computer cases explain and never hang; nothing written to per-user folders. docs/benchmarks/end-to-end.md, docs/STUDIO_RUNTIME.md.
+
 ## In flight
 
-- Workflow `jukeoke-studio` (wf_7ffce523-0c5): Studio `serve` protocol server + job pipeline + verifier fixes (no silent downloads, 48 kHz single resample, permissive preset, cache redirection into the stick); relocatable runtime build script + size budget; then end-to-end through the real app on 3 CC songs (+48 kHz, MP4, corrupt file), weak-computer tests, portable audit; then two verifiers.
+- Workflow `jukeoke-stage7` (wf_a7475999-2e7): final fixes (ticker lookahead >= 2 s on dense songs, CUDA cache cap, Studio robustness, branding list), THIRD_PARTY_LICENSES.md + README + CONTRIBUTING + screenshots + hygiene scans; then dist/ assembly + full local test sweep (docs/TEST_RESULTS.md); then dist verifier + completeness critic (docs/WORK_ORDER_STATUS.md).
+- After it: write HANDOFF.md (state, verified numbers, built-not-verified incl. every Mac item, not done, USB steps, listening + MacBook checklists, owner items), final PROGRESS/DECISIONS, delete the hourly cron.
 
 ## Next
 
