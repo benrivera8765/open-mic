@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Settings: look (skin, bubbles, motion), lyrics (display, next line, motion, text size,
-// marker position, colours), timing offsets per output device, and information about
-// this computer.
+// Settings: look (skin, bubbles, motion), lyrics (display, next line, progress bar,
+// motion, text size, marker position, colours), timing offsets per output device, and
+// information about this computer.
 // Saved by the core into <root>/Settings/settings.json.
 import type { KeyModeSetting, LyricsDisplay, LyricsMotion, MotionSetting } from "../api/types";
 import { DEFAULT_APP_SETTINGS } from "../api/defaults";
@@ -34,8 +34,9 @@ export function Settings() {
   const currentKey = deviceOffsetKey(settings);
   const deviceName = (key: string) => (key === "default" ? "System default output" : (devices.find((d) => d.id === key)?.name ?? key));
   const offsetKeys = [...new Set([currentKey, ...Object.keys(offsets)])];
-  /** The page display (static lines) has no marker. */
+  /** The page display (static lines): no fixed marker; its progress bar rides the wipe edge (settings.ui.show_marker). */
   const page = (ui.lyrics_display ?? "page") === "page";
+  const showMarker = ui.show_marker ?? true;
 
   return (
     <div class="settings">
@@ -65,13 +66,20 @@ export function Settings() {
           ]}
           onChange={(v) => changeSettings({ ui: { lyrics_display: v } })}
         />
-        <p class="hint">Static lines: each line stands still and the sung colour sweeps through it word by word; a small bar before a line runs out when it is time to sing. Scrolling ticker: one line of text slides under a fixed marker.</p>
+        <p class="hint">Static lines: each line stands still and the sung colour sweeps through it word by word, with a slim progress bar riding the edge of the sweep; a small block before a line runs out when it is time to sing. Scrolling ticker: one line of text slides under a fixed marker.</p>
         <Toggle
           label="Show the next line"
           checked={ui.show_next_line ?? true}
           disabled={!page}
           onChange={(v) => changeSettings({ ui: { show_next_line: v } })}
           hint={page ? "Smaller, under the line being sung, so you can read ahead." : "Static lines only (the ticker shows what is coming by itself)."}
+        />
+        <Toggle
+          label="Show the progress bar"
+          checked={showMarker}
+          disabled={!page}
+          onChange={(v) => changeSettings({ ui: { show_marker: v } })}
+          hint={page ? "A slim bar in the marker colour that moves with the sung colour, exactly where the song is." : "Static lines only (the ticker always has its fixed marker)."}
         />
         <Select<LyricsMotion>
           label="Lyrics motion"
@@ -98,7 +106,7 @@ export function Settings() {
         <div class="settings__colors">
           <ColorField label="Sung" value={ui.colors.sung} onChange={(v) => changeSettings({ ui: { colors: { sung: v } } }, 300)} />
           <ColorField label="Coming up" value={ui.colors.upcoming} onChange={(v) => changeSettings({ ui: { colors: { upcoming: v } } }, 300)} />
-          <ColorField label="Marker" value={ui.colors.marker} disabled={page} onChange={(v) => changeSettings({ ui: { colors: { marker: v } } }, 300)} />
+          <ColorField label="Marker" value={ui.colors.marker} disabled={page && !showMarker} onChange={(v) => changeSettings({ ui: { colors: { marker: v } } }, 300)} />
           <button type="button" class="button button--small" onClick={() => changeSettings({ ui: { colors: { ...DEFAULT_APP_SETTINGS.ui.colors } } })}>
             Default colours
           </button>

@@ -111,7 +111,7 @@ export function Stage() {
           ui.lyrics_display === "scroll" ? (
             <Ticker lyrics={song.lyrics} offsetS={offsetS} textSize={ui.lyrics_text_size} marker={ui.marker_position} pace={ui.lyrics_motion ?? "word"} colors={ui.colors} />
           ) : (
-            <PageLyrics lyrics={song.lyrics} offsetS={offsetS} textSize={ui.lyrics_text_size} pace={ui.lyrics_motion ?? "word"} showNext={ui.show_next_line ?? true} colors={ui.colors} />
+            <PageLyrics lyrics={song.lyrics} offsetS={offsetS} textSize={ui.lyrics_text_size} pace={ui.lyrics_motion ?? "word"} showNext={ui.show_next_line ?? true} showMarker={ui.show_marker ?? true} colors={ui.colors} />
           )
         ) : (
           <p class="stage__empty">This song has no lyrics (an instrumental). Sing along by ear, or add lyrics in the Studio.</p>

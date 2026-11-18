@@ -120,6 +120,10 @@ pub struct UiSettings {
     /// Page display: preview the next line under the current one.
     #[serde(default = "default_true")]
     pub show_next_line: bool,
+    /// Page display: the progress needle riding the wipe edge, in `colors.marker` (the
+    /// scrolling ticker always draws its fixed marker).
+    #[serde(default = "default_true")]
+    pub show_marker: bool,
     pub colors: Colors,
     pub library_sort: LibrarySort,
     pub fullscreen_stage: bool,
@@ -171,12 +175,13 @@ impl Default for AppSettings {
                 lyrics_motion: LyricsMotion::Word,
                 lyrics_display: LyricsDisplay::Page,
                 show_next_line: true,
+                show_marker: true,
                 colors: Colors {
                     sung: DEFAULT_SUNG.into(),
                     upcoming: DEFAULT_UPCOMING.into(),
-                    // Mint, not the sung colour: the scrolling ticker's marker must
-                    // stand out against the letters it has just passed (same as the UI
-                    // default). The page display has no marker.
+                    // Mint, not the sung colour: the marker must stand out against the
+                    // letters it has just passed (same as the UI default). Used by the
+                    // scrolling ticker's marker and the page display's progress needle.
                     marker: "#7dffd8".into(),
                     extra: Map::new(),
                 },
@@ -611,6 +616,49 @@ mod tests {
         assert_eq!(store.get().ui.lyrics_display, LyricsDisplay::Scroll);
         assert!(!store.get().ui.show_next_line);
         drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn show_marker_defaults_to_on_and_bad_values_reset_alone() {
+        // The page display's progress needle (owner's request of 18 Nov 2026): on by default.
+        let v = serde_json::to_value(AppSettings::default()).unwrap();
+        assert_eq!(v["ui"]["show_marker"], json!(true));
+        // A file from before the setting existed (the owner's): on, no warning.
+        let (s, warnings) = AppSettings::from_json_lenient(
+            r##"{"ui": {"lyrics_display": "page", "show_next_line": true, "colors": {"marker": "#ffffff"}}}"##,
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(s.ui.show_marker);
+        assert_eq!(s.ui.colors.marker, "#ffffff", "the marker colour is kept");
+        // Off is kept.
+        let (s, _) = AppSettings::from_json_lenient(r#"{"ui": {"show_marker": false}}"#);
+        assert!(!s.ui.show_marker);
+        // A value of the wrong type falls back to on alone; the rest of the file is kept.
+        for bad in [r#""no""#, "0", "null", "[]", r#"{"on": false}"#] {
+            let text = format!(r#"{{"ui": {{"show_marker": {bad}, "bubbles": false}}}}"#);
+            let (s, warnings) = AppSettings::from_json_lenient(&text);
+            assert!(s.ui.show_marker, "{bad}");
+            assert!(!s.ui.bubbles, "{bad}");
+            assert_eq!(warnings.len(), 1, "{bad}: {warnings:?}");
+            assert!(warnings.iter().all(|w| !w.contains("using defaults")), "{warnings:?}");
+        }
+        // settings_set takes false (saved, kept after a reload) and refuses a non-boolean
+        // without changing anything.
+        let dir = scratch("show-marker");
+        let store = SettingsStore::load_with_delay(&dir, Duration::from_millis(50));
+        let s = store.set(&json!({"ui": {"show_marker": false}})).unwrap();
+        assert!(!s.ui.show_marker);
+        assert!(store.set(&json!({"ui": {"show_marker": "off"}})).is_err());
+        assert!(!store.get().ui.show_marker);
+        store.flush();
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(on_disk["ui"]["show_marker"], json!(false));
+        drop(store);
+        let again = SettingsStore::load(&dir);
+        assert!(!again.get().ui.show_marker);
+        drop(again);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

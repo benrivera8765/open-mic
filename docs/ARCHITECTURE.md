@@ -272,6 +272,22 @@ PITCH BUS out + DRUM BUS out --> resampler (only if device rate != song rate)
   once per colour (and once at the preview size) in device pixels, a few lines kept
   (LRU), the line after the preview rendered ahead; a frame is two clipped blits per row.
   Same frame loop as the ticker (60 fps cap, stopped when idle, hidden or minimised).
+- Progress needle on the page display (`settings.ui.show_marker`, default on, D-219; the
+  owner's request of 18 Nov 2026 to bring back "the bar ... that would mark the progress
+  of where the song is"): the ticker's marker needle (`renderer.ts` `drawNeedle`, shared;
+  colour `colors.marker`; sized in em, the ticker's 3 px at 56 px) rides the wipe edge.
+  `pageFrame(...).needle` (`page.ts` point 6) puts it on the line in the current slot, on
+  the row being wiped (`needleRow`: the last row the wipe has entered), at that row's
+  sung width; the renderer draws it last, at the x where it split that row between the
+  sung and the upcoming bitmap (same expression, same snapped origin), over the row's band
+  plus 0.12 em, with the letters' shadow. Before a line's first word it waits at the first
+  letter, after the last word at the end; at a row break it moves to the next row's start
+  when the wipe enters it; at a line change it rides the next line up into place; it
+  fades out and in with the lines around a rest with the countdown and is hidden in the
+  rest. No layout work per frame; on/off and colour need no new bitmaps.
+  `pageverify.ts` (n) checks it on every sampled frame (on the boundary within 0.5 px,
+  right line and row, parked in lead-ins, hidden in rests, inside the area); the
+  scrolling ticker keeps its fixed marker.
 - Lyrics ticker (`src/ticker/`): Canvas 2D. Each grapheme cluster is measured and drawn
   individually at a precomputed x position (ligatures and contextual alternates off).
   The marker stays fixed and the text slides under it (D-04); how the text is paced

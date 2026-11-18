@@ -9,11 +9,30 @@
 // crisp. Per frame: clear, then for each line on screen blit its rows, the sung bitmap
 // clipped left of the wipe edge and the upcoming bitmap right of it (the outline is the
 // same in both, so the colour boundary runs cleanly through the letters); then the
-// lead-in bar and, in rests, the countdown. A few bitmaps are kept (LRU) and the line
-// after the preview is rendered ahead, so a line change never costs a frame.
+// lead-in bar, in rests the countdown, and on top the progress needle (page.ts point 6,
+// settings.ui.show_marker): the ticker's marker needle drawn at the very x where the row
+// was split, so it sits exactly on the gold/white boundary. A few bitmaps are kept (LRU)
+// and the line after the preview is rendered ahead, so a line change never costs a frame.
 import { formatCountdown } from "../lib/format";
-import { CAP_EM, INK_PAD_EM, LINE_HEIGHT_EM, type PageFrame, type PageLayout, type PageLine, pageFrame, PREVIEW_SCALE, wipeInRow } from "./page";
-import type { TickerStats } from "./renderer";
+import {
+  CAP_EM,
+  INK_PAD_EM,
+  LINE_HEIGHT_EM,
+  NEEDLE_HEAD_H_EM,
+  NEEDLE_HEAD_W_EM,
+  NEEDLE_OVER_EM,
+  NEEDLE_W_EM,
+  type PageFrame,
+  type PageItem,
+  type PageLayout,
+  type PageLine,
+  type PageNeedle,
+  type PageRow,
+  pageFrame,
+  PREVIEW_SCALE,
+  wipeInRow,
+} from "./page";
+import { drawNeedle, type TickerStats } from "./renderer";
 
 export interface PageStyle {
   fontFamily: string;
@@ -58,6 +77,14 @@ export class PageRenderer {
   readonly stats: TickerStats = { frames: 0, tilesRendered: 0, lastDrawMs: 0, maxDrawMs: 0, totalDrawMs: 0 };
   /** The last frame drawn (for the debug hooks). */
   last: PageFrame | null = null;
+  /** Needle colour (settings.ui.colors.marker), or null when the needle is off (settings.ui.show_marker). */
+  private marker: string | null = null;
+  /**
+   * The last frame's needle as drawn (CSS px; null when none was drawn) and the x where that
+   * row was split between the sung and the upcoming bitmap (NaN when the row was drawn whole,
+   * all sung or all upcoming): for the real-app scripts' live check.
+   */
+  lastNeedle: { x: number; split: number } | null = null;
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -86,6 +113,11 @@ export class PageRenderer {
     this.style = style;
     this.lines.clear();
     this.capCache.clear();
+  }
+
+  /** The progress needle's colour, or null for no needle (nothing is re-rendered). */
+  setMarker(color: string | null): void {
+    this.marker = color;
   }
 
   private font(px: number): string {
@@ -187,6 +219,8 @@ export class PageRenderer {
     ctx.imageSmoothingEnabled = true;
     const q = ctx as CanvasRenderingContext2D & { imageSmoothingQuality?: string };
     if ("imageSmoothingQuality" in q) q.imageSmoothingQuality = "high";
+    const nd = this.marker !== null ? f.needle : null;
+    let needleSplit = NaN;
     // Back to front: the leaving line, the preview, the current line.
     const order = { leaving: 0, preview: 1, entering: 2, current: 3 } as const;
     for (const it of [...f.items].sort((a, b) => order[a.role] - order[b.role])) {
@@ -206,9 +240,7 @@ export class PageRenderer {
           ctx.drawImage(pv, x, y, pv.width / this.dpr, pv.height / this.dpr);
           return;
         }
-        const one = it.scale === 1;
-        const dx = one ? this.snap(row.left - pad) : L.cx + (row.left - pad - L.cx) * it.scale;
-        const dy = one ? this.snap(it.top + row.top - pad) : it.top + (row.top - pad) * it.scale;
+        const { dx, dy } = this.rowOrigin(L, row, it);
         const up = bm.rows[r].up;
         const su = bm.rows[r].sung;
         if (!up || !su) return;
@@ -220,12 +252,18 @@ export class PageRenderer {
           const split = dx + (pad + sung) * it.scale;
           this.clipped(su, dx, dy, dw, dh, dx - 1, split);
           this.clipped(up, dx, dy, dw, dh, split, dx + dw + 1);
+          if (nd && nd.line === it.line && nd.role === it.role && nd.row === r) needleSplit = split;
         }
       });
     }
     ctx.globalAlpha = 1;
     if (f.leadIn) this.drawLeadIn(f, l);
     if (f.countdown) this.drawCountdown(f, l);
+    this.lastNeedle = null;
+    if (nd) {
+      const it = f.items.find((x) => x.line === nd.line && x.role === nd.role);
+      if (it) this.lastNeedle = { x: this.drawNeedle(nd, l.lines[nd.line], it), split: needleSplit };
+    }
     // Render the line after the preview ahead of time (it appears at the next change).
     const ahead = f.current + 2;
     if (ahead < l.lines.length && !this.lines.has(ahead)) this.bitmaps(ahead);
@@ -240,6 +278,39 @@ export class PageRenderer {
   /** Rounds a CSS position to the device pixel grid (crisp blits at scale 1). */
   private snap(v: number): number {
     return Math.round(v * this.dpr) / this.dpr;
+  }
+
+  /** Where row `row` of line `L` (bitmap top-left, ink pad included) is drawn for item `it`: snapped at scale 1, scaled about the line's centre otherwise. */
+  private rowOrigin(L: PageLine, row: PageRow, it: PageItem): { dx: number; dy: number } {
+    const pad = INK_PAD_EM * L.px;
+    if (it.scale === 1) return { dx: this.snap(row.left - pad), dy: this.snap(it.top + row.top - pad) };
+    return { dx: L.cx + (row.left - pad - L.cx) * it.scale, dy: it.top + (row.top - pad) * it.scale };
+  }
+
+  /**
+   * The progress needle (page.ts point 6): the ticker's needle at the x where its row is
+   * split between the sung and the upcoming bitmap (the same expression as the split, from
+   * the row's drawn origin), the shaft over the row's band plus NEEDLE_OVER_EM, sizes in em
+   * of the line at the item's scale. A soft shadow (the letters' own) keeps it visible on
+   * the white letters. Returns the x drawn.
+   */
+  private drawNeedle(n: PageNeedle, L: PageLine, it: PageItem): number {
+    const ctx = this.ctx;
+    const s = this.style!;
+    const row = L.rows[n.row];
+    const pad = INK_PAD_EM * L.px;
+    const { dx, dy } = this.rowOrigin(L, row, it);
+    const x = dx + (pad + n.sung) * it.scale;
+    const band = dy + pad * it.scale;
+    const k = n.px;
+    ctx.save();
+    ctx.globalAlpha = n.alpha;
+    ctx.shadowColor = s.shadow;
+    ctx.shadowBlur = SHADOW_BLUR_EM * k * this.dpr;
+    ctx.shadowOffsetY = SHADOW_DROP_EM * k * this.dpr;
+    drawNeedle(ctx, x, band - NEEDLE_OVER_EM * k, band + (LINE_HEIGHT_EM + NEEDLE_OVER_EM) * k, NEEDLE_W_EM * k, NEEDLE_HEAD_W_EM * k, NEEDLE_HEAD_H_EM * k, this.marker!);
+    ctx.restore();
+    return x;
   }
 
   private clipped(img: HTMLCanvasElement, dx: number, dy: number, dw: number, dh: number, x0: number, x1: number): void {

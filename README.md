@@ -9,7 +9,7 @@ the lyrics up with the singing down to the letter. The result is one song file
 (`.jksong`) that plays on any ordinary Windows PC or Mac with the same sound.
 
 While you sing, each line of the lyrics stands still on screen and a gold colour wipe runs
-through it word by word as it is sung, with the next line underneath (or, if you prefer,
+through it word by word as it is sung, a slim progress bar riding its edge, with the next line underneath (or, if you prefer,
 the lyrics slide from right to left under a fixed marker). You can move the song into your key, up or down by up to 12
 semitones, without changing its speed, and the drums are left alone so they do not sound
 processed. The app also has a recorder that captures whatever the computer is playing,

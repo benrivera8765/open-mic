@@ -217,7 +217,8 @@ interface AppSettings {
     lyrics_motion: "word" | "letter";  // pace of the wipe / ticker (D-216): smooth, paced by word | exact, letter by letter
     lyrics_display: "page" | "scroll"; // D-218: static lines with a colour wipe | the scrolling ticker
     show_next_line: boolean;           // page display: preview the next line underneath
-    colors: { sung: string; upcoming: string; marker: string };  // marker: scrolling ticker only
+    show_marker: boolean;              // page display: the progress needle on the wipe edge (D-219)
+    colors: { sung: string; upcoming: string; marker: string };  // marker: the ticker's marker and the page display's needle
     library_sort: "title" | "artist" | "recent" | "key"; fullscreen_stage: boolean;
   };
   audio: { device_id: string | null; exclusive: boolean; master_volume: number;
@@ -235,12 +236,15 @@ the OS reduce-motion preference), `lyrics_text_size` 56, `marker_position` 0.33,
 before the setting existed gets "word" too; "letter" is the letter-exact motion every
 earlier version had), `lyrics_display` "page" (the owner's choice of 18 Nov 2026, D-218;
 also for files written before it existed; "scroll" is the ticker of every earlier
-version), `show_next_line` true, `colors` sung `#ffc21a` (gold), upcoming `#f4f4f4`
+version), `show_next_line` true, `show_marker` true (the owner's request of 18 Nov 2026,
+D-219; also for files written before it existed), `colors` sung `#ffc21a` (gold), upcoming `#f4f4f4`
 (white), marker `#7dffd8` (before D-218: sung `#ff3d8b`, upcoming `#f6efd9`; a file
 without `ui.lyrics_display` that still holds exactly one of those two values, in any
 letter case, gets the new default instead, so the owner's untouched colours follow the
 new look and chosen ones stay; once saved, the file has `lyrics_display` and an old colour
-chosen again is kept), `marker_position` and `colors.marker` apply to the ticker only,
+chosen again is kept), `marker_position` applies to the ticker only, `colors.marker` to
+the ticker's marker and to the page display's progress needle (`show_marker`; the ticker
+always draws its marker),
 `library_sort` "title", `fullscreen_stage` false; `device_id` null, `exclusive` false, `master_volume` 1.0
 (unity), `device_offsets_ms` {}, `key_mode` "auto", `key_cache_mb` 1024,
 `key_benchmarks` {}. Numbers are clamped (`lyrics_text_size` 12..400,

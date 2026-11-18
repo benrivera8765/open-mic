@@ -245,6 +245,9 @@ export interface AppSettings {
     lyrics_display: LyricsDisplay;
     /** Page display: preview the next line under the current one (default true). */
     show_next_line: boolean;
+    /** Page display: the progress needle on the wipe edge, in colors.marker (default true; the ticker always has its marker). */
+    show_marker: boolean;
+    /** marker: the ticker's marker and the page display's progress needle. */
     colors: { sung: string; upcoming: string; marker: string };
     library_sort: LibrarySort;
     fullscreen_stage: boolean;

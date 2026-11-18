@@ -21,13 +21,39 @@
 //       draining monotonically, gone exactly when the first word starts.
 //   (f) Line changes start within 250 ms of the previous line's last word, and the new
 //       line has settled before its lead-in bar starts.
+//   (n) The progress needle (page.ts point 6), on every frame checked for (d): its x is
+//       the gold/white boundary as the renderer draws it (the row split between the sung
+//       and the upcoming colour; with no row split, the end of the last fully sung row, or
+//       the start of the first row), within NEEDLE_TOLERANCE_PX; it rides the line in the
+//       current slot (a line leaving before a rest or at the end only while no line is in
+//       the slot, and any leaving line at the instant a change starts before the next line
+//       is drawn: without the preview it fades in from opacity 0); it is on the row of the word being sung (outside the word's first and
+//       last 40 ms) and spans that row's band; it never moves left on a settled row; during
+//       a lead-in bar it waits at the line's first letter (until the first word's 40 ms
+//       tolerance); it is hidden while a rest shows the countdown; it stays inside the area.
 import { LOOKAHEAD_S, type PlacedLine, type TickerLayout } from "./layout";
-import { BAR_W_EM, INK_PAD_EM, LEADIN_MIN_GAP_S, LINE_HEIGHT_EM, type PageLayout, type PageLine, pageFrame, PREVIEW_ALPHA, TRANSITION_S } from "./page";
+import {
+  BAR_W_EM,
+  INK_PAD_EM,
+  LEADIN_MIN_GAP_S,
+  LINE_HEIGHT_EM,
+  NEEDLE_HEAD_H_EM,
+  NEEDLE_HEAD_W_EM,
+  NEEDLE_W_EM,
+  type PageFrame,
+  type PageLayout,
+  type PageLine,
+  pageFrame,
+  PREVIEW_ALPHA,
+  TRANSITION_S,
+} from "./page";
 import { type FrameSmoothness, frameSmoothness, type TickerVerifyReport, verifyTickerLayout } from "./verify";
 import { WORD_TOLERANCE_S } from "./wordmotion";
 
 /** Longest allowed time from a line's last word to the start of the change to the next line. */
 export const SWITCH_MAX_S = 0.25;
+/** (n) The needle and the gold/white boundary may differ by this much (CSS px). */
+export const NEEDLE_TOLERANCE_PX = 0.5;
 
 /** A page line as a one-line ticker strip (marker at 0, an endless lane), so verify.ts applies unchanged. */
 export function lineAsTicker(l: PageLayout, line: PageLine): TickerLayout {
@@ -85,6 +111,43 @@ export interface PageVerifyReport extends TickerVerifyReport {
   wrappedLines: number;
   /** The wipe at 60 fps while lines are sung (frameSmoothness of each line, combined). */
   smooth: FrameSmoothness;
+  /** (n) Frames with the needle; problems by kind; largest distance to the gold/white boundary (CSS px); lead-in frames checked for the parked needle. */
+  needleFrames: number;
+  needleProblems: number;
+  needleOffEdge: number;
+  needleMaxDxPx: number;
+  needleWrongLine: number;
+  needleWrongRow: number;
+  needleBackwards: number;
+  needleNotParked: number;
+  needleParkedFrames: number;
+  needleInRest: number;
+  needleOutside: number;
+}
+
+/** (n) The gold/white boundary of line `line` (drawn as `role`) in frame `f`, from the rows' own split (see the header). */
+export function wipeBoundary(layout: PageLayout, f: PageFrame, line: number, role: string): { row: number; x: number } | null {
+  const it = f.items.find((x) => x.line === line && x.role === role);
+  const L = layout.lines[line];
+  if (!it || !L || L.rows.length === 0) return null;
+  let row = -1;
+  let u = 0;
+  // The row split between the colours (at most one: rows are wiped in reading order).
+  L.rows.forEach((rw, r) => {
+    const sung = it.wipe - rw.u0;
+    if (sung > 0 && sung < rw.u1 - rw.u0) [row, u] = [r, sung];
+  });
+  // Else the end of the last row fully sung, else the start of the first row.
+  if (row < 0)
+    for (let r = L.rows.length - 1; r >= 0; r--) {
+      const rw = L.rows[r];
+      if (it.wipe >= rw.u1 && it.wipe > rw.u0) {
+        [row, u] = [r, rw.u1 - rw.u0];
+        break;
+      }
+    }
+  if (row < 0) [row, u] = [0, 0];
+  return { row, x: L.cx + (L.rows[row].left + u - L.cx) * it.scale };
 }
 
 export function verifyPage(layout: PageLayout, opts: { dt?: number; frameDt?: number; tolerance?: number } = {}): PageVerifyReport {
@@ -130,6 +193,17 @@ export function verifyPage(layout: PageLayout, opts: { dt?: number; frameDt?: nu
     shrunkLines: layout.shrunkLines,
     wrappedLines: layout.wrappedLines,
     smooth: { frames: 0, maxDvPx: 0, maxDvEm: 0, p99DvEm: 0, bigSteps: 0, bigStepShare: 0, threshold: 0.25, maxSpeedEm: 0, minSpeedEm: Infinity },
+    needleFrames: 0,
+    needleProblems: 0,
+    needleOffEdge: 0,
+    needleMaxDxPx: 0,
+    needleWrongLine: 0,
+    needleWrongRow: 0,
+    needleBackwards: 0,
+    needleNotParked: 0,
+    needleParkedFrames: 0,
+    needleInRest: 0,
+    needleOutside: 0,
   };
   const problem = (s: string) => {
     if (r.firstProblems.length < 10) r.firstProblems.push(s);
@@ -238,6 +312,83 @@ export function verifyPage(layout: PageLayout, opts: { dt?: number; frameDt?: nu
   const W = layout.width;
   const H = layout.height;
   const lastFrac = new Map<number, number>();
+  // (n) The needle on frame f.
+  type NeedleKind = "needleOffEdge" | "needleWrongLine" | "needleWrongRow" | "needleBackwards" | "needleNotParked" | "needleInRest" | "needleOutside";
+  let lastNeedle: { line: number; row: number; x: number } | null = null;
+  const needleProblem = (kind: NeedleKind, t: number, s: string) => {
+    r[kind]++;
+    r.needleProblems++;
+    problem(`t=${t.toFixed(3)}: needle ${s}`);
+  };
+  const checkNeedle = (f: PageFrame, t: number) => {
+    const n = f.needle;
+    const inRest = layout.rests.some((rs) => t >= rs.from && t < rs.to);
+    if (inRest && n) needleProblem("needleInRest", t, `on line ${n.line + 1} during a rest with the countdown`);
+    // The line it must ride: the one in the current slot, else one leaving before a rest or
+    // at the end; or one leaving at the very instant its change starts while the next line
+    // is not drawn yet (without the preview the next line fades in from opacity 0, so at
+    // t = its `current` nothing is in the slot and the needle stays on the leaving line).
+    const slot = f.current >= 0 ? f.items.find((x) => x.line === f.current && (x.role === "current" || x.role === "entering")) : undefined;
+    const leaving = f.items.find((x) => x.role === "leaving");
+    const handOver = (i: number) => i + 1 < lines.length && lines[i + 1].current <= t;
+    const want = slot ?? (f.current < 0 && leaving && !inRest && (leaving.line === lines.length - 1 || lines[leaving.line + 1].breakBefore || handOver(leaving.line)) ? leaving : undefined);
+    if (!n) {
+      if (want) needleProblem("needleWrongLine", t, `missing (line ${want.line + 1} is ${want.role})`);
+      lastNeedle = null;
+      return;
+    }
+    r.needleFrames++;
+    if (!want || want.line !== n.line || want.role !== n.role) {
+      needleProblem("needleWrongLine", t, `on line ${n.line + 1} (${n.role}), expected ${want ? `line ${want.line + 1} (${want.role})` : "none"}`);
+      lastNeedle = null;
+      return;
+    }
+    const L = lines[n.line];
+    const it = want;
+    // On the gold/white boundary.
+    const b = wipeBoundary(layout, f, n.line, n.role)!;
+    const dx = Math.abs(n.x - b.x);
+    if (b.row === n.row) r.needleMaxDxPx = Math.max(r.needleMaxDxPx, dx);
+    if (b.row !== n.row || dx > NEEDLE_TOLERANCE_PX) needleProblem("needleOffEdge", t, `at x ${n.x.toFixed(2)} on row ${n.row + 1}, the boundary at x ${b.x.toFixed(2)} on row ${b.row + 1}`);
+    // On the row of the word being sung; or, where (a) lets the edge be in the space the
+    // word carries up to the next word's first sung letter, on a row of that space (it can
+    // hold the row break and graphemes of the next word sung in no time); or at the end of
+    // the row before while the wipe has not reached the word's row (the letter pace's first
+    // cell can start in the space).
+    const k = L.words.findIndex((w) => t >= w.start + tol && t < w.end - tol);
+    if (k >= 0) {
+      const sung = L.words[k];
+      const wr = L.rows.findIndex((rw) => sung.first >= rw.first && sung.first <= rw.last);
+      const nextA = k + 1 < L.words.length ? L.words[k + 1].a : L.uEnd;
+      const rw = L.rows[n.row];
+      const inCarried = it.wipe >= sung.a - 1e-9 && it.wipe <= nextA + 1e-9 && rw.u0 < nextA && rw.u1 > sung.a;
+      const between = n.row === wr - 1 && it.wipe <= L.rows[wr].u0;
+      if (wr !== n.row && !inCarried && !between) needleProblem("needleWrongRow", t, `on row ${n.row + 1} of line ${n.line + 1}, the word sung is on row ${wr + 1}`);
+    }
+    const band = it.top + L.rows[n.row].top * it.scale;
+    const bandEnd = band + LINE_HEIGHT_EM * L.px * it.scale;
+    if (n.top > band + 1e-6 || n.bottom < bandEnd - 1e-6) needleProblem("needleWrongRow", t, `spans y ${n.top.toFixed(1)}..${n.bottom.toFixed(1)}, its row's band ${band.toFixed(1)}..${bandEnd.toFixed(1)}`);
+    // Never to the left on a settled row.
+    if (it.role === "current" && lastNeedle && lastNeedle.line === n.line && lastNeedle.row === n.row && n.x < lastNeedle.x - 1e-6) needleProblem("needleBackwards", t, `moved left from ${lastNeedle.x.toFixed(2)} to ${n.x.toFixed(2)}`);
+    lastNeedle = it.role === "current" ? { line: n.line, row: n.row, x: n.x } : null;
+    // Parked at the first letter during the lead-in bar. (Graphemes before the first sung
+    // letter that an aligner gave no time are swept during the wipe's run-up, as the
+    // wipe always did: then the needle may only have crossed those.)
+    if (f.leadIn) {
+      const P = lines[f.leadIn.line];
+      if (n.line !== f.leadIn.line) needleProblem("needleNotParked", t, `on line ${n.line + 1} during line ${f.leadIn.line + 1}'s lead-in`);
+      else if (t < P.start - tol) {
+        r.needleParkedFrames++;
+        const firstA = P.words.length ? P.words[0].a : 0;
+        const ok = n.row === 0 && (firstA > 0 ? n.x >= P.rows[0].left - 1e-9 && n.x <= P.rows[0].left + firstA + 1e-6 : Math.abs(n.x - P.rows[0].left) <= NEEDLE_TOLERANCE_PX);
+        if (!ok) needleProblem("needleNotParked", t, `at x ${n.x.toFixed(2)} (row ${n.row + 1}) during the lead-in, the first letter at x ${P.rows[0].left.toFixed(2)}`);
+      }
+    }
+    // Inside the area: shaft and head.
+    const half = (Math.max(NEEDLE_W_EM, NEEDLE_HEAD_W_EM) * n.px) / 2;
+    const top = n.top - NEEDLE_HEAD_H_EM * n.px;
+    if (n.x - half < -0.5 || n.x + half > W + 0.5 || top < -0.5 || n.bottom > H + 0.5) needleProblem("needleOutside", t, `x ${(n.x - half).toFixed(1)}..${(n.x + half).toFixed(1)}, y ${top.toFixed(1)}..${n.bottom.toFixed(1)} outside ${W}x${H}`);
+  };
   for (let k = 0; ; k++) {
     const t = t0 + k * frameDt;
     if (t > t1) break;
@@ -274,6 +425,7 @@ export function verifyPage(layout: PageLayout, opts: { dt?: number; frameDt?: nu
       lastFrac.set(b.line, b.frac);
     }
     if (out) r.overflowFrames++;
+    checkNeedle(f, t);
     // (c) every line that should be readable now is drawn, fully.
     lines.forEach((L, i) => {
       if (t < visibleFrom[i] || t >= L.start) return;

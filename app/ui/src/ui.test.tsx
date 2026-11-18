@@ -209,7 +209,7 @@ describe("functional UI on the mock", () => {
     expect(next.checked).toBe(true);
     expect(next.disabled).toBe(false);
     const marker = labelled("Marker position (from the left)") as HTMLInputElement;
-    expect(marker.disabled).toBe(true); // the page display has no marker
+    expect(marker.disabled).toBe(true); // the page display's needle rides the wipe; no fixed position
     expect(store.get().settings?.ui.colors.sung).toBe("#ffc21a");
     // The Stage draws the page display.
     store.set({ screen: "stage" });
@@ -229,6 +229,37 @@ describe("functional UI on the mock", () => {
     await until(() => !!q(".stage__lane .ticker") && !q(".stage__lane .page-lyrics"));
     changeSettings({ ui: { lyrics_display: "page" } });
     await until(() => !!q(".stage__lane .page-lyrics"));
+    expect(accessibilityProblems()).toEqual([]);
+  });
+
+  it("settings: the static lines' progress bar is on by default, can be turned off, and uses the marker colour", async () => {
+    store.set({ screen: "settings" });
+    await until(() => !!q(".settings"));
+    const labelled = (text: string) => qa(".settings select, .settings input").find((s) => root.querySelector(`label[for="${s.id}"]`)?.textContent === text);
+    const bar = labelled("Show the progress bar") as HTMLInputElement;
+    expect(bar).toBeTruthy();
+    expect(bar.checked).toBe(true);
+    expect(bar.disabled).toBe(false);
+    // The marker colour applies to the page display's bar now (it was disabled there before).
+    const colour = labelled("Marker") as HTMLInputElement;
+    expect(colour.disabled).toBe(false);
+    expect(colour.value).toBe("#7dffd8");
+    // Off: saved by the core, and the colour field is disabled (nothing uses it in this display).
+    bar.click();
+    await until(() => store.get().settings?.ui.show_marker === false);
+    await wait(40);
+    expect((await api.settingsGet()).ui.show_marker).toBe(false);
+    await until(() => (labelled("Marker") as HTMLInputElement).disabled);
+    // The Stage still draws the page display.
+    store.set({ screen: "stage" });
+    await until(() => !!q(".stage__lane .page-lyrics"));
+    // The scrolling ticker always has its marker: the switch is disabled there, the colour enabled.
+    changeSettings({ ui: { lyrics_display: "scroll" } });
+    store.set({ screen: "settings" });
+    await until(() => !!q(".settings") && (labelled("Show the progress bar") as HTMLInputElement).disabled);
+    expect((labelled("Marker") as HTMLInputElement).disabled).toBe(false);
+    changeSettings({ ui: { lyrics_display: "page", show_marker: true } });
+    await until(() => store.get().settings?.ui.show_marker === true && (labelled("Show the progress bar") as HTMLInputElement).checked);
     expect(accessibilityProblems()).toEqual([]);
   });
 

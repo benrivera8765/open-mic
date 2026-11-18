@@ -14,6 +14,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
     lyrics_motion: "word",
     lyrics_display: "page",
     show_next_line: true,
+    show_marker: true,
     // Gold sung, white upcoming since D-218 (before: #ff3d8b / #f6efd9, which the core
     // migrates to these when a settings file from before D-218 still holds them).
     colors: { sung: "#ffc21a", upcoming: "#f4f4f4", marker: "#7dffd8" },

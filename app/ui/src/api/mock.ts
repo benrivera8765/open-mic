@@ -18,6 +18,7 @@
 //   ?lyricsdisplay=scroll  start with the scrolling ticker instead of the page display
 //                          (settings.ui.lyrics_display, D-218)
 //   ?nextline=0            start without the next-line preview (settings.ui.show_next_line)
+//   ?marker=0              start without the page display's progress needle (settings.ui.show_marker)
 //   ?exportpeak=1.95       peak of the simulated export render (linear; above full scale
 //                          a FLAC export reports the gain it applied, like the real core)
 // Handled by the UI (App.tsx `mockStartup`), not here:
@@ -106,6 +107,8 @@ export interface MockOptions {
   lyricsDisplay: LyricsDisplay;
   /** settings.ui.show_next_line at start (default true). */
   showNextLine: boolean;
+  /** settings.ui.show_marker at start (default true). */
+  showMarker: boolean;
   /** Simulated IPC latency for commands, ms. */
   latencyMs: number;
   /**
@@ -132,6 +135,7 @@ const DEFAULT_OPTIONS: MockOptions = {
   lyricsMotion: "word",
   lyricsDisplay: "page",
   showNextLine: true,
+  showMarker: true,
   latencyMs: 3,
   exportPeak: 0.89,
   now: () => performance.now(),
@@ -208,6 +212,7 @@ export class MockApi implements Api {
     this.settings.ui.lyrics_motion = this.o.lyricsMotion;
     this.settings.ui.lyrics_display = this.o.lyricsDisplay;
     this.settings.ui.show_next_line = this.o.showNextLine;
+    this.settings.ui.show_marker = this.o.showMarker;
     const lib = this.o.empty ? [] : [...demoLibrary(), ...fillerSongs(this.o.many)];
     this.songs = lib.map((demo) => ({ demo, settings: { ...demo.settings, levels: { ...demo.settings.levels } }, lyricsOverride: null, metadata: {} }));
     this.recordings = [
@@ -232,6 +237,7 @@ export class MockApi implements Api {
     const ld = q.get("lyricsdisplay");
     if (ld === "page" || ld === "scroll") o.lyricsDisplay = ld;
     if (q.get("nextline") === "0") o.showNextLine = false;
+    if (q.get("marker") === "0") o.showMarker = false;
     const many = Number(q.get("many"));
     if (many > 0) o.many = Math.min(2000, Math.floor(many));
     const peak = Number(q.get("exportpeak"));

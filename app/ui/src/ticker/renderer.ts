@@ -19,6 +19,23 @@ import { restAt } from "./layout";
 
 export const TILE_CSS = 1024;
 
+/**
+ * The marker needle (DESIGN.md "Stage marker"): a slim solid shaft centred on `x` from
+ * `top` to `bottom` with a small triangular head above it pointing down, in `color`. The
+ * ticker draws it at the fixed marker (3 px wide, head 14 x 8 px); the page display draws
+ * the same needle on the wipe edge (pagerenderer.ts, sizes in em of the line).
+ */
+export function drawNeedle(ctx: CanvasRenderingContext2D, x: number, top: number, bottom: number, w: number, headW: number, headH: number, color: string): void {
+  ctx.fillStyle = color;
+  ctx.fillRect(x - w / 2, top, w, bottom - top);
+  ctx.beginPath();
+  ctx.moveTo(x - headW / 2, top - headH);
+  ctx.lineTo(x + headW / 2, top - headH);
+  ctx.lineTo(x, top);
+  ctx.closePath();
+  ctx.fill();
+}
+
 export interface TickerStyle {
   fontFamily: string;
   fontWeight: string;
@@ -208,14 +225,7 @@ export class TickerRenderer {
     // The marker: a slim needle across the lane.
     const top = this.laneY - l.fontPx * 0.15;
     const h = this.laneH + l.fontPx * 0.3;
-    ctx.fillStyle = s.marker;
-    ctx.fillRect(markerX - 1.5, top, 3, h);
-    ctx.beginPath();
-    ctx.moveTo(markerX - 7, top - 8);
-    ctx.lineTo(markerX + 7, top - 8);
-    ctx.lineTo(markerX, top);
-    ctx.closePath();
-    ctx.fill();
+    drawNeedle(ctx, markerX, top, top + h, 3, 14, 8, s.marker);
 
     const ms = performance.now() - started;
     this.stats.frames++;
