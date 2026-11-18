@@ -49,17 +49,15 @@ Read this first in every session. Then DECISIONS.md, then docs/ARCHITECTURE.md.
 
 - 2026-11-17 Studio stage (commit 0bb924b), verified twice: `serve` protocol server + pipeline; relocatable runtime runs from any drive letter; apps+runtime+models 8.66 GB; end to end through the real app on 3 CC songs (48 kHz FLAC, float WAV, MP4) + corrupt file: ~3 min per 4-min song, word onsets median 0.033-0.045 s, 100 % within 0.3 s; weak-computer cases explain and never hang; nothing written to per-user folders. docs/benchmarks/end-to-end.md, docs/STUDIO_RUNTIME.md.
 
+- 2026-11-18 Stage 7 (commit cde5519): dist/ (8.63 GB on exFAT with 32 KB clusters; proven from a subst copy: smoke 8/8, self-check 8/8, real Studio job, 0 per-user writes); shipped exe free of build-machine paths; THIRD_PARTY_LICENSES.md, README, CONTRIBUTING, screenshots; ticker >= 2.0 s lookahead on all test songs; local CI sweep all green (docs/TEST_RESULTS.md); completeness critic table docs/WORK_ORDER_STATUS.md; HANDOFF.md draft.
+
 ## In flight
 
-- Workflow `jukeoke-stage7` (wf_a7475999-2e7): final fixes (ticker lookahead >= 2 s on dense songs, CUDA cache cap, Studio robustness, branding list), THIRD_PARTY_LICENSES.md + README + CONTRIBUTING + screenshots + hygiene scans; then dist/ assembly + full local test sweep (docs/TEST_RESULTS.md); then dist verifier + completeness critic (docs/WORK_ORDER_STATUS.md).
-- After it: write HANDOFF.md (state, verified numbers, built-not-verified incl. every Mac item, not done, USB steps, listening + MacBook checklists, owner items), final PROGRESS/DECISIONS, delete the hourly cron.
+- Workflow `jukeoke-gaps` (wf_9e1698ef-f24) closing the critic's gaps: key-change render-ahead-and-cache fallback (WO 4.5); cover-art correction in the Studio form; ticker pause when minimised; Mac CI steps that fail when evidence is missing + macOS availability audit + build-mac.sh path remap; full licence texts in dist/Licenses; then rebuild dist + local CI + 20-min real-app soak with bubbles and CPU load + whole-app memory + engine allocation test + separation stereo/loudness; then two verifiers.
 
 ## Next
 
-- (in flight in jukeoke-studio) Studio stage: merge Python deps into studio/pyproject.toml (list in the lyrics build report: regex, mutagen, av, transformers, faster-whisper, nvidia-cublas-cu12 (win32), librosa, soxr, numpy, soundfile); add `lyrics.source_hint` to job.submit so lookup results are recorded as `online:lrclib` (protocol gap); realign should drop only the infeasible anchor, not all; resolve_lyrics('auto') should fall through when given LRC/text normalises to nothing; register models in MODELS.md (wav2vec2-large-960h-lv60-self default, HuBERT option, faster-whisper large-v3-turbo default, large-v3 optional); pipeline orchestration (PyAV decode, tags/cover, separate, lyrics, align, analyse, write), protocol server (docs/STUDIO_PROTOCOL.md), model registry + downloads with sha256, relocatable Python runtime in dist/Windows/Studio, test-songs end to end (folder was empty), speed for a 4-min song.
-- Stage 7: dist/ layout (WO 4.8), size budget, portable audit, weak-computer tests (GPU hidden, Studio removed), README, CONTRIBUTING, THIRD_PARTY_LICENSES.md, MODELS.md final, listening + MacBook checklists, HANDOFF.md.
-- Open from Stage 1 verifiers: Studio must redirect per-user caches (HF_HOME, TORCH_HOME, XDG_CACHE_HOME, CUDA_CACHE_PATH, TMP/TEMP, MPLCONFIGDIR) into the stick in portable mode; THIRD_PARTY_LICENSES.md must be created (Tauri crates, npm packages, Rubber Band GPL, rubato, symphonia MPL, three OFL fonts, Python deps incl. nvidia-cublas EULA); an idle leftover Vite dev server (port 5191, PID 4556) from the skin stream could not be stopped by the agent (permission denied) - harmless.
-- Stage 0 verifier minor items still open: recorder CI probe flags, ci-compare-renders single-platform pass, THIRD_PARTY_LICENSES.md missing.
+- After jukeoke-gaps: update HANDOFF.md with its results (key mode, soak/memory numbers, CI hardening, licence texts), final PROGRESS/DECISIONS, commit, then delete the hourly cron (CronList/CronDelete) - the remaining work needs the owner (GitHub login, Mac, ears, licence decisions).
 
 ## Notes for a fresh session
 
