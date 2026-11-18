@@ -17,21 +17,32 @@
 //   4. lookahead: whenever a grapheme starts within the next 2 s, it is already fully
 //      visible right of the marker.
 // Numbers are printed (and written to $TICKER_REPORT if set) for the benchmarks doc.
+// The blocks above test the letter pace (settings.ui.lyrics_motion = "letter", the
+// layout's own default) and are unchanged since D-167.
+//
+// Word pace (the app's default since the owner's request of 18 Nov 2026, D-216): the
+// same songs at the same sizes, checked against the word contract of verify.ts
+// (W1 onset within 40 ms, W2 word under the marker, W3 never backwards or stopped while
+// a line is sung, 4 lookahead), and compared with the letter pace frame by frame at
+// 60 fps: the largest change of speed between consecutive frames and the share of
+// frames whose speed changes by more than 25 %.
 //
 // Real songs: the .jksong files of the end-to-end run (docs/benchmarks/end-to-end.md)
 // are read at test time from $JK_TICKER_SONGS, or $JK_BUILD/e2e-stick/Library, or
 // ../jukeoke-build/e2e-stick/Library next to the repository, and skipped when absent.
 // Their lyrics are never copied into the repository; `denseRapLyrics` stands in for
 // the rap song with generated words and a timing density profile like its own.
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { Lyrics } from "../api/types";
+import { DEFAULT_APP_SETTINGS } from "../api/defaults";
 import { FRERE_LYRICS, lyricsFromScore, prng, ROW_LYRICS, TWINKLE_LYRICS } from "../api/demo";
-import { glyphAtX, layoutTicker, LOOKAHEAD_S, type Measure, MIN_LINE_SCALE, restAt, shareSeparator } from "./layout";
-import { type TickerVerifyReport, verifyTickerLayout } from "./verify";
+import { glyphAtX, layoutTicker, LOOKAHEAD_S, type Measure, MIN_LINE_SCALE, restAt, shareSeparator, type TickerLayout } from "./layout";
+import { type FrameSmoothness, frameSmoothness, MIN_SUNG_SPEED_EM, type TickerVerifyReport, verifyTickerLayout } from "./verify";
 import { MonotoneSpline } from "./motion";
+import { RampMotion, straightenKnots, WORD_TOLERANCE_S } from "./wordmotion";
 import { readJksong } from "./jksong-node";
 import { lyricsFaceMeasure } from "./lyrics-face-widths";
 
@@ -406,5 +417,359 @@ describe("ticker layout details", () => {
       const tk = knots[i + 1].t;
       if (i + 2 < knots.length) expect(Math.abs(s.speed(tk - 1e-9) - s.speed(tk + 1e-9))).toBeLessThan(1e-3 * (1 + s.speed(tk)));
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Word pace: smooth, paced by word (settings.ui.lyrics_motion = "word", D-216)
+// ---------------------------------------------------------------------------
+interface WordRow {
+  set: string;
+  window: string;
+  word: TickerVerifyReport;
+  smoothWord: FrameSmoothness;
+  smoothLetter: FrameSmoothness;
+}
+const wordRows: WordRow[] = [];
+const wordLaneRows: (TickerVerifyReport & { set: string; window: string; minLinePx: number })[] = [];
+
+describe("lyrics ticker, word pace: smooth, paced by word (owner's request, D-216)", () => {
+  for (const s of sets) {
+    for (const win of WINDOWS) {
+      it(`${s.name} @ ${win.w}x${win.h}`, () => {
+        const fontPx = TEXT_SIZE * Math.min(win.w / 1440, win.h / 900);
+        const params = { width: win.w, marker: MARKER, fontPx };
+        const word = layoutTicker(s.lyrics, { ...params, pace: "word" }, shimMeasure);
+        const letter = layoutTicker(s.lyrics, { ...params, pace: "letter" }, shimMeasure);
+        const r = verifyTickerLayout(word, { dt: DT, lookahead: LOOKAHEAD_S });
+        const sw = frameSmoothness(word);
+        const sl = frameSmoothness(letter);
+        wordRows.push({ set: s.name, window: `${win.w}x${win.h}`, word: r, smoothWord: sw, smoothLetter: sl });
+        expect(word.pace).toBe("word");
+        expect(r.pace).toBe("word");
+        expect(r.firstProblems).toEqual([]);
+        expect(r.sungSamples).toBeGreaterThan(0);
+        // (a) The word under the marker: every word's first letter reaches the marker
+        // within 40 ms of its start; no word's letters are at the marker early or late.
+        expect(r.onsetMisses).toBe(0);
+        expect(r.onsetMaxMs).toBeLessThanOrEqual(WORD_TOLERANCE_S * 1000 + 1e-3);
+        expect(r.wrongLetter).toBe(0);
+        // (b) Never backwards, never stopped while a line is sung.
+        expect(r.backwards).toBe(0);
+        expect(r.stopped).toBe(0);
+        expect(r.minSungSpeedEm).toBeGreaterThanOrEqual(MIN_SUNG_SPEED_EM);
+        // (c) Smoothness at 60 fps, against the letter pace on the same song and size.
+        expect(sw.frames).toBe(sl.frames);
+        expect(sw.bigStepShare).toBeLessThanOrEqual(0.01);
+        expect(sw.bigStepShare).toBeLessThanOrEqual(sl.bigStepShare / 10);
+        expect(sw.maxDvEm).toBeLessThan(sl.maxDvEm / 3);
+        expect(sw.p99DvEm).toBeLessThan(sl.p99DvEm / 5);
+        // (d) Lookahead: 2 s of upcoming text, with the same font rules.
+        expect(r.lookaheadMisses).toBe(0);
+        expect(r.minLookaheadS).toBeGreaterThanOrEqual(LOOKAHEAD_S - 1e-9);
+        if (s.natural) expect(word.fontScale).toBe(1);
+      });
+    }
+  }
+
+  it("report", () => {
+    const pct = (x: number) => `${(x * 100).toFixed(2)}%`.padStart(7);
+    const lines = wordRows.map(
+      (r) =>
+        `${r.set.padEnd(46)} ${r.window.padEnd(10)} onset <= ${r.word.onsetMaxMs!.toFixed(1).padStart(4)} ms  on word ${(r.word.onWord! * 100).toFixed(1)}%  min sung speed ${r.word.minSungSpeedEm!.toFixed(2)} em/s  font x${r.word.fontScale.toFixed(2)}  lookahead ${r.word.minLookaheadS === Infinity ? "n/a " : r.word.minLookaheadS.toFixed(2) + " s"}  | frame-to-frame speed change, word vs letter: max ${r.smoothWord.maxDvEm.toFixed(2)} vs ${r.smoothLetter.maxDvEm.toFixed(2)} em/s, p99 ${r.smoothWord.p99DvEm.toFixed(2)} vs ${r.smoothLetter.p99DvEm.toFixed(2)} em/s, >25 % ${pct(r.smoothWord.bigStepShare)} vs ${pct(r.smoothLetter.bigStepShare)} of ${r.smoothWord.frames} frames`,
+    );
+    console.log(`\nTicker, word pace (${DT * 1000} ms steps, frames at 60 fps, marker ${MARKER}, text ${TEXT_SIZE}px @1440x900):\n${lines.join("\n")}\n`);
+    expect(wordRows.length).toBe(sets.length * WINDOWS.length);
+  });
+});
+
+describe("word pace in the skin's lane, lyrics face, default settings", () => {
+  for (const s of laneSets) {
+    for (const win of SKIN_LANES) {
+      it(`${s.name} @ ${win.w}x${win.h} (lane ${win.lane} px)`, () => {
+        const fontPx = TEXT_SIZE * Math.min(win.w / 1440, win.h / 900);
+        const layout = layoutTicker(s.lyrics, { width: win.lane, marker: MARKER, fontPx, pace: "word" }, laneMeasure);
+        const r = verifyTickerLayout(layout, { dt: DT, lookahead: LOOKAHEAD_S });
+        const minLinePx = Math.min(...layout.lines.map((l) => l.px));
+        wordLaneRows.push({ ...r, set: s.name, window: `${win.w}x${win.h}`, minLinePx });
+        expect(r.firstProblems).toEqual([]);
+        expect(r.onsetMisses).toBe(0);
+        expect(r.wrongLetter).toBe(0);
+        expect(r.backwards).toBe(0);
+        expect(r.stopped).toBe(0);
+        expect(r.lookaheadMisses).toBe(0);
+        expect(r.minLookaheadS).toBeGreaterThanOrEqual(LOOKAHEAD_S - 1e-9);
+        expect(minLinePx).toBeGreaterThanOrEqual(MIN_LINE_SCALE * fontPx - 1e-9);
+      });
+    }
+  }
+
+  it("report", () => {
+    const lines = wordLaneRows.map(
+      (r) =>
+        `${r.set.padEnd(46)} ${r.window.padEnd(9)} font x${r.fontScale.toFixed(2)}, dense lines ${String(r.denseLines).padStart(2)} down to x${r.minLineScale.toFixed(3)} (${r.minLinePx.toFixed(1)} px)  onset <= ${r.onsetMaxMs!.toFixed(1)} ms  min lookahead ${r.minLookaheadS === Infinity ? "n/a" : r.minLookaheadS.toFixed(2) + " s"}`,
+    );
+    console.log(`\nTicker, word pace, in the skin's lane (lyrics face, marker ${MARKER}, text ${TEXT_SIZE}px @1440x900):\n${lines.join("\n")}\n`);
+    // Completes the report file of the first block (whose report runs before the lane
+    // blocks have filled their rows).
+    if (process.env.TICKER_REPORT && existsSync(process.env.TICKER_REPORT)) {
+      const prev = JSON.parse(readFileSync(process.env.TICKER_REPORT, "utf8")) as Record<string, unknown>;
+      writeFileSync(process.env.TICKER_REPORT, JSON.stringify({ ...prev, skinLane: laneRows, wordPace: wordRows, wordPaceSkinLane: wordLaneRows }, null, 2));
+    }
+    expect(wordLaneRows.length).toBe(laneSets.length * SKIN_LANES.length);
+  });
+});
+
+/** One line of words; each word's letters share its time evenly unless `chars` times are given. */
+function oneLine(words: { text: string; start: number; end: number; chars?: [number, number][] }[]): Lyrics {
+  const ws = words.map((w) => {
+    const letters = [...w.text];
+    const d = (w.end - w.start) / letters.length;
+    return { start: w.start, end: w.end, chars: letters.map((c, k) => [c, w.chars?.[k][0] ?? w.start + k * d, w.chars?.[k][1] ?? w.start + (k + 1) * d] as [string, number, number]) };
+  });
+  return { lyrics_version: 1, language: "en", source: "user_text", checked: true, lines: [{ start: ws[0].start, end: ws[ws.length - 1].end, words: ws }] };
+}
+/** Strip distance per 60 fps frame times 60, at t. */
+const frameSpeed = (l: TickerLayout, t: number) => (l.motion.at(t + 1 / 60) - l.motion.at(t)) * 60;
+
+describe("word pace details", () => {
+  const params = { width: 1440, marker: 0.33, fontPx: 56 };
+
+  it("is the app's default; the layout alone stays letter-exact unless asked", () => {
+    expect(DEFAULT_APP_SETTINGS.ui.lyrics_motion).toBe("word");
+    expect(layoutTicker(TWINKLE_LYRICS, params, shimMeasure).pace).toBe("letter");
+    expect(layoutTicker(TWINKLE_LYRICS, { ...params, pace: "word" }, shimMeasure).pace).toBe("word");
+  });
+
+  it("a held word passes the marker slowly, quick words pass it faster", () => {
+    const lyr = oneLine([
+      { text: "we", start: 1.0, end: 1.2 },
+      { text: "go", start: 1.2, end: 1.4 },
+      { text: "so", start: 1.4, end: 3.4 },
+      { text: "far", start: 3.4, end: 3.6 },
+      { text: "away", start: 3.6, end: 3.9 },
+    ]);
+    const l = layoutTicker(lyr, { ...params, pace: "word" }, shimMeasure);
+    const so = l.words[2];
+    const held = frameSpeed(l, 2.4);
+    const quick = frameSpeed(l, 1.3);
+    // The held word moves at about its own pace (its letters and the space it carries, over its 2 s).
+    const ownPace = (l.words[3].a - so.a) / (so.end - so.start);
+    expect(held).toBeGreaterThan(0.5 * ownPace);
+    expect(held).toBeLessThan(1.5 * ownPace);
+    expect(quick).toBeGreaterThan(4 * held);
+    // While "so" is held the marker stays on it or on the space after it.
+    for (let t = so.start + WORD_TOLERANCE_S; t < so.end - WORD_TOLERANCE_S; t += 0.01) {
+      const x = l.motion.at(t);
+      expect(x).toBeGreaterThanOrEqual(so.a - 1e-6);
+      expect(x).toBeLessThan(l.words[3].a);
+    }
+  });
+
+  it("does not dash across the space between two held words sung back to back (the letter pace does)", () => {
+    // "oh" held, its "h" short; "no" with a short "n", then held.
+    const lyr = oneLine([
+      { text: "oh", start: 1, end: 3, chars: [[1, 2.9], [2.9, 3]] },
+      { text: "no", start: 3, end: 5, chars: [[3, 3.1], [3.1, 5]] },
+    ]);
+    const word = layoutTicker(lyr, { ...params, pace: "word" }, shimMeasure);
+    const letter = layoutTicker(lyr, { ...params, pace: "letter" }, shimMeasure);
+    const avg = (word.words[1].a - word.words[0].a) / 2; // "oh" and its space over 2 s
+    let maxWord = 0;
+    let maxLetter = 0;
+    for (let t = 2.5; t < 3.5; t += 1 / 60) {
+      maxWord = Math.max(maxWord, frameSpeed(word, t));
+      maxLetter = Math.max(maxLetter, frameSpeed(letter, t));
+    }
+    expect(maxWord).toBeLessThan(2 * avg);
+    expect(maxLetter).toBeGreaterThan(4 * avg);
+  });
+
+  it("keeps gliding through a short pause, slows down in a long one, and never stops while the line is sung", () => {
+    const lyr = oneLine([
+      { text: "one", start: 1, end: 1.3 },
+      { text: "two", start: 1.45, end: 1.75 },
+      { text: "three", start: 3.25, end: 3.6 },
+    ]);
+    const l = layoutTicker(lyr, { ...params, pace: "word" }, shimMeasure);
+    const inOne = frameSpeed(l, 1.15);
+    const inTwo = frameSpeed(l, 1.6);
+    for (let t = 1.3; t < 1.45; t += 0.01) expect(frameSpeed(l, t)).toBeGreaterThan(0.5 * Math.min(inOne, inTwo));
+    expect(frameSpeed(l, 2.6)).toBeLessThan(0.25 * inTwo);
+    for (let t = 1; t < 3.6; t += 0.01) expect(frameSpeed(l, t)).toBeGreaterThan(MIN_SUNG_SPEED_EM * params.fontPx);
+    expect(verifyTickerLayout(l).firstProblems).toEqual([]);
+  });
+
+  it("keeps the instrumental breaks: countdown, next line brought in from the right in time", () => {
+    const l = layoutTicker(TWINKLE_LYRICS, { ...params, pace: "word" }, shimMeasure);
+    const breaks = l.rests.filter((r) => r.countdown);
+    expect(breaks.length).toBeGreaterThanOrEqual(2);
+    const rightW = l.width - l.markerX;
+    for (const r of breaks) {
+      const mid = (r.from + r.to) / 2;
+      expect(restAt(l, mid)?.remaining).toBeCloseTo(r.to - mid, 9);
+      const line = l.lines[r.nextLine];
+      expect(line.x0 - l.motion.at(r.to - 3)).toBeLessThanOrEqual(rightW + 1e-6);
+      expect(line.x0 - l.motion.at(r.to - 2)).toBeLessThan(rightW);
+      if (r.to - r.from > 8) {
+        expect(line.x0 - l.motion.at(r.to - 6)).toBeGreaterThanOrEqual(rightW - 1e-6);
+        // During the rest itself the strip stands still while the countdown runs.
+        expect(l.motion.at(mid + 0.5)).toBeCloseTo(l.motion.at(mid), 9);
+      }
+    }
+  });
+
+  it("handles lines without words and lyrics without any timed letter", () => {
+    const word = (s: string, t0: number) => ({ start: t0, end: t0 + 0.2 * s.length, chars: [...s].map((c, k) => [c, t0 + 0.2 * k, t0 + 0.2 * (k + 1)] as [string, number, number]) });
+    const lyr: Lyrics = {
+      lyrics_version: 1,
+      language: "en",
+      source: "user_text",
+      checked: true,
+      lines: [
+        { start: 1, end: 2, words: [word("hello", 1)] },
+        { start: 5, end: 5, words: [] },
+        { start: 20, end: 21, words: [word("world", 20)] },
+      ],
+    };
+    const l = layoutTicker(lyr, { ...params, pace: "word" }, shimMeasure);
+    expect(verifyTickerLayout(l).firstProblems).toEqual([]);
+    expect(l.glyphs[l.lines[restAt(l, 10)!.rest.nextLine].first].g).toBe("w");
+    const untimed: Lyrics = { ...lyr, lines: [{ start: 1, end: 1, words: [{ start: 1, end: 1, chars: [["a", 1, 1]] }] }] };
+    expect(() => layoutTicker(untimed, { ...params, pace: "word" }, shimMeasure).motion.at(1)).not.toThrow();
+  });
+
+  it("after a long break, zero-length words at the line ends do not bring the next line in early", () => {
+    // An aligner can leave a word with start == end away from its neighbours: here one
+    // 1 s after the last sung word and one 1.5 s before the next line's first sung word.
+    const word = (s: string, t0: number, d = 0.2) => ({ start: t0, end: t0 + d * s.length, chars: [...s].map((c, k) => [c, t0 + d * k, t0 + d * (k + 1)] as [string, number, number]) });
+    const lyr: Lyrics = {
+      lyrics_version: 1,
+      language: "en",
+      source: "user_text",
+      checked: true,
+      lines: [
+        { start: 1, end: 3, words: [word("hello", 1), word("oh", 3, 0)] },
+        { start: 28.5, end: 31, words: [word("ah", 28.5, 0), word("world", 30)] },
+      ],
+    };
+    const l = layoutTicker(lyr, { ...params, pace: "word" }, shimMeasure);
+    const r = verifyTickerLayout(l);
+    expect(r.firstProblems).toEqual([]);
+    expect(r.onsetMaxMs).toBeLessThanOrEqual(WORD_TOLERANCE_S * 1000 + 1e-3);
+    // The next line is at the marker as "ah" (no length) is due, then glides on to "world".
+    const world = l.words[1];
+    expect(l.motion.at(28.5)).toBeCloseTo(l.lines[1].x0, 6);
+    expect(l.motion.at(29.5)).toBeLessThan(world.a - 10);
+    expect(l.motion.at(29.5)).toBeGreaterThan(l.lines[1].x0 + 10);
+    // The old line glides over "oh" (no length, 1 s after "hello") before it leaves.
+    expect(l.motion.at(2.5)).toBeLessThan(l.lines[0].x1);
+    expect(l.motion.at(2.5)).toBeGreaterThan(l.words[0].b);
+  });
+
+  it("RampMotion stays exact when sagging plateaus need many passes (no jump at a knot)", () => {
+    for (let seed = 1; seed <= 3000; seed++) {
+      const rnd = prng(seed);
+      const knots = [{ t: 0, x: 0 }];
+      const n = 3 + Math.floor(rnd() * 40);
+      for (let i = 1; i < n; i++) {
+        const r = rnd();
+        const h = r < 0.3 ? 0.002 + rnd() * 0.02 : r < 0.6 ? 0.05 + rnd() * 0.3 : r < 0.9 ? 0.5 + rnd() * 3 : 10 + rnd() * 50;
+        const dx = rnd() < 0.08 ? 0 : rnd() < 0.3 ? 0.01 + rnd() : rnd() < 0.5 ? 20 + rnd() * 60 : 200 + rnd() * 2000;
+        knots.push({ t: knots[i - 1].t + h, x: knots[i - 1].x + dx });
+      }
+      const m = new RampMotion(knots);
+      for (let i = 0; i + 1 < n; i++) {
+        const [a, b] = [m.t[i], m.t[i + 1]];
+        const cuts = [a, a + m.rb[i], b - m.ra[i + 1], b];
+        let integral = 0;
+        for (let q = 0; q < 3; q++) {
+          const [t0, t1] = [cuts[q], cuts[q + 1]];
+          if (t1 > t0) integral += ((t1 - t0) / 6) * (m.speed(t0 + 1e-12) + 4 * m.speed((t0 + t1) / 2) + m.speed(t1 - 1e-12));
+        }
+        const dx = m.x[i + 1] - m.x[i];
+        expect(Math.abs(integral - dx), `seed ${seed}, interval ${i}`).toBeLessThan(1e-6 * (1 + dx));
+        if (dx > 0) expect(m.c[i]).toBeGreaterThanOrEqual(0.5 * (dx / (b - a)) - 1e-9);
+      }
+    }
+  });
+
+  it("RampMotion passes every knot exactly, never runs backwards, and its speed and acceleration are continuous", () => {
+    const rnd = prng(5);
+    const knots = [{ t: 0, x: 0 }];
+    for (let i = 1; i < 400; i++) {
+      const rest = rnd() < 0.05;
+      knots.push({ t: knots[i - 1].t + 0.01 + rnd() * (rnd() < 0.2 ? 2 : 0.4), x: knots[i - 1].x + (rest ? 0 : 1 + rnd() * (rnd() < 0.2 ? 400 : 60)) });
+    }
+    const m = new RampMotion(knots);
+    for (const k of knots) expect(m.at(k.t)).toBeCloseTo(k.x, 6);
+    for (let i = 0; i + 1 < knots.length; i++) {
+      const a = knots[i];
+      const b = knots[i + 1];
+      const h = b.t - a.t;
+      let prev = -Infinity;
+      for (let k = 0; k <= 50; k++) {
+        const t = a.t + (k / 50) * h;
+        const x = m.at(t);
+        expect(x).toBeGreaterThanOrEqual(prev - 1e-9);
+        prev = x;
+        expect(m.speed(t)).toBeGreaterThanOrEqual(0);
+        // A rest interval stands still.
+        if (b.x === a.x && k < 50) expect(m.speed(t)).toBe(0);
+      }
+      // The closed-form position agrees with the integral of the speed. The speed is a
+      // cubic on each piece (ramp out of knot i, plateau, ramp into knot i+1), where
+      // Simpson's rule is exact.
+      const cuts = [a.t, a.t + m.rb[i], b.t - m.ra[i + 1], b.t];
+      let integral = 0;
+      for (let q = 0; q < 3; q++) {
+        const [t0, t1] = [cuts[q], cuts[q + 1]];
+        if (t1 > t0) integral += ((t1 - t0) / 6) * (m.speed(t0 + 1e-12) + 4 * m.speed((t0 + t1) / 2) + m.speed(t1 - 1e-12));
+      }
+      expect(Math.abs(integral - (b.x - a.x))).toBeLessThan(1e-6 * (1 + b.x - a.x));
+      expect(m.at(a.t + h / 2)).toBeCloseTo(a.x + (() => {
+        const half = a.t + h / 2;
+        let acc = 0;
+        for (let q = 0; q < 3; q++) {
+          const t0 = cuts[q];
+          const t1 = Math.min(cuts[q + 1], half);
+          if (t1 > t0) acc += ((t1 - t0) / 6) * (m.speed(t0 + 1e-12) + 4 * m.speed((t0 + t1) / 2) + m.speed(t1 - 1e-12));
+        }
+        return acc;
+      })(), 6);
+      // Speed and acceleration agree on both sides of the knot (probed at a scale far
+      // below the ramp around it, which the plateau guard may have shortened).
+      if (i + 2 < knots.length) {
+        const L = m.ra[i + 1] + m.rb[i + 1];
+        const e = L > 0 ? L * 1e-5 : 1e-6;
+        const v0 = m.speed(b.t - e);
+        const v1 = m.speed(b.t + e);
+        expect(Math.abs(v0 - v1)).toBeLessThan(1e-3 * (1 + v0));
+        const a0 = (m.speed(b.t - e) - m.speed(b.t - 2 * e)) / e;
+        const a1 = (m.speed(b.t + 2 * e) - m.speed(b.t + e)) / e;
+        const scale = L > 0 ? Math.abs(m.c[i + 1] - m.c[i]) / L : 0;
+        expect(Math.abs(a0 - a1)).toBeLessThan(1e-3 * scale + 1e-3 * (1 + Math.abs(a0)));
+      }
+    }
+  });
+
+  it("straightening moves a knot only within its window, and only where the speeds on its two sides differ by more than 2x", () => {
+    const knots = [
+      { t: 0, x: 0, lo: 0, hi: 0 },
+      { t: 1, x: 100, lo: 0.96, hi: 1.04 }, // 100 px/s, then 120 px/s: left alone
+      { t: 1.5, x: 160, lo: 1.46, hi: 1.54 }, // then 600 px/s over 50 ms: moved apart
+      { t: 1.55, x: 190, lo: 1.51, hi: 1.59 },
+      { t: 3, x: 300, lo: 3, hi: 3 },
+    ];
+    const out = straightenKnots(knots);
+    expect(out[0].t).toBe(0);
+    expect(out[1].t).toBe(1);
+    expect(out[4].t).toBe(3);
+    for (let j = 0; j < knots.length; j++) {
+      expect(out[j].x).toBe(knots[j].x);
+      expect(out[j].t).toBeGreaterThanOrEqual(knots[j].lo - 1e-12);
+      expect(out[j].t).toBeLessThanOrEqual(knots[j].hi + 1e-12);
+    }
+    expect(out[3].t - out[2].t).toBeGreaterThan(0.05);
   });
 });

@@ -35,11 +35,22 @@
 //         one baseline. A rap verse gets smaller text while the rest of the song keeps
 //         its size (D-167).
 //
+// 5. Pace (settings.ui.lyrics_motion, D-216). Point 2 describes the "letter" pace:
+//    exact to the letter, but letters of fixed width sung at very different speeds make
+//    the text surge and brake within every word. The "word" pace (the default) keeps
+//    the same placement, breaks and lookahead rule and replaces the knots of point 2 by
+//    word-level knots (`wordKnots`): a word's first letter reaches the marker when the
+//    word starts (give or take WORD_TOLERANCE_S), a word carries the space after it at
+//    its own pace, a short pause lets the word just sung stay at the marker a little
+//    longer, and the motion between the knots is a smooth speed profile with one steady
+//    pace per word (wordmotion.ts).
+//
 
 // Pure TypeScript with an injected `measure` function: the tests use fixed per-character
 // widths, the renderer uses CanvasRenderingContext2D.measureText.
-import type { Lyrics } from "../api/types";
+import type { LyricsMotion, Lyrics } from "../api/types";
 import { MonotoneSpline, type Knot } from "./motion";
+import { type FloatingKnot, LINGER_S, type Motion, RampMotion, straightenKnots, WORD_TOLERANCE_S } from "./wordmotion";
 
 /** Width in CSS px of `text` drawn at `fontPx`. */
 export type Measure = (text: string, fontPx: number) => number;
@@ -59,6 +70,12 @@ export interface TickerParams {
   minFontScale?: number;
   /** Smallest font scale the lookahead rule may apply to a single dense line. */
   minLineScale?: number;
+  /**
+   * "letter": exact to the letter (D-94, D-95); "word": smooth, paced by word (D-216).
+   * The app passes settings.ui.lyrics_motion (default "word"); left out, the layout is
+   * letter-exact as it always was.
+   */
+  pace?: LyricsMotion;
 }
 
 export const LOOKAHEAD_S = 2;
@@ -114,10 +131,27 @@ export interface Rest {
   countdown: boolean;
 }
 
+/** A word on the strip, by its timed letters (zero-length letters ride along). */
+export interface PlacedWord {
+  line: number;
+  word: number;
+  /** First and last grapheme of the word (timed or not). */
+  first: number;
+  last: number;
+  /** Left edge of the first timed grapheme, right edge of the last one. */
+  a: number;
+  b: number;
+  /** Start of the first timed grapheme, end of the last one. */
+  start: number;
+  end: number;
+}
+
 export interface TickerLayout {
   width: number;
   marker: number;
   markerX: number;
+  /** How the text is paced (TickerParams.pace). */
+  pace: LyricsMotion;
   /** Effective font size of the song after the lookahead rule (dense lines may be smaller). */
   fontPx: number;
   fontScale: number;
@@ -129,10 +163,13 @@ export interface TickerLayout {
   glyphs: PlacedGlyph[];
   /** Indices of the timed graphemes, in order. */
   timedIndex: number[];
+  /** Words with at least one timed grapheme, in order. */
+  words: PlacedWord[];
   lines: PlacedLine[];
   rests: Rest[];
   knots: Knot[];
-  motion: MonotoneSpline;
+  /** Letter pace: a MonotoneSpline through the cell edges; word pace: a RampMotion. */
+  motion: Motion;
   /** Strip span that holds text. */
   textStart: number;
   textEnd: number;
@@ -293,7 +330,7 @@ function placeOnce(lyrics: Lyrics, p: Required<TickerParams>, fontPx: number, me
   if (timed.length === 0) {
     // Nothing timed (empty lyrics): a still strip.
     const k0 = { t: 0, x: 0 };
-    return { width: p.width, marker: p.marker, markerX, fontPx, spaceWidth: space, glyphs, timedIndex: timed, lines, rests: [], knots: [k0], motion: new MonotoneSpline([k0]), textStart: 0, textEnd: x };
+    return { width: p.width, marker: p.marker, markerX, pace: p.pace, fontPx, spaceWidth: space, glyphs, timedIndex: timed, words: [], lines, rests: [], knots: [k0], motion: new MonotoneSpline([k0]), textStart: 0, textEnd: x };
   }
 
   // Cell edges first (left-to-right, each separator once).
@@ -315,9 +352,25 @@ function placeOnce(lyrics: Lyrics, p: Required<TickerParams>, fontPx: number, me
 
   // --- 3. knots --------------------------------------------------------------
   const first = glyphs[timed[0]];
-  const rests: Rest[] = [];
+  const last = glyphs[timed[timed.length - 1]];
+  // Rests: the intro and every line change (a countdown shows for long ones).
+  const rests: Rest[] = [{ from: 0, to: first.start, nextLine: first.line, countdown: first.start >= COUNTDOWN_MIN_GAP_S }];
+  for (let n = 0; n + 1 < timed.length; n++) {
+    const g = glyphs[timed[n]];
+    const next = glyphs[timed[n + 1]];
+    if (next.line !== g.line) rests.push({ from: g.end, to: next.start, nextLine: next.line, countdown: next.start - g.end >= COUNTDOWN_MIN_GAP_S });
+  }
+  const words = placeWords(glyphs);
   // Intro: the first line enters from the right edge during the last LEAD seconds.
   const intro = breakPlan(Math.max(0, first.start), false, v, leftW, rightW, 0, p.lead);
+  // Outro: the last line moves out to the left at the cruise speed, then rests.
+  const tailText = Math.max(0, x - last.R);
+  const outro = { t: last.end + (leftW + tailText) / v, x: last.R + leftW + tailText };
+  const base = { width: p.width, marker: p.marker, markerX, pace: p.pace, fontPx, spaceWidth: space, glyphs, timedIndex: timed, words, lines, rests, textStart: 0, textEnd: x };
+  if (p.pace === "word") {
+    const knots = straightenKnots(wordKnots(words, lines, breakPlans, intro, outro));
+    return { ...base, knots, motion: new RampMotion(knots) };
+  }
   {
     const introWidth = intro.reduce((a, s) => a + s.dx, 0);
     let t = first.start - intro.reduce((a, s) => a + s.dt, 0);
@@ -328,7 +381,6 @@ function placeOnce(lyrics: Lyrics, p: Required<TickerParams>, fontPx: number, me
       xx += s.dx;
       push(t, xx);
     }
-    rests.push({ from: 0, to: first.start, nextLine: first.line, countdown: first.start >= COUNTDOWN_MIN_GAP_S });
   }
   for (let n = 0; n < timed.length; n++) {
     const g = glyphs[timed[n]];
@@ -351,31 +403,108 @@ function placeOnce(lyrics: Lyrics, p: Required<TickerParams>, fontPx: number, me
         push(Math.min(t, next.start), Math.min(xx, next.L));
       });
     }
-    if (next.line !== g.line) {
-      const dt = next.start - g.end;
-      rests.push({ from: g.end, to: next.start, nextLine: next.line, countdown: dt >= COUNTDOWN_MIN_GAP_S });
-    }
   }
-  // Outro: the last line moves out to the left at the cruise speed, then rests.
-  const last = glyphs[timed[timed.length - 1]];
-  const tailText = Math.max(0, x - last.R);
-  push(last.end + (leftW + tailText) / v, last.R + leftW + tailText);
+  push(outro.t, outro.x);
+  return { ...base, knots, motion: new MonotoneSpline(knots) };
+}
 
-  return {
-    width: p.width,
-    marker: p.marker,
-    markerX,
-    fontPx,
-    spaceWidth: space,
-    glyphs,
-    timedIndex: timed,
-    lines,
-    rests,
-    knots,
-    motion: new MonotoneSpline(knots),
-    textStart: 0,
-    textEnd: x,
+/** Groups the graphemes into words; words without a timed grapheme are left out. */
+function placeWords(glyphs: PlacedGlyph[]): PlacedWord[] {
+  const out: PlacedWord[] = [];
+  for (let i = 0; i < glyphs.length; ) {
+    const g0 = glyphs[i];
+    let j = i;
+    while (j + 1 < glyphs.length && glyphs[j + 1].line === g0.line && glyphs[j + 1].word === g0.word) j++;
+    let ft = -1;
+    let lt = -1;
+    for (let k = i; k <= j; k++) {
+      if (!glyphs[k].timed) continue;
+      if (ft < 0) ft = k;
+      lt = k;
+    }
+    if (ft >= 0) out.push({ line: g0.line, word: g0.word, first: i, last: j, a: glyphs[ft].x, b: glyphs[lt].x + glyphs[lt].w, start: glyphs[ft].start, end: glyphs[lt].end });
+    i = j + 1;
+  }
+  return out;
+}
+
+/**
+ * Knots of the word pace (point 5). For each word: its first timed letter reaches the
+ * marker at the word's start, free to move by WORD_TOLERANCE_S (straightenKnots). A
+ * word has no knot at its end: it carries the space after it, crossing word and space
+ * at one pace, so the text never dashes across a space. Only a pause longer than that
+ * pace needs by more than LINGER_S puts a knot LINGER_S after the word's end; the rest
+ * of the pause crosses the space more slowly. Line changes use the breaks of point 3
+ * exactly as the letter pace does (a short line gap counts as the space after the last
+ * word); knots after an intro or a long break and around a long break are fixed.
+ */
+function wordKnots(words: PlacedWord[], lines: PlacedLine[], breakPlans: Map<number, { dt: number; dx: number }[]>, intro: { dt: number; dx: number }[], outro: Knot): FloatingKnot[] {
+  const out: FloatingKnot[] = [];
+  const push = (t: number, xx: number, slack = 0) => {
+    const last = out[out.length - 1];
+    if (last && t <= last.t + EPS_T) {
+      // Same instant (the end of an intro or a long break): one fixed knot, rightmost x.
+      if (xx > last.x) last.x = xx;
+      last.lo = last.hi = last.t;
+      return;
+    }
+    out.push({ t, x: Math.max(xx, last ? last.x : xx), lo: t - slack, hi: t + slack });
   };
+  const first = words[0];
+  let t = first.start - intro.reduce((a, s) => a + s.dt, 0);
+  let xx = first.a - intro.reduce((a, s) => a + s.dx, 0);
+  push(t, xx);
+  for (const s of intro) {
+    t += s.dt;
+    xx += s.dx;
+    push(t, xx);
+  }
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k];
+    push(w.start, w.a, WORD_TOLERANCE_S);
+    const next = words[k + 1];
+    if (!next) {
+      push(w.end, w.b);
+      break;
+    }
+    const plan = next.line !== w.line ? breakPlans.get(next.line) : undefined;
+    if (plan && plan.length > 1) {
+      // Long break: exit, rest, enter, as for the letter pace. The plan runs from the
+      // end of the line (its last grapheme, timed or not) to the start of the next one.
+      // Zero-length graphemes at the line ends ride along in the first and last
+      // sub-segment when they share the time of the nearest sung word; at a time of
+      // their own, the text glides over them up to that time (starting the plan at the
+      // sung word instead put the next line at the marker early, standing still there).
+      const lineA = lines[w.line];
+      const lineB = lines[next.line];
+      const tailOwn = lineA.end > w.end + EPS_T;
+      const headOwn = lineB.start < next.start - EPS_T;
+      push(w.end, w.b);
+      if (tailOwn) push(lineA.end, lineA.x1);
+      const extraBefore = tailOwn ? 0 : lineA.x1 - w.b;
+      const extraAfter = headOwn ? 0 : next.a - lineB.x0;
+      let tt = tailOwn ? lineA.end : w.end;
+      let x2 = tailOwn ? lineA.x1 : w.b;
+      plan.forEach((s, i) => {
+        tt += s.dt;
+        x2 += s.dx + (i === 0 ? extraBefore : 0) + (i === plan.length - 1 ? extraAfter : 0);
+        push(Math.min(tt, next.start), Math.min(x2, next.a));
+      });
+      continue;
+    }
+    // A pause before the next word: crossing word and space at one steady speed would
+    // keep the word's last letter at the marker `linger` seconds into the pause. Up to
+    // LINGER_S that is what happens (the text keeps gliding through a short pause);
+    // beyond it the word ends on a knot LINGER_S into the pause and the space is
+    // crossed more slowly for the rest of it.
+    const sep = next.a - w.b;
+    const gap = next.start - w.end;
+    const wordW = w.b - w.a;
+    const linger = (wordW * gap - sep * (w.end - w.start)) / (wordW + sep);
+    if (gap > EPS_T && linger > LINGER_S) push(w.end + LINGER_S, w.b, WORD_TOLERANCE_S);
+  }
+  push(outro.t, outro.x);
+  return out;
 }
 
 /**
@@ -483,6 +612,7 @@ export function layoutTicker(lyricsIn: Lyrics, params: TickerParams, measure: Me
     lead: LEAD_S,
     minFontScale: MIN_FONT_SCALE,
     minLineScale: MIN_LINE_SCALE,
+    pace: "letter",
     ...params,
     marker: Math.min(0.9, Math.max(0.05, params.marker)),
   };

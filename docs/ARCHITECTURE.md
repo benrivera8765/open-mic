@@ -246,11 +246,28 @@ PITCH BUS out + DRUM BUS out --> resampler (only if device rate != song rate)
   caniuse check against Safari 16.4.
 - Lyrics ticker (`src/ticker/`): Canvas 2D. Each grapheme cluster is measured and drawn
   individually at a precomputed x position (ligatures and contextual alternates off).
-  Each letter owns a cell (glyph box plus at most half a neighbouring separator); the
-  time-to-x mapping is a monotone cubic (Steffen) through every cell edge, so the marker
-  can never leave the letter being sung (D-94, D-95). Gaps are sized so the next line
-  enters 3 s before it is sung; the font shrinks (to 0.6x at most) to keep 2 s of text
-  ahead (D-96). Text is pre-rendered into 1024 CSS-px tiles per colour (sung and
+  The marker stays fixed and the text slides under it (D-04); how the text is paced
+  under the marker is `settings.ui.lyrics_motion` (D-216):
+  - `word` (default since the owner's request of 18 Nov 2026, "word by word instead of
+    jumping"): word-level knots (`layout.ts` `wordKnots`): a word's first letter
+    reaches the marker when the word starts, give or take 40 ms; the word carries the
+    space after it at its own pace, so the text never dashes across a space; in a short
+    pause the word just sung stays at the marker up to 0.25 s longer, a longer pause
+    slows the text down. A knot moves (within the 40 ms) only where the speeds on its
+    two sides would differ by more than 2x. Between the knots, `wordmotion.ts`
+    `RampMotion`: one steady speed per interval (a held word crawls, quick words pass
+    fast), blended into the next by a smoothstep ramp reaching up to 0.35 s into each
+    neighbour, the plateau speeds solved (tridiagonal) so every knot is passed exactly.
+    Speed and acceleration are continuous, the speed is never negative and never zero
+    while a line is sung. The colour split at the marker becomes a smooth wipe
+    through each word.
+  - `letter` (the previous behaviour, unchanged): each letter owns a cell (glyph box
+    plus at most half a neighbouring separator); the time-to-x mapping is a monotone
+    cubic (Steffen) through every cell edge, so the marker can never leave the letter
+    being sung (D-94, D-95); the text surges on short consonants.
+  Both paces share the placement, the breaks and the lookahead rule: gaps are sized so
+  the next line enters 3 s before it is sung; the font shrinks (to 0.6x at most, single
+  dense lines to 0.45x) to keep 2 s of text ahead (D-96, D-167). Text is pre-rendered into 1024 CSS-px tiles per colour (sung and
   upcoming, LRU cache); each frame blits them with a clip at the marker. Capped at
   60 fps, stopped when idle, when the page is hidden, or when the native window is
   minimised (Tauri's resize event + `isMinimized`, as for the skin; WebView2 keeps a

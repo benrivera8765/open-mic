@@ -106,7 +106,7 @@ export function Stage() {
       )}
       <div class="stage__lane">
         {song.lyrics && song.lyrics.lines.length > 0 ? (
-          <Ticker lyrics={song.lyrics} offsetS={offsetS} textSize={ui.lyrics_text_size} marker={ui.marker_position} colors={ui.colors} />
+          <Ticker lyrics={song.lyrics} offsetS={offsetS} textSize={ui.lyrics_text_size} marker={ui.marker_position} pace={ui.lyrics_motion ?? "word"} colors={ui.colors} />
         ) : (
           <p class="stage__empty">This song has no lyrics (an instrumental). Sing along by ear, or add lyrics in the Studio.</p>
         )}
