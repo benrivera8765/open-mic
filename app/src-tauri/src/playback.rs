@@ -744,6 +744,47 @@ impl Player {
         result
     }
 
+    /// Before song files are moved away (src/deleted.rs): when the loaded song is one
+    /// of `paths`, stops it and closes it, then writes its pending settings-slot save
+    /// into the file; afterwards nothing is loaded, so a later `player_set` cannot
+    /// schedule another save for a file that is gone. Returns its song id.
+    pub fn release(&self, paths: &[PathBuf]) -> Option<String> {
+        self.release_during(paths, || ()).0
+    }
+
+    /// [`Player::release`], then `f` (the move) while no `song_load` can run: a load
+    /// racing with a delete either finished before (and is released here) or waits and
+    /// then finds the file gone, instead of opening a song whose file is being moved
+    /// (verifier finding: `song_load` + `library_delete` sent together left the song
+    /// loaded from `Deleted/`).
+    pub fn release_during<T>(&self, paths: &[PathBuf], f: impl FnOnce() -> T) -> (Option<String>, T) {
+        let _guard = self.load_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let unloaded = self.release_locked(paths);
+        (unloaded, f())
+    }
+
+    fn release_locked(&self, paths: &[PathBuf]) -> Option<String> {
+        let same = |a: &Path, b: &Path| {
+            a == b
+                || std::fs::canonicalize(a)
+                    .ok()
+                    .zip(std::fs::canonicalize(b).ok())
+                    .is_some_and(|(x, y)| x == y)
+        };
+        let cur = self.current().filter(|c| paths.iter().any(|p| same(p, &c.path)))?;
+        // No song from now on: a `set` racing with this either got in before (and its
+        // save is flushed below) or is refused with `not_loaded`.
+        self.set_current(None);
+        self.engine.pause();
+        self.engine.unload();
+        // Written after the engine has let go of the file, before anyone moves it.
+        self.saver.flush();
+        self.current_rate.store(0, Ordering::SeqCst);
+        self.emit_state();
+        crate::applog::info(&format!("{}: stopped and closed before moving the file", cur.song_id));
+        Some(cur.song_id)
+    }
+
     /// `device_set`.
     pub fn set_device(&self, id: Option<&str>, exclusive: bool) -> ApiResult<()> {
         let r = self.engine.set_device(id, exclusive);

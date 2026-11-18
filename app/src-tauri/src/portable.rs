@@ -49,6 +49,9 @@ pub const LIBRARY_DIR: &str = "Library";
 pub const RECORDINGS_DIR: &str = "Recordings";
 /// Exported backing tracks.
 pub const EXPORTS_DIR: &str = "Exports";
+/// Songs deleted from the library, kept until restored or deleted for good (the app's
+/// own recycle bin: files deleted from a USB stick bypass the Windows Recycle Bin).
+pub const DELETED_DIR: &str = "Deleted";
 /// Studio model weights (downloaded on first use).
 pub const MODELS_DIR: &str = "Models";
 /// Logs, inside `Settings/`.
@@ -266,6 +269,8 @@ pub struct Paths {
     pub models: PathBuf,
     pub logs: PathBuf,
     pub tmp: PathBuf,
+    /// Deleted songs (src/deleted.rs); created on the first delete.
+    pub deleted: PathBuf,
 }
 
 /// Everything the rest of the app needs to know about where data goes.
@@ -385,6 +390,7 @@ impl DataLayout {
             recordings: r.join(RECORDINGS_DIR),
             exports: r.join(EXPORTS_DIR),
             models: r.join(MODELS_DIR),
+            deleted: r.join(DELETED_DIR),
             logs: settings.join(LOGS_DIR),
             tmp: settings.join(TMP_DIR),
             settings,
@@ -505,6 +511,7 @@ mod tests {
         assert_eq!(l.mode, DataMode::Portable);
         assert_eq!(l.portable_root.as_deref(), Some(stick.as_path()));
         assert_eq!(l.paths().library, stick.join("Library"));
+        assert_eq!(l.paths().deleted, stick.join("Deleted"));
         assert_eq!(l.paths().logs, stick.join("Settings").join("logs"));
         for d in [user, stick] {
             fs::remove_dir_all(d).unwrap();

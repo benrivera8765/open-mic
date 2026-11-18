@@ -37,6 +37,10 @@ import type {
   AppInfo,
   AppSettings,
   AppSettingsChanges,
+  DeletedList,
+  DeletedSong,
+  DeleteFailure,
+  DeleteResult,
   LyricsDisplay,
   LyricsMotion,
   Device,
@@ -50,6 +54,7 @@ import type {
   MetadataChanges,
   PlayerState,
   ProposedExtensions,
+  PurgeResult,
   RealignAnchor,
   Recording,
   RecorderMode,
@@ -57,6 +62,7 @@ import type {
   RecorderStatus,
   RecordedSong,
   RecordingSession,
+  RestoreResult,
   SelfCheckResult,
   SessionStartOptions,
   SongDetail,
@@ -287,6 +293,10 @@ export class MockApi implements Api {
   /** Model names on the simulated drive (MOCK_MODELS keys). */
   private modelsOnDisk: Set<string>;
   private nextId = 1;
+  /** Deleted songs (newest last), each with the song state a restore brings back. */
+  private deletedSongs: { entry: DeletedSong; song: MockSongState }[] = [];
+  /** Bytes freed by "delete for good" (the free space grows by them). */
+  private freedBytes = 0;
 
   constructor(options: Partial<MockOptions> = {}) {
     this.o = { ...DEFAULT_OPTIONS, ...options };
@@ -408,7 +418,7 @@ export class MockApi implements Api {
       portable: true,
       root,
       translocated: false,
-      paths: { library: p("Library"), recordings: p("Recordings"), exports: p("Exports"), settings: p("Settings"), models: mac ? null : p("Models") },
+      paths: { library: p("Library"), recordings: p("Recordings"), exports: p("Exports"), settings: p("Settings"), models: mac ? null : p("Models"), deleted: p("Deleted") },
       capabilities: {
         studio: { available: studioReasons.length === 0, reasons: studioReasons, gpu: studioReasons.length === 0 ? "NVIDIA GeForce RTX 5070 Ti" : null, vram_mb: studioReasons.length === 0 ? 16303 : null },
         recorder: {
@@ -437,7 +447,133 @@ export class MockApi implements Api {
   }
 
   libraryList() {
-    return this.reply({ songs: this.songs.map((s) => this.summaryOf(s)), free_bytes: 18_734_000_000, total_bytes: 30_920_000_000 });
+    const d = this.deletedListNow();
+    return this.reply({
+      songs: this.songs.map((s) => this.summaryOf(s)),
+      free_bytes: 18_734_000_000 + this.freedBytes,
+      total_bytes: 30_920_000_000,
+      deleted_count: d.count,
+      deleted_bytes: d.total_bytes,
+    });
+  }
+
+  // Deleted songs (APP_API section 2, the owner's request of 2026-11-18): like the core,
+  // a delete moves the song aside, a restore puts it back (a free name when its place is
+  // taken), a purge deletes it for good and frees its bytes.
+
+  /** `stem (n).ext`: the first name `free` accepts. */
+  private static numbered(name: string, free: (n: string) => boolean): string {
+    if (free(name)) return name;
+    const dot = name.lastIndexOf(".");
+    const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+    for (let n = 2; ; n++) if (free(`${stem} (${n})${ext}`)) return `${stem} (${n})${ext}`;
+  }
+
+  private restoreTarget(original: string, taken: Set<string> = new Set()): string {
+    const slash = original.lastIndexOf("/");
+    const folder = slash >= 0 ? original.slice(0, slash + 1) : "";
+    const inLibrary = new Set(this.songs.map((s) => s.demo.summary.song_id.toLowerCase()));
+    return folder + MockApi.numbered(original.slice(slash + 1), (n) => !inLibrary.has((folder + n).toLowerCase()) && !taken.has((folder + n).toLowerCase()));
+  }
+
+  private deletedListNow(): DeletedList {
+    const songs = [...this.deletedSongs]
+      .reverse()
+      .map(({ entry }) => ({ ...entry, restore_to: this.restoreTarget(entry.original_song_id) }));
+    return { songs, count: songs.length, total_bytes: songs.reduce((t, s) => t + s.file_bytes, 0), folder: this.o.platform === "macos" ? "/Volumes/JUKEOKE/Deleted" : "E:\\Deleted" };
+  }
+
+  private deletedChanged(): void {
+    this.emit("library://deleted", this.deletedListNow());
+    this.emit("library://changed", null);
+  }
+
+  libraryDelete(songIds: string[]): Promise<DeleteResult> {
+    if (songIds.length === 0) return this.reject(fail("bad_request", "Choose at least one song to delete."));
+    const deleted: DeletedSong[] = [];
+    const failed: DeleteFailure[] = [];
+    let unloaded: string | null = null;
+    for (const id of new Set(songIds)) {
+      const s = this.find(id);
+      if (!s) {
+        failed.push({ id, code: "not_found", message: "This song is not in the library." });
+        continue;
+      }
+      if (this.current === s) {
+        // Stopped and closed first, as the core does.
+        this.stopTicker();
+        this.playing = false;
+        this.ended = false;
+        this.anchorPos = 0;
+        this.current = null;
+        unloaded = id;
+        this.emitState();
+      }
+      const taken = new Set(this.deletedSongs.map((d) => d.entry.deleted_id.toLowerCase()));
+      const name = MockApi.numbered(id.slice(id.lastIndexOf("/") + 1), (n) => !taken.has(n.toLowerCase()));
+      const sum = this.summaryOf(s);
+      const entry: DeletedSong = {
+        deleted_id: name,
+        original_song_id: id,
+        restore_to: id,
+        title: sum.title,
+        artist: sum.artist,
+        album: sum.album,
+        duration_s: sum.duration_s,
+        file_bytes: sum.file_bytes,
+        deleted_ms: Date.now(),
+      };
+      this.songs = this.songs.filter((x) => x !== s);
+      this.deletedSongs.push({ entry, song: s });
+      deleted.push(entry);
+    }
+    if (deleted.length > 0) this.deletedChanged();
+    return this.reply({ deleted, failed, unloaded });
+  }
+
+  libraryDeletedList(): Promise<DeletedList> {
+    return this.reply(this.deletedListNow());
+  }
+
+  libraryRestore(deletedIds: string[]): Promise<RestoreResult> {
+    if (deletedIds.length === 0) return this.reject(fail("bad_request", "Choose at least one song to restore."));
+    const restored: RestoreResult["restored"] = [];
+    const failed: DeleteFailure[] = [];
+    for (const id of deletedIds) {
+      const i = this.deletedSongs.findIndex((d) => d.entry.deleted_id.toLowerCase() === id.toLowerCase());
+      if (i < 0) {
+        failed.push({ id, code: "not_found", message: "This song is no longer in Deleted songs." });
+        continue;
+      }
+      const [{ entry, song }] = this.deletedSongs.splice(i, 1);
+      const to = this.restoreTarget(entry.original_song_id);
+      song.demo = { ...song.demo, summary: { ...song.demo.summary, song_id: to } };
+      this.songs.push(song);
+      restored.push({ deleted_id: entry.deleted_id, song_id: to });
+    }
+    if (restored.length > 0) this.deletedChanged();
+    return this.reply({ restored, failed });
+  }
+
+  libraryPurge(which: string[] | "all"): Promise<PurgeResult> {
+    if (which !== "all" && which.length === 0) return this.reject(fail("bad_request", "Choose at least one song to delete for good."));
+    const purged: string[] = [];
+    const failed: DeleteFailure[] = [];
+    let freed = 0;
+    const ids = which === "all" ? this.deletedSongs.map((d) => d.entry.deleted_id) : which;
+    for (const id of ids) {
+      const i = this.deletedSongs.findIndex((d) => d.entry.deleted_id.toLowerCase() === id.toLowerCase());
+      if (i < 0) {
+        failed.push({ id, code: "not_found", message: "This song is no longer in Deleted songs." });
+        continue;
+      }
+      const [{ entry }] = this.deletedSongs.splice(i, 1);
+      freed += entry.file_bytes;
+      purged.push(entry.deleted_id);
+    }
+    this.freedBytes += freed;
+    if (purged.length > 0) this.deletedChanged();
+    return this.reply({ purged, freed_bytes: freed, failed });
   }
 
   songCover(songId: string, maxPx: number) {

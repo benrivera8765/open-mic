@@ -127,3 +127,48 @@ fn export_renders_the_current_key_to_a_float_wav() {
     drop(core);
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// The owner's request of 18 Nov 2026 (D-230): deleting the song that is playing in the
+/// real engine stops it, writes its pending settings, closes every handle the engine's
+/// reader and render threads had on the file, then moves it into Deleted/. On Windows
+/// the moved file can be opened with no sharing at all at once: nobody holds it.
+#[test]
+fn deleting_the_playing_song_releases_every_file_handle_first() {
+    let (root, core, _sink) = core_on_null_device("real-delete");
+    core.player.start_clock();
+    let id = "Jukeoke - Test Tone.jksong";
+    core.player.load(id).unwrap();
+    core.player.play().unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(core.player.state().state, "playing");
+    core.player.set(&json!({"semitones": -2})).unwrap();
+    let t0 = Instant::now();
+    let r = core.library_delete(&[id.to_string()]).unwrap();
+    let took = t0.elapsed();
+    eprintln!("measured: delete of the playing song took {:.0} ms", took.as_secs_f64() * 1000.0);
+    assert!(r.failed.is_empty(), "{:?}", r.failed);
+    assert_eq!(r.unloaded.as_deref(), Some(id));
+    assert!(took < Duration::from_millis(1900), "waited for the file to close ({took:?})");
+    let st = core.player.state();
+    assert_eq!((st.state, st.song_id), ("empty", None));
+    let moved = root.join("Deleted").join(id);
+    assert!(!root.join("Library").join(id).exists());
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let exclusive = std::fs::OpenOptions::new().read(true).share_mode(0).open(&moved);
+        assert!(exclusive.is_ok(), "the moved file is still open somewhere: {exclusive:?}");
+    }
+    assert_eq!(jk_format::SongFile::open(&moved).unwrap().effective_settings().semitones, -2);
+    // Restored, it plays again.
+    let back = core.library_restore(&[id.to_string()]).unwrap();
+    assert_eq!(back.restored[0].song_id, id);
+    let d = core.player.load(id).unwrap();
+    assert_eq!(d.settings.semitones, -2);
+    core.player.play().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(core.player.state().state, "playing");
+    core.shutdown();
+    drop(core);
+    let _ = std::fs::remove_dir_all(root);
+}

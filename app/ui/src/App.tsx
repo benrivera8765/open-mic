@@ -68,14 +68,14 @@ export function handleShortcut(e: KeyboardEvent): void {
     return;
   }
   if (e.key === "Escape") {
-    if (s.overlay) return; // the dialog closes itself
+    if (s.overlay || s.modal) return; // the dialog closes itself
     if (s.fullscreen) {
       e.preventDefault();
       void setFullscreen(false);
     } else if (isTyping(t)) (t as HTMLElement).blur();
     return;
   }
-  if (mod || e.altKey || s.overlay || isTyping(t)) return;
+  if (mod || e.altKey || s.overlay || s.modal || isTyping(t)) return;
   const onRange = t instanceof HTMLInputElement && t.type === "range";
   const onButton = t instanceof HTMLButtonElement || (t instanceof HTMLInputElement && ["checkbox", "radio"].includes(t.type));
   switch (e.key) {

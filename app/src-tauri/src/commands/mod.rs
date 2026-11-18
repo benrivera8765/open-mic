@@ -51,6 +51,10 @@ macro_rules! all_commands {
             // library and song file edits
             $crate::commands::library_list,
             $crate::commands::song_cover,
+            $crate::commands::library_delete,
+            $crate::commands::library_deleted_list,
+            $crate::commands::library_restore,
+            $crate::commands::library_purge,
             $crate::commands::lyrics_save,
             $crate::commands::lyrics_reset,
             $crate::commands::metadata_save,

@@ -464,6 +464,7 @@ fn real_studio_in_dev_mode() {
         models: dir.join("Models"),
         logs: dir.join("Settings/logs"),
         tmp: dir.join("Settings/tmp"),
+        deleted: dir.join("Deleted"),
     };
     std::fs::create_dir_all(&paths.library).unwrap();
     let mut cfg = StudioConfig::locate(None, true, &paths, &dir, "0.1.0-test").expect("dev Studio");

@@ -37,7 +37,8 @@ export interface AppInfo {
   root: string | null;
   /** macOS App Translocation detected. */
   translocated: boolean;
-  paths: { library: string; recordings: string; exports: string; settings: string; models: string | null };
+  /** `deleted` (addition, 2026-11-18): the Deleted songs folder, created on the first delete. */
+  paths: { library: string; recordings: string; exports: string; settings: string; models: string | null; deleted?: string };
   capabilities: {
     /** `checking` (APP_API addition): true until the background Studio probe has answered. */
     studio: { available: boolean; reasons: string[]; gpu: string | null; vram_mb: number | null; checking?: boolean };
@@ -83,6 +84,62 @@ export interface LibraryList {
   songs: SongSummary[];
   free_bytes: number;
   total_bytes: number;
+  /** Addition (2026-11-18): songs in Deleted songs and the bytes they still take on the drive. */
+  deleted_count?: number;
+  deleted_bytes?: number;
+}
+
+/**
+ * Deleted songs (the owner's request of 2026-11-18, APP_API section 2): a deleted
+ * song's file is moved to `<root>/Deleted/`, from where it is restored or deleted for good.
+ */
+export interface DeletedSong {
+  /** Its file name in Deleted/: what restore and purge take. */
+  deleted_id: string;
+  /** Its song_id before it was deleted. */
+  original_song_id: string;
+  /** The song_id a restore gives it now (the original, or a free name next to it). */
+  restore_to: string;
+  title: string;
+  artist: string;
+  album: string | null;
+  duration_s: number;
+  file_bytes: number;
+  /** Milliseconds since 1970 (UTC). */
+  deleted_ms: number;
+}
+
+export interface DeletedList {
+  /** Newest first. */
+  songs: DeletedSong[];
+  count: number;
+  total_bytes: number;
+  folder: string;
+}
+
+/** A song an operation could not handle (`id` is a song_id or a deleted_id). */
+export interface DeleteFailure {
+  id: string;
+  code: string;
+  message: string;
+}
+
+export interface DeleteResult {
+  deleted: DeletedSong[];
+  failed: DeleteFailure[];
+  /** The loaded song's id when it was one of them (it was stopped and closed first). */
+  unloaded: string | null;
+}
+
+export interface RestoreResult {
+  restored: { deleted_id: string; song_id: string }[];
+  failed: DeleteFailure[];
+}
+
+export interface PurgeResult {
+  purged: string[];
+  freed_bytes: number;
+  failed: DeleteFailure[];
 }
 
 export interface CoverResult {
@@ -585,6 +642,8 @@ export interface SelfCheckResult {
 
 export interface ApiEvents {
   "library://changed": null;
+  /** Addition (2026-11-18): the full deleted-songs list after a delete, restore or purge. */
+  "library://deleted": DeletedList;
   "playback://clock": ClockEvent;
   "playback://state": PlayerState;
   "playback://error": ApiError;

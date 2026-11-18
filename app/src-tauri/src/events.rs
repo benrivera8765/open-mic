@@ -11,6 +11,9 @@ use serde_json::Value;
 /// Event names (docs/APP_API.md). Additions beyond the contract are marked.
 pub mod names {
     pub const LIBRARY_CHANGED: &str = "library://changed";
+    /// Addition (owner's request, 2026-11-18): the full `library_deleted_list()` after
+    /// songs were deleted, restored or deleted for good (src/deleted.rs).
+    pub const LIBRARY_DELETED: &str = "library://deleted";
     pub const PLAYBACK_CLOCK: &str = "playback://clock";
     pub const PLAYBACK_STATE: &str = "playback://state";
     pub const PLAYBACK_ERROR: &str = "playback://error";

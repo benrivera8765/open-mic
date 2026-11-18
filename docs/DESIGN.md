@@ -197,6 +197,13 @@ D-102 to D-111.
   pitch shifter); the app-wide key shortcuts act at once.
 - **Library**: title-strip cards in a chrome rack, 2 columns on a laptop, more on 4K,
   1 when narrow; a drawn record stands in for missing cover art.
+- **Deleting songs** (the owner's request of 18 Nov 2026, D-230): a small black-glass
+  plate with a drawn bin on the hovered, focused or current strip (its glass lights red
+  under the pointer); "Select" lights a selector lamp on each strip's chrome tab; the
+  question before a delete is a chrome-framed black-glass panel with plates, the
+  confirming plate lit red; "Deleted songs" shows the deleted strips faded to grey
+  paper with grey rules and a chrome tab holding a bin, with Restore and
+  "Delete for good" plates.
 - **Stage marker**: a slim solid needle with a small triangular head in the marker
   colour, default mint `#7dffd8` (not a chrome needle with a pink glow), so it stands out
   against the sung letters: fixed in the scrolling ticker, on the wipe edge in the static

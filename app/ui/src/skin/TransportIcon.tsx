@@ -3,7 +3,7 @@
 // render as colour emoji in some WebKit builds and differ in size between fonts,
 // so the skin draws its own: monochrome (currentColor), sized to the label font.
 
-export type TransportIconName = "play" | "pause" | "stop" | "restart" | "record" | "prev" | "next" | "back" | "forward";
+export type TransportIconName = "play" | "pause" | "stop" | "restart" | "record" | "prev" | "next" | "back" | "forward" | "trash";
 
 const PATHS: Record<TransportIconName, string> = {
   play: "M7 4.5 L19.5 12 L7 19.5 Z",
@@ -16,12 +16,15 @@ const PATHS: Record<TransportIconName, string> = {
   // Skip back / forward a few seconds: two small triangles.
   back: "M11.5 6 V18 L3 12 Z M21 6 V18 L12.5 12 Z",
   forward: "M3 6 V18 L11.5 12 Z M12.5 6 V18 L21 12 Z",
+  // Delete (Library): a bin with its lid and two slots (even-odd fill cuts the slots).
+  trash:
+    "M9 2.5 H15 V4 H20 V6.5 H4 V4 H9 Z M5.5 8 H18.5 L17.4 20 Q17.25 21.5 15.75 21.5 H8.25 Q6.75 21.5 6.6 20 Z M9.1 10.5 V19 H10.7 V10.5 Z M13.3 10.5 V19 H14.9 V10.5 Z",
 };
 
 export function TransportIcon({ name, class: className }: { name: TransportIconName; class?: string }) {
   return (
     <svg class={`jk-icon${className ? ` ${className}` : ""}`} viewBox="0 0 24 24" aria-hidden="true">
-      <path d={PATHS[name]} fill="currentColor" />
+      <path d={PATHS[name]} fill="currentColor" fill-rule="evenodd" />
     </svg>
   );
 }

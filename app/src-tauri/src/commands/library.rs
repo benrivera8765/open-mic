@@ -8,13 +8,77 @@ use super::blocking;
 use crate::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::export::ExportStarted;
+use crate::core::{DeleteResult, RestoreResult};
+use crate::deleted::{DeletedList, Purged};
 use crate::library::{Cover, LibraryList};
 
-/// `library_list() -> { songs, free_bytes, total_bytes }`.
+/// `library_list() -> { songs, free_bytes, total_bytes, deleted_count, deleted_bytes }`.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn library_list(state: State<'_, AppState>) -> ApiResult<LibraryList> {
     let core = state.core.clone();
-    blocking(move || core.library.list()).await
+    blocking(move || core.library_list()).await
+}
+
+/// A list of ids given as `name` (an array), or one id as `one`.
+fn ids(list: Option<Vec<String>>, one: Option<String>, what: &str) -> ApiResult<Vec<String>> {
+    match (list, one) {
+        (Some(l), _) => Ok(l),
+        (None, Some(id)) => Ok(vec![id]),
+        (None, None) => Err(ApiError::bad_request(format!("Say which {what} (a list of ids)."))),
+    }
+}
+
+/// `library_delete(song_ids) -> { deleted, failed, unloaded }` (owner's request,
+/// 2026-11-18): moves songs into Deleted songs. A single `song_id` is accepted too.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn library_delete(
+    state: State<'_, AppState>,
+    song_ids: Option<Vec<String>>,
+    song_id: Option<String>,
+) -> ApiResult<DeleteResult> {
+    let list = ids(song_ids, song_id, "songs to delete")?;
+    let core = state.core.clone();
+    blocking(move || core.library_delete(&list)).await
+}
+
+/// `library_deleted_list() -> DeletedList`.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn library_deleted_list(state: State<'_, AppState>) -> ApiResult<DeletedList> {
+    let core = state.core.clone();
+    blocking(move || Ok(core.library_deleted_list())).await
+}
+
+/// `library_restore(deleted_ids) -> { restored, failed }`.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn library_restore(
+    state: State<'_, AppState>,
+    deleted_ids: Option<Vec<String>>,
+    deleted_id: Option<String>,
+) -> ApiResult<RestoreResult> {
+    let list = ids(deleted_ids, deleted_id, "songs to restore")?;
+    let core = state.core.clone();
+    blocking(move || core.library_restore(&list)).await
+}
+
+/// `library_purge(deleted_ids | all) -> { purged, freed_bytes, failed }`: deletes for
+/// good. `all: true` empties Deleted songs; otherwise `deleted_ids` is required.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn library_purge(
+    state: State<'_, AppState>,
+    deleted_ids: Option<Vec<String>>,
+    deleted_id: Option<String>,
+    all: Option<bool>,
+) -> ApiResult<Purged> {
+    let list = if all == Some(true) {
+        if deleted_ids.is_some() || deleted_id.is_some() {
+            return Err(ApiError::bad_request("Give either all or a list of songs, not both."));
+        }
+        None
+    } else {
+        Some(ids(deleted_ids, deleted_id, "songs to delete for good")?)
+    };
+    let core = state.core.clone();
+    blocking(move || core.library_purge(list.as_deref())).await
 }
 
 /// `song_cover(song_id, max_px) -> { data_url }`.

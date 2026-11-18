@@ -89,11 +89,42 @@ const shots = [
   ["help-overlay-1440x900", "?overlay=help", W1440],
   ["selfcheck-1440x900", "?overlay=selfcheck", W1440, async (p) => p.waitForSelector(".selfcheck__summary", { timeout: 5000 })],
   ["library-empty-1280x800", "?empty=1", W1280],
+  // Deleting songs (the owner's request of 18 Nov 2026, D-230): a strip's trash plate,
+  // the question, Select, Deleted songs, and the second question before "for good".
+  ["library-delete-plate-1440x900", "", W1440, async (p) => p.locator(".library__strip").nth(0).hover()],
+  ["library-delete-confirm-1440x900", "", W1440, async (p) => {
+    await p.locator(".library__strip").nth(0).hover();
+    await p.locator(".library__strip").nth(0).locator(".library__trash").click();
+    await p.waitForSelector("dialog.confirm");
+  }],
+  ["library-select-1440x900", "", W1440, async (p) => {
+    await p.locator(".library__select").click();
+    for (const i of [0, 3]) await p.locator(".library__strip .jk-strip").nth(i).click();
+  }],
+  ["library-deleted-songs-1440x900", "", W1440, async (p) => {
+    await p.locator(".library__select").click();
+    for (const i of [1, 2, 3]) await p.locator(".library__strip .jk-strip").nth(i).click();
+    await p.locator(".library__delete-ticked").click();
+    await p.locator(".confirm__ok").click();
+    await p.locator(".library__show-deleted").click();
+    await p.waitForSelector(".deleted-song");
+  }],
+  ["library-purge-confirm-1440x900", "", W1440, async (p) => {
+    await p.locator(".library__strip").nth(1).locator(".library__trash").click({ force: true });
+    await p.locator(".confirm__ok").click();
+    await p.locator(".library__show-deleted").click();
+    await p.locator(".deleted-song__purge").first().click();
+    await p.waitForSelector("dialog.confirm");
+  }],
   // The plain look (settings.ui.skin off); everything above runs with the jukebox skin.
   ["plain-library-1440x900", "?skin=0", W1440],
   ["plain-stage-1440x900", "?skin=0&song=0&at=10.4", W1440],
   ["plain-stage-fullscreen-1280x800", "?skin=0&song=0&at=10.4&fullscreen=1", W1280],
   ["plain-settings-1440x900", "?skin=0&screen=settings", W1440],
+  ["plain-library-delete-confirm-1440x900", "?skin=0", W1440, async (p) => {
+    await p.locator(".title-strip__row").nth(0).locator(".library__trash").click();
+    await p.waitForSelector("dialog.confirm");
+  }],
 ];
 
 const report = { browser: `msedge/chromium ${version}`, shots: [], problems: [], ticker: null };

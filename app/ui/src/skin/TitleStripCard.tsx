@@ -23,6 +23,12 @@ export interface TitleStripCardProps {
   /** Optional small note under the artist (e.g. "lyrics unchecked"). */
   note?: string;
   disabled?: boolean;
+  /**
+   * Select mode (the Library's "Select", to delete several songs): when set, the strip
+   * is a checkbox, ticked or not, with a selector lamp on its chrome tab that lights
+   * when ticked; `onSelect` then toggles it.
+   */
+  checked?: boolean;
 }
 
 export function formatDuration(d: number | string): string {
@@ -61,18 +67,23 @@ export function TitleStripCard({
   onSelect,
   note,
   disabled = false,
+  checked,
 }: TitleStripCardProps) {
+  const selecting = checked !== undefined;
   return (
     <button
       type="button"
-      class={`jk-strip${selected ? " jk-strip--selected" : ""}`}
+      class={`jk-strip${selected ? " jk-strip--selected" : ""}${selecting ? " jk-strip--selecting" : ""}${checked ? " jk-strip--checked" : ""}`}
       onClick={() => onSelect()}
       disabled={disabled}
-      aria-pressed={selected ? "true" : "false"}
+      role={selecting ? "checkbox" : undefined}
+      aria-checked={selecting ? (checked ? "true" : "false") : undefined}
+      aria-pressed={selecting ? undefined : selected ? "true" : "false"}
       title={`${title} - ${artist}`}
     >
       <span class="jk-strip-tab" aria-label={`Selection ${code}`}>
         {code}
+        {selecting && <span class="jk-strip-lamp" aria-hidden="true" />}
       </span>
       <span class="jk-strip-cover">{cover ? <img src={cover} alt="" draggable={false} /> : <RecordArt />}</span>
       <span class="jk-strip-text">
