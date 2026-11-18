@@ -199,3 +199,45 @@ def test_default_user_agent_is_generic():
 def test_lrclib_live():
     res = L.lookup_lrclib(None, "Amazing Grace")  # public-domain hymn
     assert res and (res[0]["synced_lrc"] or res[0]["plain"])
+
+
+def test_auto_falls_through_when_given_lyrics_normalise_to_nothing(tmp_path):
+    """Verifier finding (f): LRC/text that hold no singable line (only headers, blank
+    lines, bare timestamps) fall through to the next source, not straight to
+    transcription."""
+    from mutagen.flac import FLAC
+
+    p = _wav(tmp_path / "e.flac", fmt="FLAC", subtype="PCM_16")
+    f = FLAC(str(p))
+    f["LYRICS"] = "Embedded line"
+    f.save()
+    called = []
+
+    def tr():
+        called.append(1)
+        return L.Lyrics([L.make_line("heard")], L.SOURCE_TRANSCRIBED, checked=False)
+
+    empty_lrc = "[00:01.00]\n[00:05.00][Chorus]\n"
+    empty_text = "[Verse 1]\n\n(Chorus)\n"
+    # lrc empty -> text
+    out = L.resolve_lyrics("auto", lrc=empty_lrc, text="Typed line", media_path=p, transcribe=tr)
+    assert out.source == "user_text" and out.text() == "Typed line" and not called
+    # lrc and text empty -> embedded
+    out = L.resolve_lyrics("auto", lrc=empty_lrc, text=empty_text, media_path=p, transcribe=tr)
+    assert out.source == "embedded" and out.text() == "Embedded line" and not called
+    # all empty -> transcription
+    out = L.resolve_lyrics("auto", lrc=empty_lrc, text=empty_text, media_path=_wav(tmp_path / "n.wav"),
+                           transcribe=tr)
+    assert out.source == "transcribed" and called
+
+
+def test_source_label_from_the_app():
+    """Protocol: job.submit lyrics.source (e.g. online:lrclib for a lookup result)."""
+    lrc = "[00:01.00]Hello there\n[00:03.00]General\n"
+    assert L.resolve_lyrics("lrc", lrc=lrc, source="online:lrclib").source == "online:lrclib"
+    assert L.resolve_lyrics("auto", text="Hi", source="online:lrclib").source == "online:lrclib"
+    assert L.resolve_lyrics("auto", text="Hi", source="embedded").source == "embedded"
+    assert L.resolve_lyrics("auto", lrc=lrc).source == "lrc"
+    with pytest.raises(ValueError):
+        L.resolve_lyrics("auto", text="Hi", source="made up")
+    assert L.valid_source("online:lrclib") and not L.valid_source("transcribed")

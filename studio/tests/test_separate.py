@@ -58,7 +58,7 @@ def _music(seconds=3.0, sr=SR, ch=2, seed=0):
     return (rng.standard_normal((ch, int(sr * seconds))) * 0.3).astype(np.float32)
 
 
-@pytest.mark.parametrize("preset", ["full", "clean"])
+@pytest.mark.parametrize("preset", ["full", "clean", "permissive"])
 def test_presets_sum_back_to_mix(sep, preset):
     mix = _music()
     res = sep.separate(mix, SR, preset, FAKE)
@@ -71,7 +71,7 @@ def test_presets_sum_back_to_mix(sep, preset):
     assert np.max(np.abs(total.astype(np.float64) - mix)) < 4 * np.finfo(np.float32).eps
 
 
-@pytest.mark.parametrize("preset", ["full", "clean"])
+@pytest.mark.parametrize("preset", ["full", "clean", "permissive"])
 def test_song_file_round_trip_loses_nothing(sep, preset, tmp_path):
     """Stems -> .jksong (24-bit FLAC, writer's gain rule, exact-residual mode) -> decode:
     the four stems at unity sum back to the original within half an LSB of 24 bits."""
@@ -86,6 +86,8 @@ def test_song_file_round_trip_loses_nothing(sep, preset, tmp_path):
     total = sum(song.read_stem_int(k).T * (float(song.stem(k)["gain"]) / jksong.FULL_SCALE) for k in S.STEMS)
     gains = [float(song.stem(k)["gain"]) for k in S.STEMS]
     assert max(gains) > 1.0  # the headroom rule was exercised
+    if preset == "permissive":
+        assert not song.read_stem_int("backing_vocals").any()  # silent: no lead/backing split
     lsb = 1 / jksong.FULL_SCALE
     other_gain = float(song.stem("other")["gain"])
     assert np.max(np.abs(total - mix.astype(np.float64))) <= 0.5 * lsb * other_gain * (1 + 1e-9)
@@ -175,8 +177,8 @@ def test_provenance_lists_only_models_that_ran_in_song_format_shape(monkeypatch)
         assert m["sha256"] == spec.files[0].sha256 and m["source_url"] == spec.files[0].url
         assert m["licence"] == spec.licence and m["precision"] == "fp32"
         assert m["overlap"] == (None if spec.arch == "htdemucs" else spec.overlap)
-    assert len(prov["resampling"]) == 3
-    assert all(r["from_hz"] == 48000 and r["to_hz"] == 44100 for r in prov["resampling"])
+    # The mix once down to the model rate, then vocals, lead and drums once each back up.
+    assert [(r["from_hz"], r["to_hz"]) for r in prov["resampling"]] == [(48000, 44100)] + [(44100, 48000)] * 3
     native = sep.separate(_music(), SR, "full").provenance()  # 44.1 kHz source: no resampling
     assert native["resampling"] == [] and len(native["models"]) == 3
     with pytest.raises(ValueError, match="unknown model role"):
@@ -202,3 +204,77 @@ def test_unknown_preset_and_precision_rejected():
         S.Separator(device="cpu", precision="int8")
     with pytest.raises(ValueError):
         S.Separator(device="cpu").separate(_music(), SR, "nope")
+
+
+def test_permissive_preset_puts_all_vocals_in_lead(sep):
+    mix = _music()
+    res = sep.separate(mix, SR, "permissive", FAKE)
+    assert set(res.models) == {"vocals", "drums"}
+    v = 0.4 * mix.astype(np.float64)
+    np.testing.assert_allclose(res.stems["lead_vocal"], v, atol=1e-6)
+    assert not res.stems["backing_vocals"].any()
+    np.testing.assert_allclose(res.stems["drums"], 0.3 * (mix - v), atol=1e-6)
+
+
+class _RecordingModel(_FakeModel):
+    """A fake that records the length of what it was given (to see the rate it ran at)."""
+
+    seen: dict = {}
+
+    def __call__(self, audio, overlap, batch_size, **kw):
+        _RecordingModel.seen[self.spec.id] = audio.shape[-1]
+        return super().__call__(audio, overlap, batch_size)
+
+
+@pytest.mark.parametrize("preset,expect", [
+    ("full", ["mix", "vocals", "lead", "drums"]),
+    ("clean", ["mix", "vocals", "lead", "instrumental", "drums"]),
+    ("permissive", ["mix", "vocals", "drums"]),
+])
+def test_48k_each_estimate_is_resampled_exactly_once(monkeypatch, preset, expect):
+    """Verifier finding (b): the karaoke model runs on the vocal estimate at the model rate
+    and every final estimate goes back to the native rate once; the stems still sum."""
+    sep = S.Separator(device="cpu")
+    monkeypatch.setattr(sep, "model", lambda mid: _RecordingModel(mid))
+    calls = []
+    real = S.resample
+
+    def counting(audio, a, b):
+        if a != b:
+            calls.append((a, b))
+        return real(audio, a, b)
+
+    monkeypatch.setattr(S, "resample", counting)
+    mix = _music(seconds=2.0, sr=48000)
+    res = sep.separate(mix, 48000, preset, FAKE)
+    assert calls == [(48000, 44100)] + [(44100, 48000)] * (len(expect) - 1)
+    n44 = int(round(mix.shape[1] * 44100 / 48000))
+    assert _RecordingModel.seen["karaoke" if preset != "permissive" else "vocals"] == n44
+    assert [r["to_hz"] for r in res.resampling] == [44100] + [48000] * (len(expect) - 1)
+    total = sum(res.stems[k].astype(np.float64) for k in S.STEMS)
+    assert np.max(np.abs(total - mix)) < 4 * np.finfo(np.float32).eps
+    assert all(x.shape == mix.shape for x in res.stems.values())
+
+
+def test_progress_and_cancel_hooks(sep):
+    from jukeoke_studio.errors import Cancelled, Hooks
+
+    seen = []
+    res = sep.separate(_music(), SR, "full", FAKE, hooks=Hooks(lambda f, m: seen.append((f, m))))
+    fr = [f for f, _ in seen]
+    assert fr == sorted(fr) and fr[-1] == 1.0 and res.stems
+    assert any(m and "lead vocal" in m for _, m in seen)
+    h = Hooks()
+    h.cancel()
+    with pytest.raises(Cancelled):
+        sep.separate(_music(), SR, "full", FAKE, hooks=h)
+
+
+def test_missing_weights_raise_models_missing(tmp_path):
+    from jukeoke_studio.errors import ModelsMissing
+
+    sep = S.Separator(models_dir=tmp_path, device="cpu")
+    assert sep.missing_models("full") == list(dict.fromkeys(S.PRESETS["full"].values()))
+    with pytest.raises(ModelsMissing):
+        sep.separate(_music(), SR, "full")
+    assert not list(tmp_path.iterdir())  # nothing was downloaded or created

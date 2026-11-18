@@ -319,3 +319,54 @@ def test_align_stage_whisper_anchors_are_opt_in():
     A.align_stage(FakeAligner(), np.zeros(16000), 16000, lyr, transcriber=FakeTranscriber(),
                   coarse_anchors=True)
     assert calls[-1] and calls[-1][0].text == "a"
+
+
+def test_infeasible_anchor_is_dropped_alone():
+    """Verifier finding (e): when one user anchor is impossible, only that one is
+    dropped; the others still hold exactly."""
+    lp, lv = _chorus_song()  # "shine on" at 2, 12, 22 s; "rhyme" at 7 s; 30 s long
+    lyr = from_text("shine on\nrhyme\nshine on")
+    # Line 2 ("shine on", 7 letters) anchored 0.04 s before the end of the song: its
+    # letters cannot fit after it. Line 1's anchor is fine and must hold.
+    res = run(lp, lv, lyr, anchors=[A.Anchor(1, 7.0), A.Anchor(2, 29.96)])
+    check_schema(res.lyrics, lyr)
+    assert res.dropped_anchors == [2]
+    assert res.lyrics["lines"][1]["start"] == 7.0
+    assert res.lyrics["lines"][2]["start"] == pytest.approx(22.0, abs=0.03)  # from the vocal
+    assert any("line 2 dropped" in w for w in res.warnings)
+    assert res.lyrics["alignment"]["anchored_lines"] is True
+    # Two anchors that conflict with each other (line 1's five letters cannot fit in the
+    # 0.04 s before line 2's anchor): the earlier one is kept, the later one dropped.
+    res = run(lp, lv, lyr, anchors=[A.Anchor(1, 21.96), A.Anchor(2, 22.0)])
+    check_schema(res.lyrics, lyr)
+    assert res.dropped_anchors == [2] and res.lyrics["lines"][1]["start"] == 21.96
+    # A good pair of anchors: nothing dropped.
+    ok = run(lp, lv, lyr, anchors=[A.Anchor(1, 7.0), A.Anchor(2, 22.0)])
+    assert ok.dropped_anchors == [] and [ln["start"] for ln in ok.lyrics["lines"]][1:] == [7.0, 22.0]
+
+
+def test_impossible_anchor_out_of_order_does_not_hide_a_good_one():
+    """Independent verifier finding: anchors out of time order were filtered against the
+    previous *given* anchor, so an impossible anchor on line 1 (at the song's end) made
+    the good anchor on line 2 be ignored, and dropped_anchors listed only line 1."""
+    lp, lv = _chorus_song()  # "shine on" at 2, 12, 22 s; "rhyme" at 7 s; 30 s long
+    lyr = from_text("shine on\nrhyme\nshine on")
+    res = run(lp, lv, lyr, anchors=[A.Anchor(1, 29.96), A.Anchor(2, 21.5)])
+    check_schema(res.lyrics, lyr)
+    assert res.dropped_anchors == [1]
+    assert res.lyrics["lines"][2]["start"] == 21.5          # the good anchor holds exactly
+    assert not any("not after the previous anchor" in w for w in res.warnings)
+    # Two anchors in the wrong order that would each fit alone: the earlier line wins.
+    res = run(lp, lv, lyr, anchors=[A.Anchor(1, 12.0), A.Anchor(2, 7.0)])
+    assert res.dropped_anchors == [2] and res.lyrics["lines"][1]["start"] == 12.0
+    # An anchor on a line that does not exist is reported as dropped, the others hold.
+    res = run(lp, lv, lyr, anchors=[A.Anchor(7, 5.0), A.Anchor(1, 7.0)])
+    assert res.dropped_anchors == [7] and res.lyrics["lines"][1]["start"] == 7.0
+
+
+def test_feasible_anchor_counting():
+    toks = np.array([1, 1, 2, 3], np.int64)
+    assert A._min_frames(toks) == 5  # a blank between the two equal letters
+    hard = [A.Anchor(1, 0.04), A.Anchor(2, 1.0)]
+    kept, dropped = A._feasible_anchors(hard, toks, [0, 2, 3], T=100, fps=50)
+    assert dropped == [1] and [a.line for a in kept] == [2]

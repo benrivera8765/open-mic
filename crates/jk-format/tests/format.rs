@@ -741,3 +741,28 @@ fn json_numbers_round_trip_exactly() {
     let back: Manifest = serde_json::from_slice(&serde_json::to_vec(&m).unwrap()).unwrap();
     assert_eq!(back.stems[1].peak.unwrap().to_bits(), 0.11999999731779099f64.to_bits());
 }
+
+/// Every preset the Studio writes passes `verify` without a warning ("permissive" was
+/// missing and failed `verify --strict`, found in the end-to-end integration); a preset
+/// this reader does not know is a warning, never an error (forward compatibility).
+#[test]
+fn verify_knows_every_studio_preset() {
+    let d = TempDir::new("presets");
+    for (preset, warned) in [("full", false), ("clean", false), ("permissive", false), ("future-preset", true)] {
+        let mut m = test_manifest();
+        m.preset = Some(preset.to_string());
+        let mut w = SongWriter::new(m);
+        w.add_json_chunk("lyrics", &test_lyrics()).unwrap();
+        w.add_chunk("cover", "image/png", ChunkData::Bytes(PNG.to_vec())).unwrap();
+        for (k, r) in ROLES.iter().enumerate() {
+            let flac = flac_verbatim::encode(&stem_samples(k), 2, RATE, RATE as u64);
+            w.add_chunk(format!("stem.{r}"), "audio/flac", ChunkData::Bytes(flac)).unwrap();
+        }
+        let p = d.path(&format!("{preset}.jksong"));
+        w.write_atomic(&p).unwrap();
+        let rep = verify_file(&p, &VerifyOptions { decode_stems: false, ..Default::default() });
+        assert!(rep.ok(), "{preset}: errors {:?}", rep.errors);
+        let unknown = rep.warnings.iter().any(|x| x.contains("unknown preset"));
+        assert_eq!(unknown, warned, "{preset}: warnings {:?}", rep.warnings);
+    }
+}

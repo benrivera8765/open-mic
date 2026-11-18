@@ -158,7 +158,8 @@ pub struct Manifest {
     pub lyrics: Option<String>,
     #[serde(default)]
     pub analysis: Option<Analysis>,
-    /// Studio quality preset that made the stems: `full` or `clean`.
+    /// Studio quality preset that made the stems: `full`, `clean` or `permissive`
+    /// (any other string is kept; `verify` warns about it).
     #[serde(default)]
     pub preset: Option<String>,
     #[serde(default)]

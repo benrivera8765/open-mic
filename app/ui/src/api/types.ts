@@ -39,7 +39,8 @@ export interface AppInfo {
   translocated: boolean;
   paths: { library: string; recordings: string; exports: string; settings: string; models: string | null };
   capabilities: {
-    studio: { available: boolean; reasons: string[]; gpu: string | null; vram_mb: number | null };
+    /** `checking` (APP_API addition): true until the background Studio probe has answered. */
+    studio: { available: boolean; reasons: string[]; gpu: string | null; vram_mb: number | null; checking?: boolean };
     recorder: { available: boolean; reason: string | null; permission: RecorderPermission };
     /** Windows only. */
     exclusive_mode: boolean;
@@ -317,7 +318,7 @@ export interface Recording {
 // 9. Studio
 // ---------------------------------------------------------------------------
 
-export type StudioPreset = "full" | "clean";
+export type StudioPreset = "full" | "clean" | "permissive";
 export type StudioJobState = "queued" | "running" | "done" | "failed" | "cancelled";
 
 /** Stage names in order (STUDIO_PROTOCOL section 7). */
@@ -341,6 +342,8 @@ export interface StudioStatus {
   running: boolean;
   models_present: boolean;
   queue: StudioJob[];
+  /** APP_API addition: as `capabilities.studio.checking`. */
+  checking?: boolean;
 }
 
 /** STUDIO_PROTOCOL section 5 (`inspect.result`, minus the protocol envelope). */
@@ -383,7 +386,9 @@ export interface StudioSubmitRequest {
   preset: StudioPreset;
   language: string;
   metadata: { title: string; artist: string; album: string | null };
-  lyrics: { mode: StudioLyricsMode; text: string | null; lrc: string | null };
+  /** `source`: STUDIO_PROTOCOL 7 `lyrics.source`, e.g. "online:lrclib" for a lookup
+   * result; null or absent = the Studio's default (`user_text` / `lrc`). */
+  lyrics: { mode: StudioLyricsMode; text: string | null; lrc: string | null; source?: string | null };
 }
 
 /** STUDIO_PROTOCOL section 4 (`models.status.result`, minus the envelope). */

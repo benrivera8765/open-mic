@@ -186,7 +186,7 @@ export async function init(theApi: Api): Promise<void> {
   api.on("recorder://level", (r) => store.set({ recorder: r }));
   api.on("studio://job", (job) => updateJob(job));
   api.on("studio://dropped", ({ paths }) => addToStudio(paths));
-  api.on("studio://status", (st) => store.set({ studio: st }));
+  api.on("studio://status", (st) => applyStudioStatus(st));
   api.on("export://progress", ({ job_id, progress }) =>
     store.set((s) => ({ exports: { ...s.exports, [job_id]: { progress, path: null, error: null, notice: null } } })),
   );
@@ -239,7 +239,32 @@ export async function refreshRecordings(): Promise<void> {
 export async function refreshStudio(): Promise<void> {
   if (!api) return;
   const st = await attempt(api.studioStatus());
-  if (st) store.set({ studio: st });
+  if (st) applyStudioStatus(st);
+}
+
+/**
+ * A Studio status from the core (`studio://status` event or `studio_status()`).
+ *
+ * `info.capabilities.studio` comes from `app_info()` at start-up, which is before the
+ * background probe has answered (about 10 s on the Studio PC). It used to be kept as it
+ * was, so on a capable PC it said "checking" for good: the Studio screen showed "Still
+ * checking whether this computer can run the Studio..." while the queue ran, and the
+ * recorder's "make a karaoke song" and the sync editor's realign stayed off (found by
+ * the end-to-end run in the real app, docs/benchmarks/end-to-end.md). Availability,
+ * reasons and `checking` are now copied over at once; the GPU name and memory exist only
+ * in `app_info()`, which is fetched again when the probe's answer changes them.
+ */
+function applyStudioStatus(st: StudioStatus): void {
+  const prev = store.get().info?.capabilities.studio;
+  store.set((s) => ({
+    studio: st,
+    ...(s.info
+      ? { info: { ...s.info, capabilities: { ...s.info.capabilities, studio: { ...s.info.capabilities.studio, available: st.available, reasons: st.reasons, checking: st.checking ?? false } } } }
+      : {}),
+  }));
+  if (api && prev && !st.checking && (prev.checking === true || prev.available !== st.available)) {
+    void attempt(api.appInfo()).then((info) => info && store.set({ info }));
+  }
 }
 
 function updateJob(job: StudioJob): void {

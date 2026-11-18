@@ -281,10 +281,13 @@ Event `recorder://level` about 20 times per second while recording: a `RecorderS
 - `studio_inspect(path: string) -> InspectResult` (STUDIO_PROTOCOL section 5)
 - `studio_lyrics_lookup(query: { artist, title, album, duration_s }) -> { results: LookupResult[] }`
   (the object travels as `query`; the core also accepts its fields at top level)
-- `studio_submit(job: { input: string; preset: "full" | "clean"; language: string; metadata: {...}; lyrics: {...} }) -> { job_id }`
+- `studio_submit(job: { input: string; preset: "full" | "clean" | "permissive"; language: string; metadata: {...}; lyrics: {...} }) -> { job_id }`
   (the object travels as `job`; the core also accepts its fields at top level, with
   defaults `preset` "full", `language` "en", `lyrics` `{ mode: "auto" }`). Job ids are
-  chosen by the app.
+  chosen by the app. `lyrics` is `{ mode, text, lrc, source? }` and is passed to the
+  Studio unchanged; the UI sets `source` to `"online:<service>"` when the text or LRC came
+  from `studio_lyrics_lookup` (STUDIO_PROTOCOL section 7), so the song records where its
+  lyrics came from.
 - `studio_cancel(job_id)`
 - `studio_clear_finished()` **(added)** - removes done, failed and cancelled jobs from
   the queue.

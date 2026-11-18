@@ -113,14 +113,17 @@ class Transcriber:
             cuda = False
         add_cuda12_dll_dirs()
         from faster_whisper import WhisperModel
-        from huggingface_hub import snapshot_download
+
+        from .modelzoo import hfmodels
 
         spec = WHISPER_MODELS.get(model)
         if spec is None:
             raise ValueError(f"unknown Whisper model {model!r}")
-        cache = str(Path(models_dir) / "hf") if models_dir else None
-        path = snapshot_download(spec["repo"], revision=spec["revision"], cache_dir=cache,
-                                 local_files_only=not allow_download)
+        # The pinned snapshot directory under <models_dir>/hf (modelzoo/hfmodels.py); a
+        # missing file is ModelsMissing unless allow_download. No name resolution, no
+        # network.
+        self.spec = hfmodels.get(model)
+        path = str(hfmodels.ensure(self.spec, models_dir, allow_download=allow_download))
         self.device = device or ("cuda" if cuda else "cpu")
         # float16 on the GPU is Whisper's own reference precision (OpenAI runs it in
         # fp16); int8 on CPU only as a slow fallback.
@@ -129,8 +132,9 @@ class Transcriber:
         self.model = WhisperModel(path, device=self.device, compute_type=self.compute_type)
         self.config = config or TranscribeConfig()
 
-    def transcribe_words(self, audio: np.ndarray, sr: int, language: str | None = "en"):
-        """Words with times. Returns (list[TranscriptWord], info dict)."""
+    def transcribe_words(self, audio: np.ndarray, sr: int, language: str | None = "en", hooks=None):
+        """Words with times. Returns (list[TranscriptWord], info dict). ``hooks`` gets
+        progress (decoded seconds / duration) and can cancel between segments."""
         cfg = self.config
         x16 = to_model_input(audio, sr)
         t0 = time.perf_counter()
@@ -146,7 +150,10 @@ class Transcriber:
         segments, info = self.model.transcribe(x16, **kw)
         words: list[TranscriptWord] = []
         seg_breaks: list[int] = []
+        dur = max(1e-6, len(x16) / 16000.0)
         for seg in segments:  # generator: decoding happens here
+            if hooks is not None:
+                hooks.progress(min(1.0, float(seg.end) / dur))
             seg_breaks.append(len(words))
             for w in seg.words or []:
                 text = w.word.strip()
@@ -157,9 +164,9 @@ class Transcriber:
                   "model": self.name, "compute_type": self.compute_type, "segment_starts": seg_breaks}
         return words, info_d
 
-    def transcribe_lyrics(self, audio: np.ndarray, sr: int, language: str | None = "en"):
+    def transcribe_lyrics(self, audio: np.ndarray, sr: int, language: str | None = "en", hooks=None):
         """Transcribed lyrics (unchecked) plus the words, for anchoring the aligner."""
-        words, info = self.transcribe_words(audio, sr, language)
+        words, info = self.transcribe_words(audio, sr, language, hooks=hooks)
         lines = words_to_lines(words, info.get("segment_starts", []), self.config)
         lyr = Lyrics(lines=lines, source=SOURCE_TRANSCRIBED, checked=False,
                      language=info.get("language") or language,

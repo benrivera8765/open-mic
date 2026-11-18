@@ -70,6 +70,14 @@ pub struct StudioConfig {
 impl StudioConfig {
     /// The production / developer layout (STUDIO_PROTOCOL section 1). `None` when no
     /// Studio runtime is present, with the plain-language reason.
+    ///
+    /// Every variant gets the same portable environment ([`studio_env`]) and the
+    /// arguments `serve --root <root> --models-dir <models> --temp-dir <tmp>`, so the
+    /// Studio's caches (Hugging Face, PyTorch, CUDA, numba, matplotlib, temporary files)
+    /// stay under `<root>/Settings` and its weights under `<root>/Models`; nothing goes
+    /// to per-user folders (WORKING ORDER 4.8). The Studio sets the same values itself
+    /// from `--root` before it imports any library (studio/jukeoke_studio/env.py); the
+    /// environment here also covers anything it starts.
     pub fn locate(
         exe_dir: Option<&Path>,
         dev_mode: bool,
@@ -81,7 +89,8 @@ impl StudioConfig {
             return Err("Songs are created in the Studio on a Windows PC with an NVIDIA graphics card. This computer plays them.".into());
         }
         let mut env: Vec<(OsString, OsString)> = Vec::new();
-        let (program, args, cwd) = if let Some(py) = std::env::var_os("JK_STUDIO_PYTHON") {
+        let mut models_dir = paths.models.clone();
+        let (program, mut args, cwd) = if let Some(py) = std::env::var_os("JK_STUDIO_PYTHON") {
             // Developer / test override, e.g. the fake Studio:
             // JK_STUDIO_PYTHON=python JK_STUDIO_SCRIPT=app/src-tauri/tests/fake_studio.py
             let mut args: Vec<OsString> = vec!["-X".into(), "utf8".into()];
@@ -95,26 +104,25 @@ impl StudioConfig {
             let packaged = exe_dir.map(|d| d.join("Studio"));
             let packaged_py = packaged.as_ref().map(|d| d.join("python").join("python.exe"));
             match packaged_py.filter(|p| p.is_file()) {
-                Some(py) => {
-                    // The Studio's model downloader looks here first ("the app sets this
-                    // to <root>/Models in portable mode", studio/.../modelzoo/download.py);
-                    // its fallback would be a folder inside the Python runtime. Also
-                    // sent in `hello` (models_dir).
-                    env.push(("JUKEOKE_MODELS_DIR".into(), paths.models.clone().into_os_string()));
-                    (
-                        py,
-                        // -I: isolated from any Python on the computer; -X utf8: stdin
-                        // and stdout are UTF-8 whatever the Windows code page (paths and
-                        // song titles with non-ASCII letters).
-                        vec!["-I".into(), "-X".into(), "utf8".into(), "-m".into(), "jukeoke_studio".into(), "serve".into()],
-                        packaged.expect("packaged dir"),
-                    )
-                }
+                Some(py) => (
+                    py,
+                    // -I: isolated from any Python on the computer; -X utf8: stdin
+                    // and stdout are UTF-8 whatever the Windows code page (paths and
+                    // song titles with non-ASCII letters).
+                    vec!["-I".into(), "-X".into(), "utf8".into(), "-m".into(), "jukeoke_studio".into(), "serve".into()],
+                    packaged.expect("packaged dir"),
+                ),
                 None if dev_mode => {
                     // Developer machine: the Studio venv and the source tree. No -I
-                    // here: it would ignore PYTHONPATH.
+                    // here: it would ignore PYTHONPATH. The weights already downloaded
+                    // for development live in $JK_BUILD/models-cache (Hugging Face
+                    // models in its hf/ folder): use them instead of an empty
+                    // dev-data/Models, so a dev run never downloads gigabytes again.
                     let jk_build = std::env::var_os(crate::portable::DEV_ENV_VAR).map(PathBuf::from);
                     let repo_studio = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../studio");
+                    if let Some(cache) = jk_build.as_ref().map(|b| b.join("models-cache")).filter(|d| d.is_dir()) {
+                        models_dir = cache;
+                    }
                     let py = jk_build.map(|b| b.join("studio-venv").join("Scripts").join("python.exe"));
                     match py.filter(|p| p.is_file()) {
                         Some(py) if repo_studio.is_dir() => {
@@ -128,15 +136,25 @@ impl StudioConfig {
                 None => return Err(missing_runtime()),
             }
         };
+        let temp_dir = paths.tmp.join("studio");
+        args.extend([
+            "--root".into(),
+            root.as_os_str().to_owned(),
+            "--models-dir".into(),
+            models_dir.as_os_str().to_owned(),
+            "--temp-dir".into(),
+            temp_dir.as_os_str().to_owned(),
+        ]);
+        env.extend(studio_env(root, &paths.settings, &models_dir, &temp_dir));
         Ok(StudioConfig {
             program,
             args,
             cwd,
             env,
             root: root.to_path_buf(),
-            models_dir: paths.models.clone(),
+            models_dir,
             library_dir: paths.library.clone(),
-            temp_dir: paths.tmp.join("studio"),
+            temp_dir,
             log_path: paths.logs.join("studio.log"),
             app_version: app_version.to_string(),
             start_timeout: Duration::from_secs(60),
@@ -144,6 +162,50 @@ impl StudioConfig {
             idle_shutdown: IDLE_SHUTDOWN,
         })
     }
+}
+
+/// The Studio's environment (WORKING ORDER 4.8: in portable mode nothing is written to
+/// per-user folders). Caches go under `<settings>/cache/<name>`, temporary files to
+/// `temp_dir` (`<settings>/tmp/studio`), Hugging Face weights to `<models>/hf`; the
+/// Hugging Face libraries are kept offline (the Studio downloads only on the
+/// `models.download` request, with its own verified downloader). Same names and
+/// folders as studio/jukeoke_studio/env.py.
+pub fn studio_env(root: &Path, settings: &Path, models_dir: &Path, temp_dir: &Path) -> Vec<(OsString, OsString)> {
+    let cache = settings.join("cache");
+    let mut env: Vec<(OsString, OsString)> = vec![
+        ("JUKEOKE_ROOT".into(), root.as_os_str().to_owned()),
+        ("JUKEOKE_MODELS_DIR".into(), models_dir.as_os_str().to_owned()),
+    ];
+    for (var, sub) in [
+        ("HF_HOME", "huggingface"),
+        ("TORCH_HOME", "torch"),
+        ("XDG_CACHE_HOME", "xdg"),
+        ("CUDA_CACHE_PATH", "cuda"),
+        ("NUMBA_CACHE_DIR", "numba"),
+        ("MPLCONFIGDIR", "matplotlib"),
+        ("PYTORCH_KERNEL_CACHE_PATH", "torch/kernels"),
+        ("TRITON_CACHE_DIR", "triton"),
+        ("TORCHINDUCTOR_CACHE_DIR", "inductor"),
+    ] {
+        env.push((var.into(), cache.join(sub).into_os_string()));
+    }
+    let hf = models_dir.join("hf");
+    for var in ["HF_HUB_CACHE", "TRANSFORMERS_CACHE", "HUGGINGFACE_HUB_CACHE"] {
+        env.push((var.into(), hf.as_os_str().to_owned()));
+    }
+    for var in ["TMP", "TEMP", "TMPDIR"] {
+        env.push((var.into(), temp_dir.as_os_str().to_owned()));
+    }
+    for (var, val) in [
+        ("HF_HUB_OFFLINE", "1"),
+        ("TRANSFORMERS_OFFLINE", "1"),
+        ("HF_HUB_DISABLE_TELEMETRY", "1"),
+        ("DO_NOT_TRACK", "1"),
+        ("PYTHONDONTWRITEBYTECODE", "1"),
+    ] {
+        env.push((var.into(), val.into()));
+    }
+    env
 }
 
 fn missing_runtime() -> String {
@@ -843,8 +905,10 @@ impl Studio {
             return Err(ApiError::new("not_found", "That file could not be found."));
         }
         let preset = obj.get("preset").and_then(Value::as_str).unwrap_or("full");
-        if !matches!(preset, "full" | "clean") {
-            return Err(ApiError::bad_request("The quality preset must be \"full\" or \"clean\"."));
+        if !matches!(preset, "full" | "clean" | "permissive") {
+            return Err(ApiError::bad_request(
+                "The quality preset must be \"full\", \"clean\" or \"permissive\".",
+            ));
         }
         let job_id = format!(
             "job-{}-{:08x}",

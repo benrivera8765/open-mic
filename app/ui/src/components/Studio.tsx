@@ -19,6 +19,8 @@ import { Note, Progress, Section, Select } from "./common";
 const PRESETS: { value: StudioPreset; label: string; hint: string }[] = [
   { value: "full", label: "Full (recommended)", hint: "Removes only the lead singer from the original recording: nothing else is lost, a faint trace of the voice can remain." },
   { value: "clean", label: "Clean", hint: "A model rebuilds the music without the singer: less voice left over, sometimes a little less body." },
+  // studio/jukeoke_studio/presets.py PRESET_INFO["permissive"]; the core already accepted it.
+  { value: "permissive", label: "Permissive licences only", hint: "Only MIT / Apache-2.0 models. No such model can tell the lead singer from the backing singers, so every voice is removed: backing vocals and harmonies are missing." },
 ];
 
 const STAGE_LABELS: Record<string, string> = { decode: "Read", separate: "Separate", lyrics: "Lyrics", align: "Align", analyse: "Key & tempo", write: "Save" };
@@ -96,6 +98,11 @@ function ImportItem({ path }: { path: string }) {
   const [mode, setMode] = useState<StudioLyricsMode>("auto");
   const [text, setText] = useState("");
   const [lrc, setLrc] = useState("");
+  // Where the text / LRC came from (STUDIO_PROTOCOL 7 `lyrics.source`): "online:<service>"
+  // after "Use timed lyrics" / "Use text" on a lookup result; null means the Studio's
+  // default (`user_text` for pasted text, `lrc` for a chosen file). Choosing another mode
+  // or another file resets it, so a song is never labelled with a source it did not use.
+  const [lyricsSource, setLyricsSource] = useState<string | null>(null);
   const [preset, setPreset] = useState<StudioPreset>("full");
   const [language, setLanguage] = useState("en");
   const [lookup, setLookup] = useState<LookupResult[] | null>(null);
@@ -139,7 +146,12 @@ function ImportItem({ path }: { path: string }) {
         preset,
         language,
         metadata: { title: title.trim(), artist: artist.trim(), album: album.trim() || null },
-        lyrics: { mode, text: mode === "text" ? text : null, lrc: mode === "lrc" ? lrc : null },
+        lyrics: {
+          mode,
+          text: mode === "text" ? text : null,
+          lrc: mode === "lrc" ? lrc : null,
+          source: mode === "text" || mode === "lrc" ? lyricsSource : null,
+        },
       });
       removeFromStudio(path);
       void refreshStudio();
@@ -210,7 +222,17 @@ function ImportItem({ path }: { path: string }) {
             ] as [StudioLyricsMode, string][]
           ).map(([v, label]) => (
             <label key={v} class="radio">
-              <input type="radio" name={id("mode")} value={v} checked={mode === v} onChange={() => setMode(v)} /> {label}
+              <input
+                type="radio"
+                name={id("mode")}
+                value={v}
+                checked={mode === v}
+                onChange={() => {
+                  setMode(v);
+                  setLyricsSource(null);
+                }}
+              />{" "}
+              {label}
             </label>
           ))}
           {mode === "text" && (
@@ -224,7 +246,10 @@ function ImportItem({ path }: { path: string }) {
                 aria-label="Choose an .lrc file"
                 onChange={(e) => {
                   const f = (e.currentTarget as HTMLInputElement).files?.[0];
-                  if (f) void f.text().then(setLrc);
+                  if (f) {
+                    setLyricsSource(null);
+                    void f.text().then(setLrc);
+                  }
                 }}
               />
               {lrc && <pre class="studio__lrc">{lrc.slice(0, 400)}{lrc.length > 400 ? "…" : ""}</pre>}
@@ -246,12 +271,12 @@ function ImportItem({ path }: { path: string }) {
                     {r.duration_seconds ? ` (${formatTime(r.duration_seconds)})` : ""}: {(r.plain ?? r.synced_lrc ?? "").split("\n")[0]}…
                   </span>
                   {r.synced_lrc && (
-                    <button type="button" class="button button--small" onClick={() => { setMode("lrc"); setLrc(r.synced_lrc!); }}>
+                    <button type="button" class="button button--small" onClick={() => { setMode("lrc"); setLrc(r.synced_lrc!); setLyricsSource(`online:${r.service}`); }}>
                       Use timed lyrics
                     </button>
                   )}
                   {r.plain && (
-                    <button type="button" class="button button--small" onClick={() => { setMode("text"); setText(r.plain!); }}>
+                    <button type="button" class="button button--small" onClick={() => { setMode("text"); setText(r.plain!); setLyricsSource(`online:${r.service}`); }}>
                       Use text
                     </button>
                   )}

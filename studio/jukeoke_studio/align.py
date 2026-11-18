@@ -238,23 +238,27 @@ class AcousticModel:
 
     def __init__(self, model_name: str = DEFAULT_MODEL, *, models_dir: str | Path | None = None,
                  device: str | None = None, allow_download: bool = False):
+        """Loads ``model_name`` from ``<models_dir>/hf`` (Hugging Face cache layout, the
+        pinned commit of ``modelzoo/hfmodels.py``). The snapshot *directory* is handed to
+        transformers, so nothing resolves a name or touches the network; a missing file
+        raises ``ModelsMissing`` unless ``allow_download``."""
         import json
 
         import torch
-        from huggingface_hub import hf_hub_download
         from transformers import AutoModelForCTC
+
+        from .modelzoo import hfmodels
 
         self.torch = torch
         self.name = model_name
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        cache = str(Path(models_dir) / "hf") if models_dir else None
-        kw = {"cache_dir": cache, "local_files_only": not allow_download}
-        rev = MODEL_INFO.get(model_name, {}).get("revision")
-        if rev:
-            kw["revision"] = rev
-        self.model = AutoModelForCTC.from_pretrained(model_name, **kw).to(self.device).eval()
+        spec = hfmodels.get(model_name)
+        self.spec = spec
+        snap = hfmodels.ensure(spec, models_dir, allow_download=allow_download)
+        self.path = snap
+        self.model = AutoModelForCTC.from_pretrained(str(snap), local_files_only=True).to(self.device).eval()
         # Vocabulary: token string -> id. Blank is the pad token for HF CTC models.
-        with open(hf_hub_download(model_name, "vocab.json", **kw), encoding="utf-8") as f:
+        with open(snap / "vocab.json", encoding="utf-8") as f:
             vocab = json.load(f)
         self.vocab: dict[str, int] = {k: int(v) for k, v in vocab.items()}
         self.blank_id = int(self.model.config.pad_token_id)
@@ -264,14 +268,14 @@ class AcousticModel:
                            if len(k) == 1 and k != "|" and v != self.blank_id}
         # Whether the model was trained on zero-mean unit-variance input.
         try:
-            with open(hf_hub_download(model_name, "preprocessor_config.json", **kw), encoding="utf-8") as f:
+            with open(snap / "preprocessor_config.json", encoding="utf-8") as f:
                 self.normalise = bool(json.load(f).get("do_normalize", True))
         except Exception:  # noqa: BLE001
             self.normalise = True
         log.info("alignment model %s on %s (normalise=%s)", model_name, self.device, self.normalise)
 
     def log_probs(self, x16: np.ndarray, *, chunk_s: float = 30.0, context_s: float = 2.0,
-                  norm: str = "global") -> np.ndarray:
+                  norm: str = "global", hooks=None) -> np.ndarray:
         """Frame log-probabilities, shape (n_frames, vocab), n_frames = len(x)//320.
 
         ``norm='global'`` standardises with statistics of the louder half of the song,
@@ -314,6 +318,8 @@ class AcousticModel:
                 if len(got) < take:  # numerical edge: pad with the last frame
                     got = np.concatenate([got, np.repeat(got[-1:], take - len(got), 0)])
                 out[f0:f1] = got
+                if hooks is not None:  # progress + cooperative cancellation
+                    hooks.progress(f1 / n_frames)
         return out
 
 
@@ -599,6 +605,8 @@ class AlignResult:
     warnings: list[str] = field(default_factory=list)
     seconds: dict = field(default_factory=dict)
     constraint_level: str = "none"
+    #: User anchors that could not be honoured (0-based line numbers); the others hold.
+    dropped_anchors: list[int] = field(default_factory=list)
 
 
 def _robust_peak_db(levels: np.ndarray) -> float:
@@ -619,7 +627,7 @@ class Aligner:
     def align(self, vocal: np.ndarray, sr: int, lyrics: Lyrics, *,
               anchors: list[Anchor] | None = None, use_line_times: bool = True,
               transcript: list[TranscriptWord] | None = None,
-              log_probs: np.ndarray | None = None) -> AlignResult:
+              log_probs: np.ndarray | None = None, hooks=None) -> AlignResult:
         """Align ``lyrics`` to the lead vocal ``vocal`` (float, any rate, mono or stereo).
 
         ``anchors``: hard line-start constraints. ``use_line_times``: use line times
@@ -630,7 +638,7 @@ class Aligner:
         t0 = time.perf_counter()
         x16 = to_model_input(vocal, sr)
         duration = len(x16) / MODEL_SR
-        lp = log_probs if log_probs is not None else self.am.log_probs(x16, norm=cfg.norm)
+        lp = log_probs if log_probs is not None else self.am.log_probs(x16, norm=cfg.norm, hooks=hooks)
         t1 = time.perf_counter()
         levels = frame_levels_db(x16, lp.shape[0])
         res = align_with_log_probs(lp, levels, lyrics, vocab_ids=self.am.letter_ids,
@@ -643,7 +651,8 @@ class Aligner:
         return res
 
     def realign(self, vocal: np.ndarray, sr: int, text: str, anchors: list[dict] | None = None,
-                language: str = "en", source: str = "user_text") -> AlignResult:
+                language: str = "en", source: str = "user_text", lrc: bool = False,
+                hooks=None) -> AlignResult:
         """Protocol ``realign``: corrected text + user anchors ([{"line", "start"}]).
 
         ``line`` is taken as a 0-based index into the lines of ``text`` after
@@ -651,12 +660,14 @@ class Aligner:
         ``lines[]`` in the lyrics JSON the app holds. (STUDIO_PROTOCOL.md section 8 does
         not say which base; this is the reading used here.)
         """
-        from .lyrics import from_text
+        from .lyrics import from_lrc, from_text
 
-        lyr = from_text(text, source=source, language=language)
-        lyr.checked = True
+        lyr = (from_lrc(text, source=source, language=language) if lrc
+               else from_text(text, source=source, language=language))
+        lyr.source = source  # what the app says the text came from (online:lrclib, ...)
+        lyr.checked = True   # a person has just reviewed it in the sync editor
         anc = [Anchor(int(a["line"]), float(a["start"])) for a in (anchors or [])]
-        return self.align(vocal, sr, lyr, anchors=anc, use_line_times=lyr.synced)
+        return self.align(vocal, sr, lyr, anchors=anc, use_line_times=lyr.synced, hooks=hooks)
 
 
 def _build_tokens(lyrics: Lyrics, vocab_ids: dict[str, int]):
@@ -686,6 +697,35 @@ def _first_token_of_line(owners: list[_Tok], n_lines: int) -> list[int | None]:
         if first[o.line] is None:
             first[o.line] = k
     return first
+
+
+def _min_frames(tokens: np.ndarray) -> int:
+    """Fewest CTC frames that can hold ``tokens``: one per token plus a blank between
+    two equal neighbours."""
+    if len(tokens) == 0:
+        return 0
+    return int(len(tokens) + np.count_nonzero(tokens[1:] == tokens[:-1]))
+
+
+def _feasible_anchors(hard: list[Anchor], tokens: np.ndarray, first_tok: list[int | None],
+                      T: int, fps: float) -> tuple[list[Anchor], list[int]]:
+    """Greedy, in line order: keep an anchor when the letters before it still fit
+    between the previous kept anchor and it, and the letters from it on still fit in the
+    rest of the song. Returns (kept anchors, dropped line numbers)."""
+    kept: list[Anchor] = []
+    dropped: list[int] = []
+    prev_f, prev_k = 0, 0
+    for a in hard:
+        k = first_tok[a.line]
+        af = min(T - 1, max(0, int(round(a.start * fps))))
+        fits_before = _min_frames(tokens[prev_k:k]) <= af - prev_f
+        fits_after = _min_frames(tokens[k:]) <= T - af
+        if k is not None and k >= prev_k and fits_before and fits_after:
+            kept.append(a)
+            prev_f, prev_k = af, k
+        else:
+            dropped.append(a.line)
+    return kept, dropped
 
 
 def align_with_log_probs(lp: np.ndarray, levels_db: np.ndarray, lyrics: Lyrics, *,
@@ -731,14 +771,28 @@ def align_with_log_probs(lp: np.ndarray, levels_db: np.ndarray, lyrics: Lyrics, 
         return int(math.floor((t_s - shift) * fps))
 
     hard: list[Anchor] = []
+    #: Lines whose anchors are not used before the alignment starts; reported in
+    #: ``dropped_anchors`` with the ones dropped later (verifier finding: they used to be
+    #: left out, so the app believed an ignored anchor held).
+    pre_dropped: list[int] = []
     for a in sorted(anchors or [], key=lambda a: a.line):
         if not (0 <= a.line < n_lines) or first_tok[a.line] is None:
             warnings.append(f"anchor for line {a.line} ignored (no such line or nothing to align)")
-            continue
-        if hard and a.start <= hard[-1].start:
-            warnings.append(f"anchor for line {a.line} ignored (not after the previous anchor)")
+            pre_dropped.append(a.line)
             continue
         hard.append(a)
+    if any(b.start <= a.start for a, b in zip(hard, hard[1:])):
+        # Anchors out of time order cannot all hold. Choose with the documented greedy
+        # rule (line order; an anchor is kept when the letters before it fit after the
+        # previous *kept* anchor and the letters from it on fit in the rest of the song).
+        # Verifier finding: comparing each anchor with the previous *given* one let an
+        # impossible anchor (line 1 at the song's end) hide a good one (line 2), which
+        # was then silently not honoured.
+        hard, out_of_order = _feasible_anchors(hard, tokens, first_tok, T, fps)
+        for li in out_of_order:
+            warnings.append(f"anchor for line {li} dropped: it is not after the anchor of an "
+                            f"earlier line, or the letters around it do not fit")
+        pre_dropped += out_of_order
 
     def build(level: str):
         lo = np.zeros(len(tokens), np.int64)
@@ -826,14 +880,38 @@ def align_with_log_probs(lp: np.ndarray, levels_db: np.ndarray, lyrics: Lyrics, 
             used = level
             break
         warnings.append(f"alignment with '{level}' constraints was impossible; relaxing")
+    dropped: list[int] = []
+    if path is None and len(tokens) and hard:
+        # The user's anchors cannot all hold (for example two lines anchored closer
+        # together than their letters can be sung). Keep as many as possible, in line
+        # order, dropping only those that make the alignment impossible (verifier finding:
+        # this used to drop every anchor).
+        kept, dropped = _feasible_anchors(hard, tokens, first_tok, T, fps)
+        for _ in range(len(hard) + 1):
+            hard = kept
+            lo, hi, bhi = build("none")
+            path = ctc_viterbi(lp, tokens, blank_id, sep_id=sep_id, lo=lo, hi=hi,
+                               token_penalty=penalty, blank_hi=bhi, blank_cost=blank_cost)
+            if path is not None or not kept:
+                break
+            # The counting test passed but the trellis did not: drop the last kept
+            # anchor and try again (never observed; a safety net).
+            dropped.append(kept[-1].line)
+            kept = kept[:-1]
+        used = "none"
+        for li in sorted(dropped):
+            warnings.append(f"anchor for line {li} dropped: the line cannot start there with the "
+                            f"other anchors and the number of letters around it")
     if path is None and len(tokens):
         # Last resort: no constraints and no silence penalty.
         path = ctc_viterbi(lp, tokens, blank_id, sep_id=sep_id)
         used = "none"
+        if hard:
+            dropped = sorted(set(dropped) | {a.line for a in hard})
+            warnings.append("anchors could not be honoured")
         hard = []
         if path is None:
             raise RuntimeError("The lyrics are longer than the song can hold (too many letters).")
-        warnings.append("anchors could not be honoured")
 
     # ---- frames of every token ------------------------------------------------------------
     N = len(tokens)
@@ -991,7 +1069,8 @@ def align_with_log_probs(lp: np.ndarray, levels_db: np.ndarray, lyrics: Lyrics, 
                       "constraints": used},
         "lines": out_lines,
     }
-    return AlignResult(lyrics=doc, warnings=warnings, constraint_level=used)
+    return AlignResult(lyrics=doc, warnings=warnings, constraint_level=used,
+                       dropped_anchors=sorted(set(dropped) | set(pre_dropped)))
 
 
 def _disagreeing_windows(path: np.ndarray, tok_word: np.ndarray,
@@ -1173,7 +1252,7 @@ def _set_line_start(lines: list[dict], li: int, start: float) -> None:
 def align_stage(aligner: Aligner, vocal: np.ndarray, sr: int, lyrics: Lyrics, *,
                 transcriber=None, transcript: list[TranscriptWord] | None = None,
                 anchors: list[Anchor] | None = None,
-                coarse_anchors: bool = False) -> AlignResult:
+                coarse_anchors: bool = False, hooks=None) -> AlignResult:
     """Pipeline step 4 as the job runner calls it.
 
     * Lyrics with line times (LRC, SYLT, online) are aligned within their line windows.
@@ -1186,8 +1265,9 @@ def align_stage(aligner: Aligner, vocal: np.ndarray, sr: int, lyrics: Lyrics, *,
     """
     if coarse_anchors and transcript is None and not lyrics.synced and transcriber is not None:
         transcript, _ = transcriber.transcribe_words(vocal, sr, lyrics.language)
+    kw = {"hooks": hooks} if hooks is not None else {}
     return aligner.align(vocal, sr, lyrics, anchors=anchors,
-                         transcript=transcript if coarse_anchors else None)
+                         transcript=transcript if coarse_anchors else None, **kw)
 
 
 def lyrics_from_plain(text: str, language: str = "en", source: str = "user_text") -> Lyrics:

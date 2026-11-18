@@ -4,7 +4,7 @@ Read this first in every session. Then DECISIONS.md, then docs/ARCHITECTURE.md.
 
 ## How to resume
 
-- Project root: `C:\Users\benri\Downloads\jukebox-karaoke-work-order\jukebox-karaoke-work-order\jukeoke`
+- Project root: the `jukeoke` folder next to `WORK_ORDER.md` (on the build PC it sits under `%USERPROFILE%\Downloads\jukebox-karaoke-work-order\jukebox-karaoke-work-order\`).
   (work order: `..\WORK_ORDER.md`; heavy local state: `..\jukeoke-build\`).
 - In Git Bash: `source scripts/devenv.sh` puts cargo, gcc (WinLibs), uv and gh on PATH.
 - Studio dev venv: `$JK_BUILD/studio-venv/Scripts/python.exe` (Python 3.12, torch 2.14.1+cu130).
@@ -27,7 +27,25 @@ Read this first in every session. Then DECISIONS.md, then docs/ARCHITECTURE.md.
 
 - 2026-11-17 Separation (commit 512126d), verified: default "full" preset (anvuew ft1 vocals GPL-3.0, anvuew karaoke GPL-3.0, SYH99999 drums Apache-2.0); 4:04 song ~155 s, 4.1 GB VRAM; stems sum back bit-exactly; fp32 only. docs/benchmarks/separation.md, MODELS.md.
 - 2026-11-17 Fixes (commit de51f7e): export gain notice in the UI; jk-format seek fix (symphonia stale parser, 1336 seeks bit-exact); DECISIONS D-57..D-121, ARCHITECTURE and APP_API synced with the code.
-- 2026-11-17 Studio pipeline + protocol server (NOT committed; tested by the stream, awaiting the workflow's verifiers): `python -I -m jukeoke_studio serve` implements docs/STUDIO_PROTOCOL.md (additions in its section 11) and `make` runs one song; verifier findings fixed (no silent downloads, 48 kHz single conversion each way, real `permissive` preset, .th re-hash before unpickling, realign drops only infeasible anchors, auto-lyrics fall-through, `lyrics.source`); portable caches into `<root>/Settings/cache` (Studio + supervisor `--root`/env); DECISIONS D-140..D-158. Evidence: studio pytest 207 passed (CPU, stand-in models over a real pipe), GPU tests on a CC BY 30 s excerpt (every song `jukeoke-cli verify --strict`), Rust studio_supervisor 15 passed incl. the real Studio in dev mode; 4:00.6 CC BY song 193 s (lyrics given) / 229 s (transcribed), per stage in D-158; per-user folders unchanged during both runs. Re-run 2026-11-17 20:12-20:25 on the unchanged code: CPU pytest 208 passed / 1 skipped (88.6 s), `pytest -m gpu` 24 passed (212 s), Rust studio_supervisor 15 passed (real Studio start + probe 8.9 s), both 4-minute songs `verify --strict` PASS. Open for other streams: jk-format verify and SONG_FORMAT 4.1 / APP_API / UI `StudioPreset` must learn the preset value `permissive`.
+- 2026-11-17 Studio pipeline + protocol server (NOT committed; tested by the stream, awaiting the workflow's verifiers): `python -I -m jukeoke_studio serve` implements docs/STUDIO_PROTOCOL.md (additions in its section 11) and `make` runs one song; verifier findings fixed (no silent downloads, 48 kHz single conversion each way, real `permissive` preset, .th re-hash before unpickling, realign drops only infeasible anchors, auto-lyrics fall-through, `lyrics.source`); portable caches into `<root>/Settings/cache` (Studio + supervisor `--root`/env); DECISIONS D-140..D-158. Evidence: studio pytest 207 passed (CPU, stand-in models over a real pipe), GPU tests on a CC BY 30 s excerpt (every song `jukeoke-cli verify --strict`), Rust studio_supervisor 15 passed incl. the real Studio in dev mode; 4:00.6 CC BY song 193 s (lyrics given) / 229 s (transcribed), per stage in D-158; per-user folders unchanged during both runs. Re-run 2026-11-17 20:12-20:25 on the unchanged code: CPU pytest 208 passed / 1 skipped (88.6 s), `pytest -m gpu` 24 passed (212 s), Rust studio_supervisor 15 passed (real Studio start + probe 8.9 s), both 4-minute songs `verify --strict` PASS. The preset value `permissive` in jk-format verify, SONG_FORMAT 4.1, APP_API and the UI: done by the end-to-end stream (D-161).
+
+- 2026-11-17 End to end through the real app (NOT committed; docs/benchmarks/end-to-end.md, evidence in `$JK_BUILD/e2e/`):
+  - Setup: release exe + rebuilt Studio runtime + default models on a 4.8-layout stick (`$JK_BUILD/e2e-stick`, 8.79 GB with 3 songs), driven over WebView2 DevTools (`app/ui/scripts/real-app-e2e.mjs`), null device, master 0.
+  - Queue: 3 CC songs (48 kHz FLAC, float WAV, MP4/AAC) and a corrupt file. The corrupt file failed with a plain message and the queue went on. All 3 songs pass `verify --strict` (0 warnings).
+  - Speed: 4-minute songs 174.6 / 175.1 s; Crowdpleaser (3:12.8) 131.0 s, 153.3 s on a repeat that gave bit-identical output.
+  - Word onsets vs JamendoLyrics: median 0.045 / 0.033 s, worst 0.20 s, 100 % within 0.3 s.
+  - Renders at 0/+2/-5: exact length, expected chroma shift.
+  - Residual on the ccMixter song: lead -6.0 dB with backing on, -20.8 dB off; that song is one of the benchmark's hardest.
+  - Ticker: 0 wrong letters. Lookahead on the rap song is 1.46 s (font at its 0.6x floor; WO 4.4 wants 2 s; owner decision).
+  - Weak computers: GPU hidden, Studio folder removed, a python.exe that hangs, one that crashes. In each, the window is ready in 0.6 s, the song plays and a plain reason is shown (64.6 s for the hang, at most 0.9 s otherwise).
+  - Audit: nothing from the app or Studio in per-user folders. Exceptions: the D-41 MuiCache values, and Direct3D/NVIDIA shader-cache writes that could not be attributed.
+  - Fixed: the UI Studio screen stuck on "checking" (D-159); the corrupt-file message (D-160); the `permissive` preset in verify, docs and UI (D-161).
+- 2026-11-17 21:40-22:10 Independent verifier, Studio pipeline + protocol + end to end (NOT committed; evidence in `$JK_BUILD/verify-studio/`):
+  - Studio CPU pytest: 208 passed / 1 skipped before the fixes, 209 after.
+  - GPU run of the stick's packaged runtime over the protocol: 0 non-JSON stdout lines in 357; cancel in separation answered in 1.13 s with no temporary files left; the corrupt file failed `decode_failed` and the next job started at once; transcribed lyrics were saved as `transcribed`, `checked: false`; an empty models folder gave `models_missing`, created nothing, and an HTTP(S) proxy trap saw 0 connections over the whole run.
+  - Feel (Stripped) 48 kHz: 188.9 s; `verify --strict` PASS with 0 warnings; provenance model hashes equal the bytes on disk; resampling 48->44.1 once and back three times; output bit-identical to the e2e song.
+  - Fixed: VRAM held after a failed or cancelled job (D-163), realign anchor dropping (D-164), the UI's online-lyrics label (D-165), two small races (D-166). UI vitest 122 passed, tsc clean.
+  - Stale after these fixes: `$JK_BUILD/e2e-stick/Windows/Studio` (built before them) and its `Jukeoke.exe`. Rebuild both before the next stick or dist build. The Rust studio_supervisor tests were not re-run by the verifier (no Rust code changed).
 
 ## In flight
 
