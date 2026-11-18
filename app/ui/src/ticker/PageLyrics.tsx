@@ -25,7 +25,10 @@ export interface PageLyricsProps {
   pace: LyricsMotion;
   /** settings.ui.show_next_line. */
   showNext: boolean;
-  colors: { sung: string; upcoming: string };
+  /** settings.ui.show_marker: the progress needle on the wipe edge (page.ts point 6; default true). */
+  showMarker?: boolean;
+  /** colors.marker: the needle's colour (the scrolling ticker's marker colour). */
+  colors: { sung: string; upcoming: string; marker?: string };
 }
 
 function windowMinimisedSource(): MinimisedSource | undefined {
@@ -56,13 +59,23 @@ export interface PageProbe {
   /** The sung word's start and end (s). */
   sungStart: number | null;
   sungEnd: number | null;
+  /** The progress needle (page.ts point 6): its x and row, or null when it is hidden (rests). */
+  needleX: number | null;
+  needleRow: number | null;
+  /** The needle's shaft, top and bottom (CSS px), or null. */
+  needleTop: number | null;
+  needleBottom: number | null;
 }
 
 export function probePage(layout: PageLayout, t: number): PageProbe {
   const f = pageFrame(layout, t);
   const line = f.current >= 0 ? f.current : currentIndexAt(layout, t);
   const L = line >= 0 ? layout.lines[line] : null;
-  if (!L) return { t, line: -1, text: null, wipe: 0, edgeX: null, edgeWord: -1, wordAtEdge: null, sungWord: -1, wordSung: null, sungStart: null, sungEnd: null };
+  const needleX = f.needle ? f.needle.x : null;
+  const needleRow = f.needle ? f.needle.row : null;
+  const needleTop = f.needle ? f.needle.top : null;
+  const needleBottom = f.needle ? f.needle.bottom : null;
+  if (!L) return { t, line: -1, text: null, wipe: 0, edgeX: null, edgeWord: -1, wordAtEdge: null, sungWord: -1, wordSung: null, sungStart: null, sungEnd: null, needleX, needleRow, needleTop, needleBottom };
   const wipe = L.motion.at(t);
   const word = (k: number) =>
     L.glyphs
@@ -79,10 +92,10 @@ export function probePage(layout: PageLayout, t: number): PageProbe {
   let edgeX: number | null = null;
   for (const row of L.rows) if (wipe >= row.u0 && wipe <= row.u1) edgeX = row.left + (wipe - row.u0);
   const sw = sungWord >= 0 ? L.words[sungWord] : null;
-  return { t, line, text: L.text, wipe, edgeX, edgeWord, wordAtEdge: edgeWord >= 0 ? word(edgeWord) : null, sungWord, wordSung: sw ? word(sungWord) : null, sungStart: sw ? sw.start : null, sungEnd: sw ? sw.end : null };
+  return { t, line, text: L.text, wipe, edgeX, edgeWord, wordAtEdge: edgeWord >= 0 ? word(edgeWord) : null, sungWord, wordSung: sw ? word(sungWord) : null, sungStart: sw ? sw.start : null, sungEnd: sw ? sw.end : null, needleX, needleRow, needleTop, needleBottom };
 }
 
-export function PageLyrics({ lyrics, offsetS, textSize, pace, showNext, colors }: PageLyricsProps) {
+export function PageLyrics({ lyrics, offsetS, textSize, pace, showNext, showMarker = true, colors }: PageLyricsProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<PageRenderer | null>(null);
@@ -182,6 +195,13 @@ export function PageLyrics({ lyrics, offsetS, textSize, pace, showNext, colors }
     return () => fl.detach();
   }, []);
 
+  // The progress needle: on or off and its colour need no new layout or bitmaps, just a frame.
+  const marker = showMarker ? (colors.marker ?? "#7dffd8") : null;
+  useEffect(() => {
+    rendererRef.current?.setMarker(marker);
+    loopRef.current?.kick();
+  }, [marker]);
+
   useEffect(() => {
     const r = rendererRef.current;
     if (!r || !layout || !style) return;
@@ -216,6 +236,8 @@ export function PageLyrics({ lyrics, offsetS, textSize, pace, showNext, colors }
           text: L.text,
           px: L.px,
           rows: L.rows.length,
+          rowBoxes: L.rows.map((rw) => ({ left: rw.left, top: L.currentTop + rw.top, u0: rw.u0, u1: rw.u1 })),
+          cx: L.cx,
           shrunk: L.shrunk,
           wrapped: L.wrapped,
           start: L.start,
@@ -239,7 +261,21 @@ export function PageLyrics({ lyrics, offsetS, textSize, pace, showNext, colors }
         const x = L ? L.motion.at(t) : NaN;
         let edge = NaN;
         if (L) for (const row of L.rows) if (x >= row.u0 && x <= row.u1) edge = row.left + (x - row.u0);
-        trace.frames.push({ now, t, x, offset: edge, line: f.current });
+        // The wipe edge on screen from the line's motion, clamped to the text (the run-up
+        // and run-out lie outside it) and scaled with the line while it moves into place:
+        // where the needle should be, for the real-app check.
+        const cur = L ? f.items.find((it) => it.line === f.current && (it.role === "current" || it.role === "entering")) : undefined;
+        let clamped = NaN;
+        if (L && cur) {
+          let rx = NaN;
+          for (let k = L.rows.length - 1; k >= 0 && Number.isNaN(rx); k--) {
+            const row = L.rows[k];
+            if (x > row.u0 || k === 0) rx = row.left + Math.min(Math.max(x - row.u0, 0), row.u1 - row.u0);
+          }
+          clamped = L.cx + (rx - L.cx) * cur.scale;
+        }
+        const nd = r.lastNeedle;
+        trace.frames.push({ now, t, x, offset: edge, edge: clamped, line: f.current, needle: nd ? nd.x : NaN, split: nd ? nd.split : NaN, needleRow: f.needle ? f.needle.row : -1, scale: cur?.scale });
       }
       const li = lineIndexAt(lyrics, t);
       if (li !== lineRef.current) {

@@ -53,6 +53,14 @@ export interface TickerFrame {
   offset: number;
   /** Page display: the line in the current slot (-1 in rests). */
   line?: number;
+  /** Page display: the progress needle's x as drawn (NaN when none was drawn), and the x where its row was split between the sung and the upcoming colour (NaN when the row was drawn in one colour). */
+  needle?: number;
+  split?: number;
+  /** Page display: the needle's row (-1 without a needle) and the scale of the line in the current slot (1 once it has settled). */
+  needleRow?: number;
+  scale?: number;
+  /** Page display: the wipe edge's x from the current line's motion, clamped to its text and scaled with it (NaN without a line in the slot). */
+  edge?: number;
 }
 
 /** Frame trace for the real-app scripts; off (and free) unless a script starts it. */

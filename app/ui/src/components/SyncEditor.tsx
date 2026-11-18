@@ -366,7 +366,7 @@ export function SyncEditor() {
           {ui.lyrics_display === "scroll" ? (
             <Ticker lyrics={d.lyrics} offsetS={(st.lyrics_offset_ms + devOff) / 1000} textSize={Math.min(ui.lyrics_text_size, 44)} marker={ui.marker_position} pace={ui.lyrics_motion ?? "word"} colors={ui.colors} />
           ) : (
-            <PageLyrics lyrics={d.lyrics} offsetS={(st.lyrics_offset_ms + devOff) / 1000} textSize={Math.min(ui.lyrics_text_size, 44)} pace={ui.lyrics_motion ?? "word"} showNext={ui.show_next_line ?? true} colors={ui.colors} />
+            <PageLyrics lyrics={d.lyrics} offsetS={(st.lyrics_offset_ms + devOff) / 1000} textSize={Math.min(ui.lyrics_text_size, 44)} pace={ui.lyrics_motion ?? "word"} showNext={ui.show_next_line ?? true} showMarker={ui.show_marker ?? true} colors={ui.colors} />
           )}
         </div>
         <Offsets />

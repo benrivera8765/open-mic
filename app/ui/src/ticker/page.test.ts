@@ -19,7 +19,12 @@
 //       the line above it is current later than that (reported, with the reason);
 //   (d) nothing outside the area, on frames across the whole song (fit, shrink or wrap);
 //   (e) a lead-in bar only after a pause, draining monotonically, gone at the first word;
-//   (f) line changes start within 250 ms of the previous line's last word.
+//   (f) line changes start within 250 ms of the previous line's last word;
+//   (n) the progress needle (page.ts point 6, the owner's request of 18 Nov 2026 to bring
+//       back the bar marking where the song is): on the gold/white boundary on every frame
+//       (within 0.5 px), on the row being sung, never moving left on a row, waiting at the
+//       first letter during a lead-in, hidden in rests, inside the area; and, through the
+//       renderer with a recording canvas, drawn exactly where the row is split.
 // (g) is ticker.test.ts itself, which this change does not touch.
 import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -43,7 +48,7 @@ import {
   sidePad,
   TRANSITION_S,
 } from "./page";
-import { lineAsTicker, type PageVerifyReport, SWITCH_MAX_S, verifyPage } from "./pageverify";
+import { lineAsTicker, NEEDLE_TOLERANCE_PX, type PageVerifyReport, SWITCH_MAX_S, verifyPage } from "./pageverify";
 import { frameSmoothness } from "./verify";
 import { WORD_TOLERANCE_S } from "./wordmotion";
 import { denseRapLyrics, e2eSongs, e2eSongsDir, fixtureSongs, shimMeasure, stressLyrics } from "./testsongs-node";
@@ -95,7 +100,7 @@ describe("page display: whole songs in the skin's lyrics area (owner's request, 
         const r = verifyPage(layout);
         const row: Row = { set: s.name, window: `${win.w}x${win.h}`, r, layout };
         rows.push(row);
-        expect(r.firstProblems).toEqual([]);
+        expect(r.firstProblems.map(redact)).toEqual([]); // redacted: no lyrics in a failure message
         expect(r.sungSamples).toBeGreaterThan(0);
         // (a)
         expect(r.onsetMisses).toBe(0);
@@ -123,6 +128,11 @@ describe("page display: whole songs in the skin's lyrics area (owner's request, 
         expect(r.leadInProblems).toBe(0);
         expect(r.switchProblems).toBe(0);
         expect(r.maxSwitchMs).toBeLessThanOrEqual(SWITCH_MAX_S * 1000 + 1e-6);
+        // (n) the progress needle on every frame checked.
+        expect(r.needleProblems).toBe(0);
+        expect(r.needleFrames).toBeGreaterThan(0);
+        expect(r.needleMaxDxPx).toBeLessThanOrEqual(NEEDLE_TOLERANCE_PX);
+        if (r.leadIns > 0) expect(r.needleParkedFrames).toBeGreaterThan(0);
         // The letter pace keeps its own contract (letter in its cell, never backwards).
         if (win.w === 1440) {
           const lr = verifyPage(layoutFor(s.lyrics, win, "letter"));
@@ -131,6 +141,7 @@ describe("page display: whole songs in the skin's lyrics area (owner's request, 
           expect(lr.backwards).toBe(0);
           expect(lr.overflowFrames).toBe(0);
           expect(lr.lookaheadMisses).toBe(0);
+          expect(lr.needleProblems).toBe(0);
         }
       });
     }
@@ -146,7 +157,7 @@ describe("page display: whole songs in the skin's lyrics area (owner's request, 
       const r = x.r;
       const ex = r.leadExceptions.length ? `${r.leadExceptions.length} under ${LOOKAHEAD_S} s (min ${r.minLeadS.toFixed(2)} s)` : "none";
       const l = x.letter ? ` | letter pace: wrong letters ${x.letter.wrongLetter}, >25 % ${pct(x.letter.smooth.bigStepShare)}, max change ${x.letter.smooth.maxDvEm.toFixed(2)} em/s` : "";
-      return `${x.set.padEnd(46)} ${x.window.padEnd(10)} lines ${String(r.lines).padStart(3)}  font ${x.layout.fontPx.toFixed(1)} px x${x.layout.fontScale.toFixed(2)}, shrunk ${r.shrunkLines}, wrapped ${r.wrappedLines}, smallest x${x.layout.minLineScale.toFixed(2)}  onset <= ${r.onsetMaxMs!.toFixed(1)} ms  on word ${pct(r.onWord!)}  min speed ${r.minSungSpeedEm!.toFixed(2)} em/s  lead min ${r.minLeadS === Infinity ? "n/a" : r.minLeadS.toFixed(2) + " s"}, exceptions ${ex}  lead-ins ${r.leadIns}  switch <= ${r.maxSwitchMs.toFixed(0)} ms  frames ${r.frames}, overflow ${r.overflowFrames}  wipe: >25 % ${pct(r.smooth.bigStepShare)} of ${r.smooth.frames}, max change ${r.smooth.maxDvEm.toFixed(2)} em/s${l}`;
+      return `${x.set.padEnd(46)} ${x.window.padEnd(10)} lines ${String(r.lines).padStart(3)}  font ${x.layout.fontPx.toFixed(1)} px x${x.layout.fontScale.toFixed(2)}, shrunk ${r.shrunkLines}, wrapped ${r.wrappedLines}, smallest x${x.layout.minLineScale.toFixed(2)}  onset <= ${r.onsetMaxMs!.toFixed(1)} ms  on word ${pct(r.onWord!)}  min speed ${r.minSungSpeedEm!.toFixed(2)} em/s  lead min ${r.minLeadS === Infinity ? "n/a" : r.minLeadS.toFixed(2) + " s"}, exceptions ${ex}  lead-ins ${r.leadIns}  switch <= ${r.maxSwitchMs.toFixed(0)} ms  frames ${r.frames}, overflow ${r.overflowFrames}  needle: ${r.needleFrames} frames, off the edge by <= ${r.needleMaxDxPx.toFixed(3)} px, ${r.needleParkedFrames} parked in lead-ins, problems ${r.needleProblems}  wipe: >25 % ${pct(r.smooth.bigStepShare)} of ${r.smooth.frames}, max change ${r.smooth.maxDvEm.toFixed(2)} em/s${l}`;
     });
     const exceptions = rows
       .filter((x) => x.window === "1440x900")
@@ -442,6 +453,7 @@ describe("page display: random songs (zero-length and held letters, overlaps, on
             r.leadInProblems ||
             r.switchProblems ||
             r.lookaheadMisses ||
+            r.needleProblems ||
             (pace === "word" && (r.onsetMisses || r.stopped));
           if (fail && bad.length < 5) bad.push(`seed ${seed} ${pace}: ${r.firstProblems.slice(0, 3).join(" | ")}`);
         }
@@ -463,7 +475,7 @@ describe("page display: random songs (zero-length and held letters, overlaps, on
             if (!it || (it.role !== "current" && it.role !== "entering")) unseen++;
           }
       // Lines are shown later than LOOKAHEAD_S without the preview (lookahead misses are the setting's cost).
-      const fail = unseen || r.backwards || r.wrongLetter || r.overflowFrames || r.hiddenFrames || r.leadInProblems || r.switchProblems || r.onsetMisses || r.stopped;
+      const fail = unseen || r.backwards || r.wrongLetter || r.overflowFrames || r.hiddenFrames || r.leadInProblems || r.switchProblems || r.onsetMisses || r.stopped || r.needleProblems;
       if (fail && bad.length < 5) bad.push(`seed ${seed}: unseen ${unseen}, ${r.firstProblems.slice(0, 2).join(" | ")}`);
     }
     expect(bad).toEqual([]);

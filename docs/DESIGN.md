@@ -123,7 +123,17 @@ lead-in bar). Long rests: the screen clears to the "Singing in 0:08" countdown i
 same lettering, and the line comes back 3 s before it is sung. Centred rather than
 left-aligned like the reference crops: the jukebox screen is a symmetric arch, short
 lines would leave its right half empty, and a centred line sits under the badge; the
-lead-in bar moves with the line's first letter. No marker in this display.
+lead-in bar moves with the line's first letter.
+
+**Added at the owner's request, 18 Nov 2026 (D-219): the progress needle on the wipe.**
+The scrolling ticker's marker needle (a slim solid shaft with a small triangular head, in
+the marker colour, default mint `#7dffd8`) comes back in the static display, riding the
+edge of the gold: it stands exactly on the gold/white boundary inside the letters, a
+little taller than the row of text (0.12 em above and below), with the letters' soft
+shadow so it reads on white. Before a line it waits at the first letter (beside the
+lead-in block); on a two-row line it moves to the second row when the gold does; at a line
+change it moves up with the next line; it is gone while the countdown is shown. Settings >
+Lyrics > "Show the progress bar" turns it off; "Marker" sets its colour.
 
 ## Badge
 
@@ -187,9 +197,10 @@ D-102 to D-111.
   pitch shifter); the app-wide key shortcuts act at once.
 - **Library**: title-strip cards in a chrome rack, 2 columns on a laptop, more on 4K,
   1 when narrow; a drawn record stands in for missing cover art.
-- **Stage marker** (scrolling ticker only): a slim solid needle with a small triangular
-  head in the marker colour, default mint `#7dffd8` (not a chrome needle with a pink
-  glow), so it stands out against the sung letters. Until D-218 the sung letters were
+- **Stage marker**: a slim solid needle with a small triangular head in the marker
+  colour, default mint `#7dffd8` (not a chrome needle with a pink glow), so it stands out
+  against the sung letters: fixed in the scrolling ticker, on the wipe edge in the static
+  display (D-219, same drawing, sized with the text). Until D-218 the sung letters were
   pink `#ff3d8b` and the upcoming ones cream `#f6efd9`; both displays now default to
   gold and white.
 - **Fonts**: Oswald (display: plates, labels, title strips), Atkinson Hyperlegible Next

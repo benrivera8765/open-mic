@@ -43,6 +43,17 @@
 //    rows, at PAGE_MIN_SCALE at the least) until the next display line is shown
 //    LOOKAHEAD_S ahead.
 //    The wipe runs on through the joined lines as through the words of one line.
+// 6. Progress needle (settings.ui.show_marker, the owner's request of 18 Nov 2026 to bring
+//    back "the bar ... that would mark the progress of where the song is"): the scrolling
+//    ticker's marker needle (renderer.ts `drawNeedle`, colour settings.ui.colors.marker)
+//    rides the wipe edge: its x is the gold/white boundary of the line in the current slot
+//    on every frame (`pageFrame(...).needle`), on the row being wiped, as tall as that row's
+//    band plus NEEDLE_OVER_EM above and below. Before a line's first word it waits at the
+//    first letter (the wipe's run-up lies left of the text), after the last word at the
+//    end of the line; at a row break it jumps to the next row's start when the wipe enters
+//    that row; at a line change it moves with the next line as that line moves up into
+//    place (it is on the entering line from the change on). Rests with a countdown hide it:
+//    it fades out with the line before the rest and fades in with the line after it.
 //
 // Pure TypeScript with an injected `measure`, like layout.ts: the tests use fixed widths
 // and the lyrics face's width table, the renderer measures with Canvas 2D.
@@ -95,6 +106,16 @@ export const INK_PAD_EM = 0.3;
 export const BAR_W_EM = 0.7;
 export const BAR_GAP_EM = 0.35;
 export const CAP_EM = 0.7;
+/**
+ * The progress needle (point 6): the scrolling ticker's needle (3 px wide, a head 14 px
+ * wide and 8 px tall at the default 56 px text, renderer.ts) in em of the line's size, so
+ * it keeps that look at every size; it reaches NEEDLE_OVER_EM above and below the row's
+ * band. Head plus overshoot (0.27 em) stay inside the row's ink pad (INK_PAD_EM).
+ */
+export const NEEDLE_W_EM = 3 / 56;
+export const NEEDLE_HEAD_W_EM = 14 / 56;
+export const NEEDLE_HEAD_H_EM = 8 / 56;
+export const NEEDLE_OVER_EM = 0.12;
 /** Space kept clear at the left and right of the area (share of its width, plus INK_PAD_EM). */
 const SIDE_SHARE = 0.02;
 /** A line leaving before a rest rises by up to this much while it fades out, em. */
@@ -687,6 +708,23 @@ export interface PageCountdown {
   line: number;
 }
 
+/** The progress needle (point 6) on the line it rides. */
+export interface PageNeedle {
+  line: number;
+  /** The item it rides (current or entering; leaving only before a rest or at the end of the song). */
+  role: PageItem["role"];
+  /** Row it is on (`needleRow`) and how much of that row is sung (`wipeInRow`, CSS px at the line's size). */
+  row: number;
+  sung: number;
+  /** The gold/white boundary's x on screen, and the top and bottom of the needle's shaft (its head sits above `top`), CSS px. */
+  x: number;
+  top: number;
+  bottom: number;
+  /** The needle's size unit: the line's size times the item's scale, CSS px. */
+  px: number;
+  alpha: number;
+}
+
 export interface PageFrame {
   t: number;
   items: PageItem[];
@@ -694,6 +732,8 @@ export interface PageFrame {
   countdown: PageCountdown | null;
   /** Line in (or entering) the current slot, else -1. */
   current: number;
+  /** Where the wipe edge is (point 6); null in rests with a countdown and when nothing is on screen. */
+  needle: PageNeedle | null;
 }
 
 /** How line i looks at time t (null: not drawn). */
@@ -764,11 +804,54 @@ export function pageFrame(l: PageLayout, t: number): PageFrame {
     if (a > 0) countdown = { remaining: r.start - t, alpha: a, line: r.line };
     break;
   }
-  return { t, items, leadIn, countdown, current };
+  return { t, items, leadIn, countdown, current, needle: needleOf(l, items, current) };
 }
 
-/** Which row a reading-order position falls in, and how much of that row is sung. */
+/** How much of row r of `line` is sung at wipe position `wipe` (0 .. the row's width). */
 export function wipeInRow(line: PageLine, r: number, wipe: number): number {
   const row = line.rows[r];
   return Math.min(row.u1 - row.u0, Math.max(0, wipe - row.u0));
+}
+
+/**
+ * The row the wipe edge is on: the last row the wipe has entered (its start passed), else
+ * the first. In the space between two rows the edge stays at the end of the earlier row;
+ * it moves to the next row's start as soon as the wipe enters it.
+ */
+export function needleRow(line: PageLine, wipe: number): number {
+  let r = 0;
+  for (let k = 1; k < line.rows.length; k++) if (wipe > line.rows[k].u0) r = k;
+  return r;
+}
+
+/**
+ * Point 6: the needle on the line in the current slot (current or entering) at its wipe
+ * edge, placed as the renderer places that row (`top + row.top * scale`, x scaled about
+ * the line's centre). Without a line in the slot it stays on a line leaving before a rest
+ * (or at the song's end) and fades with it; it comes back with the line after the rest,
+ * fading in with it. Elsewhere it is fully opaque, also while it moves up with a line.
+ */
+function needleOf(l: PageLayout, items: PageItem[], current: number): PageNeedle | null {
+  const it = current >= 0 ? items.find((x) => x.line === current && (x.role === "current" || x.role === "entering")) : items.find((x) => x.role === "leaving");
+  if (!it) return null;
+  const L = l.lines[it.line];
+  if (!L || L.rows.length === 0) return null;
+  const r = needleRow(L, it.wipe);
+  const row = L.rows[r];
+  const sung = wipeInRow(L, r, it.wipe);
+  const s = it.scale;
+  const px = L.px * s;
+  const band = it.top + row.top * s;
+  const fades = it.role === "leaving" || (it.role === "entering" && L.breakBefore);
+  return {
+    line: it.line,
+    role: it.role,
+    row: r,
+    sung,
+    x: L.cx + (row.left + sung - L.cx) * s,
+    top: band - NEEDLE_OVER_EM * px,
+    bottom: band + (LINE_HEIGHT_EM + NEEDLE_OVER_EM) * px,
+    px,
+    alpha: fades ? it.alpha : 1,
+  };
 }
