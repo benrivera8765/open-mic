@@ -8,8 +8,9 @@ while keeping the rest of the recording (backing vocals and harmonies included),
 the lyrics up with the singing down to the letter. The result is one song file
 (`.jksong`) that plays on any ordinary Windows PC or Mac with the same sound.
 
-While you sing, the lyrics slide from right to left under a fixed marker that sits on the
-exact letter being sung. You can move the song into your key, up or down by up to 12
+While you sing, each line of the lyrics stands still on screen and a gold colour wipe runs
+through it word by word as it is sung, with the next line underneath (or, if you prefer,
+the lyrics slide from right to left under a fixed marker). You can move the song into your key, up or down by up to 12
 semitones, without changing its speed, and the drums are left alone so they do not sound
 processed. The app also has a recorder that captures whatever the computer is playing,
 losslessly. Everything, both apps and your songs, can live on one USB stick and runs
@@ -21,7 +22,7 @@ without installing anything.
 
 | | |
 |---|---|
-| ![Singing: the marker sits on the letter being sung](docs/screenshots/stage.png) | ![The key dial: C major moved up one semitone to D flat major](docs/screenshots/key-dial.png) |
+| ![Singing: the gold wipe runs through the line being sung, the next line waits underneath](docs/screenshots/stage-page-wipe.png) | ![The key dial: C major moved up one semitone to D flat major](docs/screenshots/key-dial.png) |
 | ![The Studio after a queue of songs: one made, one bad file explained](docs/screenshots/studio.png) | ![The plain look, with the jukebox skin turned off](docs/screenshots/plain-mode.png) |
 
 More screenshots and where they come from: [docs/screenshots/](docs/screenshots/README.md).

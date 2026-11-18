@@ -12,7 +12,11 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
     lyrics_text_size: 56,
     marker_position: 0.33,
     lyrics_motion: "word",
-    colors: { sung: "#ff3d8b", upcoming: "#f6efd9", marker: "#7dffd8" },
+    lyrics_display: "page",
+    show_next_line: true,
+    // Gold sung, white upcoming since D-218 (before: #ff3d8b / #f6efd9, which the core
+    // migrates to these when a settings file from before D-218 still holds them).
+    colors: { sung: "#ffc21a", upcoming: "#f4f4f4", marker: "#7dffd8" },
     library_sort: "title",
     fullscreen_stage: false,
   },

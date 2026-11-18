@@ -198,6 +198,40 @@ describe("functional UI on the mock", () => {
     expect(accessibilityProblems()).toEqual([]);
   });
 
+  it("settings: static lines with a colour wipe by default, the scrolling ticker on request (D-218)", async () => {
+    store.set({ screen: "settings" });
+    await until(() => !!q(".settings"));
+    const labelled = (text: string) => qa(".settings select, .settings input").find((s) => root.querySelector(`label[for="${s.id}"]`)?.textContent === text);
+    const display = labelled("Lyrics display") as HTMLSelectElement;
+    expect(display.value).toBe("page");
+    expect(Array.from(display.options).map((o) => o.textContent)).toEqual(["Static lines with a colour wipe", "Scrolling ticker"]);
+    const next = labelled("Show the next line") as HTMLInputElement;
+    expect(next.checked).toBe(true);
+    expect(next.disabled).toBe(false);
+    const marker = labelled("Marker position (from the left)") as HTMLInputElement;
+    expect(marker.disabled).toBe(true); // the page display has no marker
+    expect(store.get().settings?.ui.colors.sung).toBe("#ffc21a");
+    // The Stage draws the page display.
+    store.set({ screen: "stage" });
+    await until(() => !!q(".stage__lane .page-lyrics"));
+    // Scrolling ticker: chosen in Settings, saved by the core, drawn on the Stage.
+    store.set({ screen: "settings" });
+    await until(() => !!q(".settings"));
+    const display2 = labelled("Lyrics display") as HTMLSelectElement;
+    display2.value = "scroll";
+    display2.dispatchEvent(new Event("change", { bubbles: true }));
+    await until(() => store.get().settings?.ui.lyrics_display === "scroll");
+    await wait(40);
+    expect((await api.settingsGet()).ui.lyrics_display).toBe("scroll");
+    await until(() => (labelled("Show the next line") as HTMLInputElement).disabled);
+    expect((labelled("Marker position (from the left)") as HTMLInputElement).disabled).toBe(false);
+    store.set({ screen: "stage" });
+    await until(() => !!q(".stage__lane .ticker") && !q(".stage__lane .page-lyrics"));
+    changeSettings({ ui: { lyrics_display: "page" } });
+    await until(() => !!q(".stage__lane .page-lyrics"));
+    expect(accessibilityProblems()).toEqual([]);
+  });
+
   it("a fader moved just before opening another song is saved in the song it was moved on", async () => {
     // Found by the independent verifier: the throttled player_set reached the core
     // after song_load and was applied to the next song.

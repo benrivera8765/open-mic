@@ -244,6 +244,34 @@ PITCH BUS out + DRUM BUS out --> resampler (only if device rate != song rate)
   Windows. No WebGPU. Any newer CSS/JS feature needs a check and a fallback. `npm run
   build` fails unless every emitted JS file parses as ES2022 and the CSS passes a
   caniuse check against Safari 16.4.
+- Lyrics display (`settings.ui.lyrics_display`, D-218): `page` (default since the owner's
+  request of 18 Nov 2026: "the phrase of the lyrics to appear on screen, stay static,
+  while the progress bar goes over which word is being sung") or `scroll` (the ticker
+  below, unchanged). Stage and Sync editor draw the same one.
+- Page display (`src/ticker/page.ts` layout and timing, pure and unit-tested;
+  `pageverify.ts` its checks; `pagerenderer.ts`; `PageLyrics.tsx`): Canvas 2D, the
+  current line static, centred, bold (Atkinson Hyperlegible Next 800 in the skin) with a
+  dark outline and shadow; the next line under it at 0.62x and 62 % opacity
+  (`ui.show_next_line`). A colour wipe (sung colour left of the edge, upcoming right,
+  default gold `#ffc21a` / white `#f4f4f4`) sweeps through the line in reading order. The
+  edge's position is the line's own motion built with the ticker's pacing unchanged
+  (`layout.ts` `wordKnots` + `wordmotion.ts` `RampMotion` for the word pace, the letter
+  cells + `MonotoneSpline` for `lyrics_motion = "letter"`), on the line laid out as a
+  one-row strip, with a 0.3 s run-up and run-out outside the text; the same contract
+  (`verify.ts`) is checked on every line. A line too wide shrinks to 0.7x, then wraps onto
+  two (at most three) balanced rows; a short area shrinks the song. Short lines are
+  joined into phrases (only across pauses under 1 s, while the phrase fits two rows) until
+  each display line is previewed at least 2 s before it is sung (with the preview on).
+  Line changes start within 0.05 s of the last word (0.2 s: the next line moves up and
+  grows, the old one moves up and fades); only after a display line shorter than the
+  change does the next change start later (at most 0.25 s), and a line without a preview
+  never waits for it past 0.2 s before its own first word. After a pause of 1 s or more a lead-in bar left of the line drains
+  over up to 3 s and is gone exactly at the first word; rests of 4 s or more clear the
+  screen and show the countdown, the line returns 3 s before it is sung. Every frame is
+  `pageFrame(layout, t)`, a pure function of the lyric time. Each row is pre-rendered
+  once per colour (and once at the preview size) in device pixels, a few lines kept
+  (LRU), the line after the preview rendered ahead; a frame is two clipped blits per row.
+  Same frame loop as the ticker (60 fps cap, stopped when idle, hidden or minimised).
 - Lyrics ticker (`src/ticker/`): Canvas 2D. Each grapheme cluster is measured and drawn
   individually at a precomputed x position (ligatures and contextual alternates off).
   The marker stays fixed and the text slides under it (D-04); how the text is paced

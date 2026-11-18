@@ -16,6 +16,7 @@ import { FrameLoop, type MinimisedSource } from "./frameloop";
 import { layoutTicker, type Measure, type TickerLayout } from "./layout";
 import { TickerRenderer, type TickerStats, type TickerStyle } from "./renderer";
 import { type TickerVerifyReport, verifyTickerLayout } from "./verify";
+import type { PageProbe } from "./PageLyrics";
 
 export interface TickerProps {
   lyrics: Lyrics;
@@ -48,8 +49,10 @@ export interface TickerFrame {
   t: number;
   /** Strip position under the marker, CSS px. */
   x: number;
-  /** Screen x of the strip's origin (marker x - strip x), CSS px: what moves on screen. */
+  /** Screen x of the strip's origin (marker x - strip x), CSS px: what moves on screen. Page display: the wipe edge's x. */
   offset: number;
+  /** Page display: the line in the current slot (-1 in rests). */
+  line?: number;
 }
 
 /** Frame trace for the real-app scripts; off (and free) unless a script starts it. */
@@ -61,6 +64,8 @@ declare global {
     __jkTicker?: {
       stats: TickerStats;
       pace: LyricsMotion;
+      /** Which display drew it: the scrolling ticker or the page display (PageLyrics.tsx). */
+      display?: "scroll" | "page";
       fontPx: number;
       fontScale: number;
       minLineScale: number;
@@ -73,6 +78,10 @@ declare global {
       traceStart: (maxFrames?: number) => void;
       /** Stops recording and returns the frames recorded. */
       traceTake: () => TickerFrame[];
+      /** Page display: what the wipe shows at lyric time t (default: now). */
+      probe?: (t?: number) => PageProbe;
+      /** Page display: the lines as laid out (size, rows, schedule, words). */
+      pageLines?: () => unknown[];
     };
   }
 }
@@ -190,6 +199,7 @@ export function Ticker({ lyrics, offsetS, textSize, marker, pace, colors }: Tick
     window.__jkTicker = {
       stats: r.stats,
       pace: layout.pace,
+      display: "scroll",
       fontPx: layout.fontPx,
       fontScale: layout.fontScale,
       minLineScale: layout.minLineScale,

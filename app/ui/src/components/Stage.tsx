@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Stage: the singing view. Title, artist, key and time above the lyrics ticker;
+// Stage: the singing view. Title, artist, key and time above the lyrics (the page display
+// with its colour wipe, or the scrolling ticker: settings.ui.lyrics_display, D-218);
 // full-screen mode shows only this. Class hooks: .stage, .stage--fullscreen,
 // .stage__info, .stage__title, .stage__artist, .stage__key, .stage__time,
 // .stage__lane, .stage__empty, .stage__unchecked, .stage__tools.
@@ -7,6 +8,7 @@ import { useState } from "preact/hooks";
 import { formatTime } from "../lib/format";
 import { keyLabel } from "../lib/keys";
 import { deviceOffsetMs, go, saveMetadata, setFullscreen, useApp } from "../state/app";
+import { PageLyrics } from "../ticker/PageLyrics";
 import { Ticker } from "../ticker/Ticker";
 import { usePosition } from "./Transport";
 
@@ -106,7 +108,11 @@ export function Stage() {
       )}
       <div class="stage__lane">
         {song.lyrics && song.lyrics.lines.length > 0 ? (
-          <Ticker lyrics={song.lyrics} offsetS={offsetS} textSize={ui.lyrics_text_size} marker={ui.marker_position} pace={ui.lyrics_motion ?? "word"} colors={ui.colors} />
+          ui.lyrics_display === "scroll" ? (
+            <Ticker lyrics={song.lyrics} offsetS={offsetS} textSize={ui.lyrics_text_size} marker={ui.marker_position} pace={ui.lyrics_motion ?? "word"} colors={ui.colors} />
+          ) : (
+            <PageLyrics lyrics={song.lyrics} offsetS={offsetS} textSize={ui.lyrics_text_size} pace={ui.lyrics_motion ?? "word"} showNext={ui.show_next_line ?? true} colors={ui.colors} />
+          )
         ) : (
           <p class="stage__empty">This song has no lyrics (an instrumental). Sing along by ear, or add lyrics in the Studio.</p>
         )}

@@ -18,6 +18,7 @@ import { errorMessage } from "../api/client";
 import { formatOffset, formatTime } from "../lib/format";
 import { cloneLyrics, editLineText, lineMoveBounds, lineText, moveLineTo, realignRequest, retimeLineFromTaps, shiftLine, validateLyrics, wordText } from "../lib/lyrics";
 import { changeSettings, changeSongSettings, clock, deviceOffsetKey, deviceOffsetMs, getApiSync, go, play, resetLyrics, saveLyrics, seek, store, toast, useApp } from "../state/app";
+import { PageLyrics } from "../ticker/PageLyrics";
 import { Ticker } from "../ticker/Ticker";
 import { Note, Section, Slider, Toggle } from "./common";
 import { usePosition } from "./Transport";
@@ -361,7 +362,12 @@ export function SyncEditor() {
         }
       >
         <div class="sync__preview">
-          <Ticker lyrics={d.lyrics} offsetS={(st.lyrics_offset_ms + devOff) / 1000} textSize={Math.min(ui.lyrics_text_size, 44)} marker={ui.marker_position} pace={ui.lyrics_motion ?? "word"} colors={ui.colors} />
+          {/* The same display as the Stage (D-218), so an offset is tuned on what is sung to. */}
+          {ui.lyrics_display === "scroll" ? (
+            <Ticker lyrics={d.lyrics} offsetS={(st.lyrics_offset_ms + devOff) / 1000} textSize={Math.min(ui.lyrics_text_size, 44)} marker={ui.marker_position} pace={ui.lyrics_motion ?? "word"} colors={ui.colors} />
+          ) : (
+            <PageLyrics lyrics={d.lyrics} offsetS={(st.lyrics_offset_ms + devOff) / 1000} textSize={Math.min(ui.lyrics_text_size, 44)} pace={ui.lyrics_motion ?? "word"} showNext={ui.show_next_line ?? true} colors={ui.colors} />
+          )}
         </div>
         <Offsets />
       </Section>

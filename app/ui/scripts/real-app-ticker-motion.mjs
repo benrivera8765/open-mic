@@ -2,7 +2,8 @@
 // The lyrics ticker's motion measured in the REAL app (D-216, the owner's request of
 // 18 Nov 2026: "word by word instead of jumping"): the release exe from a portable copy,
 // driven over WebView2's DevTools port the way real-app-e2e.mjs does, Stage at 1440x900,
-// skin on. For every song in <root>/Library and both paces (settings.ui.lyrics_motion
+// skin on, the scrolling ticker (settings.ui.lyrics_display "scroll"; the page display has
+// its own script, real-app-page-lyrics.mjs). For every song in <root>/Library and both paces (settings.ui.lyrics_motion
 // "word" and "letter"):
 //   - runs the live layout's own check (window.__jkTicker.verify(): letters for the
 //     letter pace, words for the word pace) with the real lyrics font;
@@ -38,7 +39,7 @@ writeFileSync(
   join(root, "Settings", "settings.json"),
   JSON.stringify(
     {
-      ui: { skin: true, bubbles: true, motion: "full", lyrics_text_size: 56, marker_position: 0.33, lyrics_motion: "word", colors: { sung: "#ff3d8b", upcoming: "#f6efd9", marker: "#7dffd8" }, library_sort: "title", fullscreen_stage: false },
+      ui: { skin: true, bubbles: true, motion: "full", lyrics_text_size: 56, marker_position: 0.33, lyrics_motion: "word", lyrics_display: "scroll", colors: { sung: "#ff3d8b", upcoming: "#f6efd9", marker: "#7dffd8" }, library_sort: "title", fullscreen_stage: false },
       audio: { device_id: "null:48000", exclusive: false, master_volume: 0, device_offsets_ms: {} },
     },
     null,

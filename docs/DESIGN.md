@@ -108,6 +108,23 @@ in cream). Above the ticker, small: title, artist, key, time. Below: the next li
 preview is not needed (the ticker itself shows what is coming); in long breaks a
 countdown "Singing in 0:08" sits in the ticker's lane.
 
+**Changed at the owner's request, 18 Nov 2026 (D-218): static lines with a colour wipe**
+(the default; the ticker above stays as "Scrolling ticker" in Settings). Modelled on the
+owner's reference frames of a karaoke video: the current line stands still, centred,
+large, in a heavy face (Atkinson Hyperlegible Next 800) with a thin dark outline and a
+soft shadow, legible on any background. The sung part turns warm gold (`#ffc21a`), the
+rest is white (`#f4f4f4`), and the boundary sweeps smoothly through the letters, word by
+word. The next line waits underneath at about 0.6x size and 60 % opacity; when the line
+has been sung the page moves up in 0.2 s (the next line grows into place, the old one
+rises and fades, the one after fades in below). Before a line that follows a pause, a
+small gold block left of its first letter, as tall as the capitals and dark at its left
+end, is eaten from the left and is gone the moment the first word starts (the reference's
+lead-in bar). Long rests: the screen clears to the "Singing in 0:08" countdown in the
+same lettering, and the line comes back 3 s before it is sung. Centred rather than
+left-aligned like the reference crops: the jukebox screen is a symmetric arch, short
+lines would leave its right half empty, and a centred line sits under the badge; the
+lead-in bar moves with the line's first letter. No marker in this display.
+
 ## Badge
 
 An original badge for "Jukeoke": a rounded shield or lozenge (not a winged shape),
@@ -170,9 +187,11 @@ D-102 to D-111.
   pitch shifter); the app-wide key shortcuts act at once.
 - **Library**: title-strip cards in a chrome rack, 2 columns on a laptop, more on 4K,
   1 when narrow; a drawn record stands in for missing cover art.
-- **Stage marker**: a slim solid needle with a small triangular head in the marker
-  colour, default mint `#7dffd8` (not a chrome needle with a pink glow), so it stands
-  out against the pink sung letters. Upcoming letters are cream `#f6efd9`.
+- **Stage marker** (scrolling ticker only): a slim solid needle with a small triangular
+  head in the marker colour, default mint `#7dffd8` (not a chrome needle with a pink
+  glow), so it stands out against the sung letters. Until D-218 the sung letters were
+  pink `#ff3d8b` and the upcoming ones cream `#f6efd9`; both displays now default to
+  gold and white.
 - **Fonts**: Oswald (display: plates, labels, title strips), Atkinson Hyperlegible Next
   (lyrics, weight 700 in the ticker, ligatures and contextual alternates off) and
   Pacifico (badge only), all SIL OFL 1.1, bundled unmodified.

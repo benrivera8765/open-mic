@@ -409,7 +409,7 @@ function placeOnce(lyrics: Lyrics, p: Required<TickerParams>, fontPx: number, me
 }
 
 /** Groups the graphemes into words; words without a timed grapheme are left out. */
-function placeWords(glyphs: PlacedGlyph[]): PlacedWord[] {
+export function placeWords(glyphs: PlacedGlyph[]): PlacedWord[] {
   const out: PlacedWord[] = [];
   for (let i = 0; i < glyphs.length; ) {
     const g0 = glyphs[i];
@@ -438,7 +438,7 @@ function placeWords(glyphs: PlacedGlyph[]): PlacedWord[] {
  * exactly as the letter pace does (a short line gap counts as the space after the last
  * word); knots after an intro or a long break and around a long break are fixed.
  */
-function wordKnots(words: PlacedWord[], lines: PlacedLine[], breakPlans: Map<number, { dt: number; dx: number }[]>, intro: { dt: number; dx: number }[], outro: Knot): FloatingKnot[] {
+export function wordKnots(words: PlacedWord[], lines: PlacedLine[], breakPlans: Map<number, { dt: number; dx: number }[]>, intro: { dt: number; dx: number }[], outro: Knot): FloatingKnot[] {
   const out: FloatingKnot[] = [];
   const push = (t: number, xx: number, slack = 0) => {
     const last = out[out.length - 1];
@@ -594,7 +594,7 @@ function lineShrink(l: Placed, lookahead: number, trigger: number, target: numbe
  * always refer to the same line; otherwise a break before such a line would look up
  * a missing PlacedLine and throw.
  */
-function withoutEmptyLines(lyrics: Lyrics): Lyrics {
+export function withoutEmptyLines(lyrics: Lyrics): Lyrics {
   const hasText = (l: Lyrics["lines"][number]) => l.words.some((w) => w.chars.length > 0);
   return lyrics.lines.every(hasText) ? lyrics : { ...lyrics, lines: lyrics.lines.filter(hasText) };
 }

@@ -24,8 +24,8 @@
   /* The stage is always dark (the lyrics colours are chosen for a dark screen). */
   --stage-bg: #14101c;
   --stage-fg: #f6efd9;
-  --sung: #ff3d8b;
-  --upcoming: #f6efd9;
+  --sung: #ffc21a;
+  --upcoming: #f4f4f4;
   --marker-color: #7dffd8;
   --ticker-font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --ticker-weight: 700;
