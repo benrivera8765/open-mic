@@ -339,7 +339,18 @@ export interface RecorderStatus {
   clipped: boolean;
   dropped_s: number;
   error: string | null;
+  // ---- additions (the owner's request of 2026-11-18; absent in older cores) ----
+  /** Which button started the recording ("plain" while idle). */
+  mode?: RecorderMode;
+  /** The media player "Record & play" started, or a session follows. */
+  player?: { id: string; app_name: string } | null;
+  /** "Record songs separately": what is being recorded now. */
+  session?: LiveSession | null;
+  /** Not an error, but worth telling (the player did not accept "play"). */
+  note?: string | null;
 }
+
+export type RecorderMode = "plain" | "record_and_play" | "session";
 
 export interface Recording {
   path: string;
@@ -349,6 +360,96 @@ export interface Recording {
   channels: number;
   bytes: number;
   clipped: boolean;
+  /** Addition: what happened to the player on "Stop & pause". */
+  note?: string | null;
+}
+
+/** A media player Windows knows about (`recorder_media_sessions`, addition). */
+export interface MediaPlayer {
+  id: string;
+  source_app_id: string;
+  app_name: string;
+  is_current: boolean;
+  status: "closed" | "opened" | "changing" | "stopped" | "playing" | "paused" | "unknown";
+  title: string;
+  artist: string;
+  album: string;
+  duration_s: number | null;
+  can_play: boolean;
+  can_pause: boolean;
+}
+
+export interface MediaPlayers {
+  available: boolean;
+  /** Why the player link is unavailable (macOS, an old Windows). */
+  reason: string | null;
+  players: MediaPlayer[];
+}
+
+/** `RecorderStatus.session` while songs are recorded separately. */
+export interface LiveSession {
+  folder: string;
+  path: string;
+  current: { title: string; artist: string; album: string } | null;
+  playback: string;
+  /** Songs started so far (advertisements not counted). */
+  songs: number;
+  auto_stop_idle_s: number;
+  max_songs: number | null;
+  /** Seconds until the session stops by itself (the player is paused). */
+  auto_stop_in_s: number | null;
+}
+
+export interface SessionStartOptions {
+  player_id: string;
+  auto_stop_idle_s?: number;
+  max_songs?: number | null;
+  start_player?: boolean;
+  pause_player_at_end?: boolean;
+}
+
+export type CutConfidence = "certain" | "uncertain" | "edge";
+
+/** One song of a session (its sidecar). */
+export interface RecordedSong {
+  path: string;
+  name: string;
+  number: number;
+  title: string;
+  artist: string;
+  album: string;
+  cover_path: string | null;
+  duration_s: number;
+  track_duration_s: number | null;
+  status: "complete" | "partial" | "unknown";
+  partial_reason: string | null;
+  start_confidence: CutConfidence;
+  end_confidence: CutConfidence;
+  paused_s: number;
+}
+
+export interface ExcludedPart {
+  path: string;
+  name: string;
+  reason: string;
+  duration_s: number;
+}
+
+/** A "record songs separately" session (`recorder_sessions_list`, addition). */
+export interface RecordingSession {
+  folder: string;
+  path: string;
+  created: string;
+  player: string;
+  player_id: string;
+  state: "recording" | "stopped" | "splitting" | "split" | "kept_master" | "failed" | "interrupted";
+  progress: number | null;
+  stop_reason: string | null;
+  message: string | null;
+  master_present: boolean;
+  song_count: number;
+  songs: RecordedSong[];
+  excluded: ExcludedPart[];
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +500,8 @@ export interface InspectResult {
   has_video: boolean;
   embedded_lyrics: { present: boolean; synced: boolean; text: string | null } | null;
   cover_path: string | null;
+  /** Addition: a song recorded with "Record songs separately" (from its sidecar). */
+  recorded?: { status: "complete" | "partial" | "unknown"; partial_reason: string | null; track_duration_s: number | null; source_player: string } | null;
 }
 
 export interface LyricsLookupQuery {
@@ -489,6 +592,10 @@ export interface ApiEvents {
   "export://done": ExportDoneEvent;
   "export://failed": ExportFailedEvent;
   "recorder://level": RecorderStatus;
+  /** Addition: a session started, stopped, is splitting or finished splitting. */
+  "recorder://session": RecordingSession;
+  /** Addition: a recording preview started or ended. */
+  "recorder://preview": { path: string; playing: boolean };
   "studio://job": StudioJob;
   "studio://models": StudioModelsEvent;
   "studio://dropped": { paths: string[] };

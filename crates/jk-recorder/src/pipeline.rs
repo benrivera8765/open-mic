@@ -819,6 +819,37 @@ impl CapturePipeline {
         c.span_end.store(stop_frames as i64, Ordering::Relaxed);
     }
 
+    /// The position in the recording (a frame index of the file) of the sound that
+    /// was at the output at the wall-clock instant `wall` (the time an event such as
+    /// a track change was noticed). `None` until the format is known.
+    ///
+    /// The instant is put onto the OS clock through the start instant's pair
+    /// (OS time, wall time) and then measured back from the end of the last block,
+    /// whose position in the file is exact. Anchoring on the newest block instead of
+    /// on Start keeps device-clock drift out of the answer (only the distance from
+    /// the last block, a few milliseconds, is measured on the host clock). Without a
+    /// start instant (a backend that gives none) it is the length so far.
+    pub fn timeline_frame_at(&self, wall: Instant) -> Option<u64> {
+        let rate = self.format.get()?.sample_rate;
+        let p = self.lock_producer();
+        let frames = i128::from(self.counters.frames.load(Ordering::Relaxed));
+        let Some(mark) = p.start_mark else {
+            return Some(frames.max(0) as u64);
+        };
+        let offset = if wall >= mark.wall {
+            frames_in(rate, wall - mark.wall)
+        } else {
+            -frames_in(rate, mark.wall - wall)
+        };
+        let at = mark.at.to_frames(rate) + offset;
+        let pos = match p.expected_next {
+            // `frames` is the file position where the last block ended.
+            Some(end) => frames - (end - at),
+            None => offset,
+        };
+        Some(pos.max(0) as u64)
+    }
+
     /// Current state.
     pub fn state(&self) -> PipelineState {
         if self.finished.load(Ordering::Acquire) {
@@ -1282,6 +1313,32 @@ mod tests {
         let (_, data) = read_wav_f32(&p).unwrap();
         let zeros = data.iter().filter(|&&x| x == 0.0).count() as u64;
         assert_eq!(zeros, s.stats.dropped_frames * 2);
+        std::fs::remove_file(&p).unwrap();
+    }
+
+    #[test]
+    fn wall_instants_map_to_file_positions_anchored_on_the_last_block() {
+        let p = temp_path("timeline-at");
+        let pl = CapturePipeline::new(&p, PipelineOptions::default()).unwrap();
+        assert_eq!(pl.timeline_frame_at(Instant::now()), None, "no format yet");
+        pl.set_format(fmt48()).unwrap();
+        let wall0 = Instant::now();
+        pl.mark_start_since(qpc(0), wall0);
+        // Head of 12_000 frames, then 10 blocks of 480 frames whose OS stamps are
+        // 482 frames apart (the device clock runs slow against the host clock,
+        // within the jitter threshold, so nothing is inserted).
+        for i in 0..10 {
+            pl.push(Some(qpc(12_000 + i * 482)), &block(480, 0.5)).unwrap();
+        }
+        assert_eq!(pl.stats().frames, 16_800);
+        // The last block ends at OS frame 16_818 = file frame 16_800.
+        let at = |s: f64| pl.timeline_frame_at(wall0 + Duration::from_secs_f64(s)).unwrap();
+        assert_eq!(at(16_818.0 / 48_000.0), 16_800);
+        assert_eq!(at(0.35), 16_800 - 18);
+        assert_eq!(at(0.1), 4_800 - 18);
+        // Before Start: clamped to the file's first frame.
+        assert_eq!(pl.timeline_frame_at(wall0 - Duration::from_millis(5)).unwrap(), 0);
+        pl.finish().unwrap();
         std::fs::remove_file(&p).unwrap();
     }
 

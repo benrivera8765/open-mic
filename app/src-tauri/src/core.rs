@@ -181,6 +181,8 @@ impl Core {
     /// Background work after the window is up: clock thread, library watcher, stale
     /// temp file clean-up, Studio probe.
     pub fn start_background(self: &Arc<Self>) {
+        // "Record songs separately" sessions a crash or a closed app left behind.
+        self.recorder.recover_sessions();
         self.player.start_clock();
         // "auto" key mode: measurements are saved per computer and rate; the common
         // rates are measured now, in the background, before a song needs them.

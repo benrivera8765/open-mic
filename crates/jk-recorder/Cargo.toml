@@ -10,6 +10,12 @@ publish.workspace = true
 [lib]
 path = "src/lib.rs"
 
+# Recording sessions (src/session.rs): the session file and the per-song sidecars are
+# JSON. Same versions as the app crate's.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 # The macOS backend is written against the objc2 family of crates. Every API used
 # exists on macOS 13.0 (the owner's MacBook runs 13.6.9); see docs/MAC.md, section
 # "ScreenCaptureKit on macOS 13". Versions are pinned to the current releases as of
@@ -32,10 +38,23 @@ objc2-core-graphics = "0.3.2"
 # compiles one copy of each.
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.27"
+# WinRT async operations (IAsyncOperation, AsyncStatus) for the media-player link;
+# the version windows 0.62 itself depends on (it does not re-export the types).
+windows-future = "0.3.2"
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.62"
+# Foundation .. Storage_Streams: the media-player link (src/media/windows.rs) uses the
+# WinRT Global System Media Transport Controls (Windows.Media.Control, Windows 10
+# 1809+), activated through combase's RoGetActivationFactory; works on the GNU
+# toolchain (windows-link raw-dylib imports).
 features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Media",
+    "Media_Control",
+    "Storage",
+    "Storage_Streams",
     "Win32_Foundation",
     "Win32_Media_Audio",
     "Win32_Media_Audio_Endpoints",

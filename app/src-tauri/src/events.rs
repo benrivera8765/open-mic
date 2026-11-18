@@ -18,6 +18,11 @@ pub mod names {
     pub const EXPORT_DONE: &str = "export://done";
     pub const EXPORT_FAILED: &str = "export://failed";
     pub const RECORDER_LEVEL: &str = "recorder://level";
+    /// Addition (owner's request, 2026-11-18): a `RecordingSession` whenever a
+    /// "record songs separately" session starts, stops, splits or finishes splitting.
+    pub const RECORDER_SESSION: &str = "recorder://session";
+    /// Addition: `{ path, playing }` when a recording preview starts or ends.
+    pub const RECORDER_PREVIEW: &str = "recorder://preview";
     pub const STUDIO_JOB: &str = "studio://job";
     pub const STUDIO_MODELS: &str = "studio://models";
     pub const STUDIO_DROPPED: &str = "studio://dropped";

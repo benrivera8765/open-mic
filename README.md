@@ -67,6 +67,17 @@ The recorder captures the system mix after Windows' own processing, so sound-dri
 effects such as "Audio enhancements" end up in the recording: for an exact copy, turn them
 off for the output device (*Settings > System > Sound >* your speakers or headphones).
 
+On Windows the Recorder can also work with your music player (any app in Windows' media
+controls). **Record & play** starts the recording and then presses play in the player, so
+the start of the song is never missed. **Record songs separately** keeps recording while the
+player goes from song to song and then cuts the recording into one file per song, named
+after what the player shows, with its cover (`Recordings/<date time>/`); advertisements go
+to an `_excluded` folder, and "Make karaoke songs from all complete songs" sends the songs
+to the Studio. The player's and Windows' volume are in the recording, so set them before
+you start; switch off the player's crossfade or automix for clean cuts. Many streaming
+services' terms do not allow recording their streams: record only what you may, for your
+own use.
+
 ### Mac (macOS 13 Ventura or later, Apple Silicon)
 
 Open `Mac/Jukeoke.app` from the stick.

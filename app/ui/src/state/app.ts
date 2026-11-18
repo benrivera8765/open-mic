@@ -12,10 +12,13 @@ import type {
   Device,
   LibraryList,
   Lyrics,
+  MediaPlayers,
   PlayerState,
   ProposedExtensions,
+  RecordedSong,
   Recording,
   RecorderStatus,
+  RecordingSession,
   SongDetail,
   SongSettings,
   StudioJob,
@@ -58,6 +61,12 @@ export interface AppState {
   devices: Device[];
   recorder: RecorderStatus | null;
   recordings: Recording[];
+  /** Media players the recorder can start and follow (Windows; null until asked). */
+  players: MediaPlayers | null;
+  /** "Record songs separately" sessions, newest first. */
+  recordingSessions: RecordingSession[];
+  /** The recording being previewed (played natively), if any. */
+  previewPath: string | null;
   studio: StudioStatus | null;
   /** Files waiting in the Studio panel (dropped, picked, or sent from the recorder). */
   studioInbox: string[];
@@ -87,6 +96,9 @@ export const store = new Store<AppState>({
   devices: [],
   recorder: null,
   recordings: [],
+  players: null,
+  recordingSessions: [],
+  previewPath: null,
   studio: null,
   studioInbox: [],
   screen: "library",
@@ -184,6 +196,10 @@ export async function init(theApi: Api): Promise<void> {
   api.on("playback://error", (e) => toast(e.message, "error"));
   api.on("library://changed", () => void refreshLibrary());
   api.on("recorder://level", (r) => store.set({ recorder: r }));
+  api.on("recorder://session", (sess) => upsertRecordingSession(sess));
+  api.on("recorder://preview", ({ path, playing }) =>
+    store.set((s) => ({ previewPath: playing ? path : s.previewPath === path ? null : s.previewPath })),
+  );
   api.on("studio://job", (job) => updateJob(job));
   api.on("studio://dropped", ({ paths }) => addToStudio(paths));
   api.on("studio://status", (st) => applyStudioStatus(st));
@@ -219,6 +235,7 @@ export async function init(theApi: Api): Promise<void> {
     attempt(api.playerState()).then((p) => p && store.set({ player: p })),
     attempt(api.recorderStatus()).then((r) => r && store.set({ recorder: r })),
     refreshRecordings(),
+    refreshRecordingSessions(),
     refreshStudio(),
   ]);
 }
@@ -234,6 +251,78 @@ export async function refreshRecordings(): Promise<void> {
   if (!api) return;
   const r = await attempt(api.recordingsList());
   if (r) store.set({ recordings: r.recordings });
+}
+
+/** Media players for "Record & play" and "Record songs separately" (quietly: polled). */
+export async function refreshPlayers(): Promise<void> {
+  if (!api?.recorderMediaSessions) return;
+  try {
+    store.set({ players: await api.recorderMediaSessions() });
+  } catch {
+    // The list is only advice; the buttons report real errors.
+  }
+}
+
+export async function refreshRecordingSessions(): Promise<void> {
+  if (!api?.recorderSessionsList) return;
+  const r = await attempt(api.recorderSessionsList());
+  if (r) store.set({ recordingSessions: r.sessions });
+}
+
+function upsertRecordingSession(sess: RecordingSession): void {
+  store.set((s) => {
+    const rest = s.recordingSessions.filter((x) => x.folder !== sess.folder);
+    const all = [sess, ...rest].sort((a, b) => (a.folder < b.folder ? 1 : a.folder > b.folder ? -1 : 0));
+    return { recordingSessions: all };
+  });
+  // A finished split may have produced new files for the Studio list.
+  if (sess.state === "split" || sess.state === "kept_master") void refreshRecordings();
+}
+
+/**
+ * Studio hand-off for recorded songs: one Studio job per song, with the title, artist,
+ * album and cover the player reported (the sidecar) - the same `studio_submit` the
+ * Studio form uses, with the cover given explicitly (`metadata.cover_path`).
+ * Returns how many were queued.
+ */
+export async function makeKaraokeSongs(songs: RecordedSong[]): Promise<number> {
+  if (!api || songs.length === 0) return 0;
+  let queued = 0;
+  for (const song of songs) {
+    try {
+      await api.studioSubmit({
+        input: song.path,
+        preset: "full",
+        language: "en",
+        metadata: {
+          title: song.title.trim() || song.name.replace(/\.[^.]+$/, ""),
+          artist: song.artist.trim(),
+          album: song.album.trim() || null,
+          ...(song.cover_path ? { cover_path: song.cover_path } : {}),
+        },
+        lyrics: { mode: "auto", text: null, lrc: null },
+      });
+      queued += 1;
+    } catch (err) {
+      toast(`${song.title || song.name}: ${errorMessage(err)}`, "error");
+    }
+  }
+  if (queued > 0) {
+    toast(`Added ${queued} song${queued === 1 ? "" : "s"} to the Studio queue.`);
+    void refreshStudio();
+  }
+  return queued;
+}
+
+/** Plays (or stops) a preview of a recording, natively. */
+export async function togglePreview(path: string): Promise<void> {
+  if (!api?.recorderPreview) return;
+  if (store.get().previewPath === path) {
+    await succeeded(api.recorderPreviewStop?.() ?? Promise.resolve());
+    store.set({ previewPath: null });
+    return;
+  }
+  if (await succeeded(api.recorderPreview(path, 0, 30), "Preview")) store.set({ previewPath: path });
 }
 
 export async function refreshStudio(): Promise<void> {

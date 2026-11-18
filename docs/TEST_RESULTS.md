@@ -531,3 +531,69 @@ Not covered by this check: a real second download of the Clean weights (the file
 in; the real download is section 8's), a seek the core makes by itself, and anything audible.
 The toast after a download that found every file already present still says "downloaded and
 checked" (the file is hashed at first use instead); left as it is.
+
+## 9. Recording with the music player in the real app (18 November, 15:16-15:35)
+
+The owner's request (DECISIONS D-221..D-228). Release exe built with
+`app/scripts/build-windows.sh` into a portable folder under `$JK_BUILD/recsessions-app/`
+(with a copy of the Studio runtime and models), driven over WebView2's DevTools by
+`app/ui/scripts/real-app-record-sessions.mjs`. The media player is a test player the
+script makes itself: a page in its own Microsoft Edge window (throwaway profile) playing
+generated tones at -60.2 dBFS peak (`$JK_BUILD/recsessions-live/gen-player.mjs`: five
+12 s tracks and a 6 s "Advertisement"; gaps of 1.5, 1.0 and 0.8 s of digital silence;
+track 3 to 4 gapless; track 4, reported as 24 s, skipped by the page after 12 s), announced
+through `navigator.mediaSession`, so Windows lists it like any music app. The owner's
+Spotify and Firefox sessions were listed (read only) and never played or paused; the app
+played nothing itself (null device, master 0). Three runs (run 3, final, final2 on the
+exe that replaced dist/Windows/Jukeoke.exe), 20 of 20 checks passed in the last two:
+
+| Check | Result |
+|---|---|
+| Record & play | capture first, then play: first sound 150.3 / 140.9 / 145.3 ms into the recording, digital silence before it; "Stop & pause" paused the player 4.05-4.10 s in |
+| Songs separately | stopped by itself 6 s after the player paused; 5 songs named after the player's titles, covers saved; the advertisement and the tail after playback in `_excluded/` |
+| Cuts at gaps | 0.0, 0.0 and -0.1 ms from the middle of the 1.5 / 1.0 / 0.8 s gaps, every run |
+| Cuts without a gap | gapless join 37.5-38 ms before the true change, skip 96.5-111.5 ms before it (Goertzel on the master); both marked "uncertain" in the song list |
+| Playback ended | 999.9 ms of the silence kept with the last song |
+| Flags | the skipped track partial ("shorter than the track"), the others complete |
+| Bit for bit | the 7 part files joined = the master (hard-linked before the app deleted it), 3,631,782 / 3,636,642 / 3,637,936 frames; every part verified by the app |
+| Player timing | track events noticed 3-20 ms before the sound reached the capture (skip 83-91 ms); the player's timeline put track starts a steady 38 ms early |
+| Studio | "Make karaoke songs from all complete songs (4)" queued 4 jobs; the first finished in 56.6 / 33.9 / 47.5 s as "Jukeoke Test Player - Test Track 1" with the player's cover; the other 3 cancelled |
+
+Also on the final exe: portable smoke test RESULT OK; `cargo test -p jk-recorder -p jukeoke`
+all passed (jk-recorder 57 + examples 3; app 43 unit + 12 + 2 + 9 + 1 + 17 + 3 + 1
+integration); `npm run build` and `npm test` 440 passed. Screenshots (plain look and
+jukebox skin) in `$JK_BUILD/recsessions-live/final2/`.
+
+## 9.1 Independent verification of section 9 (18 November, 15:40-16:10)
+
+`cargo test -p jk-recorder -p jukeoke` re-run: all passed before any change. The verifier's
+own test player (`$JK_BUILD/verify-recsessions-live/gen-verify-player.mjs`, generated tones
+at -60.2 dBFS, its own Edge window and throwaway profile) covers what section 9 did not: a
+track skipped 1.8 s after a gap, a track with no artist (reported as 200 s), a title with
+`: " ? < / > * |`, a 3 s pause and resume inside a track, a cover that fails to load (404),
+and the player closed in the middle of a song. Driven by
+`$JK_BUILD/verify-recsessions-live/verify-live.mjs` in a portable folder; the owner's
+Spotify and Firefox sessions were listed (read only) and never played or paused.
+
+| Check | Exe that was in dist/ | Fixed exe (now in dist/) |
+|---|---|---|
+| Record & play, first sound | 134.4 ms into the recording | 143.7 ms |
+| Parts joined = master, and each part = its master slice (own byte comparison) | yes | yes (album 3,003,418 frames; closed-player session 512,960) |
+| Gap cuts | 0 / 0 / -0.1 / -0.1 ms from the gap middles | the same |
+| The skip 1.8 s after a gap | boundary pulled into the earlier gap: the "skipped" part was 0.15 s of silence, the next song began with 2.0 s of the skipped song, start marked "certain" | skipped part holds the skipped song (2.07 s); the next song starts 95 ms early, marked "uncertain" |
+| No artist, odd title | `03 No Artist Long.wav` (partial); `02 ... Odd - 'Name' (1-2) -.wav`, sidecar keeps the title | the same |
+| Pause and resume inside a song | | paused 2.99 s reported, song complete |
+| Cover that failed to load | | no cover for that song (not another song's); the others saved |
+| Player closed mid-song | | stopped by itself ("player_closed"), markers stopped + gone, the song partial, the silence after it excluded |
+| `studio_inspect` of a recorded song | (title = the file name: not tested live, see D-229) | "Verify One", `Odd: "Name"? <1/2> *|`, artist and cover from the sidecar |
+
+Both fixes are in DECISIONS D-229. After them: `cargo test -p jk-recorder -p jukeoke` all
+passed (jk-recorder 61), clippy clean on the changed crates, `app/scripts/build-windows.sh`
+(UI tests 440 passed, no build-machine paths, Windows DLLs only), portable smoke test RESULT
+OK. The fixed exe replaced dist/Windows/Jukeoke.exe while the app was not running.
+
+A verifier's slip, undone: the first run with the old exe was started from a folder without
+`Library/`, so the app was not in portable mode and created `%LOCALAPPDATA%\org.jukeoke.app`
+(15:56:59; it did not exist before). That folder, holding only that run's test files, was
+moved to `$JK_BUILD/verify-recsessions-live/old-run-appdata/`; `%LOCALAPPDATA%` and
+`%APPDATA%` hold no Jukeoke folder now, and the runs in the table used portable folders.

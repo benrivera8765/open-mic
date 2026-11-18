@@ -11,6 +11,8 @@
 //                          default the "full" preset and the lyrics models are present and
 //                          the "clean" / "permissive" ones are not, as on the owner's stick)
 //   ?recorder=denied|not_determined|unavailable
+//   ?players=0             no media player open (the recorder's "Record & play" and
+//                          "Record songs separately" then explain; default: 1 on Windows)
 //   ?empty=1               empty library
 //   ?many=200              add generated filler songs (library performance)
 //   ?skin=0                start with the plain look (settings.ui.skin off)
@@ -43,14 +45,20 @@ import type {
   LookupResult,
   Lyrics,
   LyricsLookupQuery,
+  MediaPlayer,
+  MediaPlayers,
   MetadataChanges,
   PlayerState,
   ProposedExtensions,
   RealignAnchor,
   Recording,
+  RecorderMode,
   RecorderPermission,
   RecorderStatus,
+  RecordedSong,
+  RecordingSession,
   SelfCheckResult,
+  SessionStartOptions,
   SongDetail,
   SongSettings,
   SongSummary,
@@ -97,6 +105,8 @@ export interface MockOptions {
   studio: "on" | "off";
   models: "present" | "missing";
   recorder: RecorderPermission | "unavailable";
+  /** Media players open (Windows; the Mac has no player link). */
+  players: number;
   empty: boolean;
   many: number;
   /** settings.ui.skin at start (the jukebox look); the tests run both looks. */
@@ -129,6 +139,7 @@ const DEFAULT_OPTIONS: MockOptions = {
   studio: "on",
   models: "present",
   recorder: "not_required",
+  players: 1,
   empty: false,
   many: 0,
   skin: true,
@@ -160,6 +171,75 @@ const DEVICES: Device[] = [
 ];
 
 const fail = (code: string, message: string): ApiError => ({ code, message });
+
+const MOCK_PLAYERS: MediaPlayer[] = [
+  { id: "MusicPlayer.exe", source_app_id: "MusicPlayer.exe", app_name: "MusicPlayer", is_current: true, status: "paused", title: "Morning Light", artist: "The Demo Band", album: "Demo Album", duration_s: 214, can_play: true, can_pause: true },
+  { id: "MSEdge", source_app_id: "MSEdge", app_name: "Microsoft Edge", is_current: false, status: "paused", title: "A video", artist: "", album: "", duration_s: 600, can_play: true, can_pause: true },
+  { id: "Radio.exe", source_app_id: "Radio.exe", app_name: "Radio", is_current: false, status: "stopped", title: "", artist: "", album: "", duration_s: null, can_play: true, can_pause: false },
+];
+
+interface MockTrack {
+  title: string;
+  artist: string;
+  album: string;
+  duration_s: number;
+  ad?: boolean;
+}
+
+const MOCK_PLAYLIST: MockTrack[] = [
+  { title: "Morning Light", artist: "The Demo Band", album: "Demo Album", duration_s: 214 },
+  { title: "Paper Boats", artist: "The Demo Band", album: "Demo Album", duration_s: 187 },
+  { title: "Advertisement", artist: "", album: "", duration_s: 15, ad: true },
+  { title: "Slow River", artist: "Example Trio", album: "Samples", duration_s: 251 },
+];
+
+function mockSong(folder: string, n: number, t: MockTrack, status: RecordedSong["status"], reason: string | null): RecordedSong {
+  const stem = `${String(n).padStart(2, "0")} ${t.artist} - ${t.title}`;
+  const dir = `C:\\Jukeoke\\Recordings\\${folder}`;
+  return {
+    path: `${dir}\\${stem}.wav`,
+    name: `${stem}.wav`,
+    number: n,
+    title: t.title,
+    artist: t.artist,
+    album: t.album,
+    cover_path: `${dir}\\${stem}.jpg`,
+    duration_s: status === "partial" ? 61.2 : t.duration_s + 1.1,
+    track_duration_s: t.duration_s,
+    status,
+    partial_reason: reason,
+    start_confidence: n === 1 ? "edge" : "certain",
+    end_confidence: status === "partial" ? "edge" : n === 2 ? "uncertain" : "certain",
+    paused_s: 0,
+  };
+}
+
+function demoSession(): RecordingSession {
+  const folder = "2026-11-17 20-15-03";
+  const songs = [
+    mockSong(folder, 1, MOCK_PLAYLIST[0], "complete", null),
+    mockSong(folder, 2, MOCK_PLAYLIST[1], "complete", null),
+    mockSong(folder, 3, MOCK_PLAYLIST[3], "partial", "It is shorter than the track: it was skipped or interrupted."),
+  ];
+  return {
+    folder,
+    path: `C:\\Jukeoke\\Recordings\\${folder}`,
+    created: folder,
+    player: "MusicPlayer",
+    player_id: "MusicPlayer.exe",
+    state: "split",
+    progress: null,
+    stop_reason: "idle",
+    message: null,
+    master_present: false,
+    song_count: 3,
+    songs,
+    excluded: [
+      { path: `C:\\Jukeoke\\Recordings\\${folder}\\_excluded\\Part 03 - advertisement - Advertisement.wav`, name: "Part 03 - advertisement - Advertisement.wav", reason: "advertisement", duration_s: 15.9 },
+      { path: `C:\\Jukeoke\\Recordings\\${folder}\\_excluded\\Part 05 - after playback stopped.wav`, name: "Part 05 - after playback stopped.wav", reason: "after playback stopped", duration_s: 29.0 },
+    ],
+  };
+}
 
 function deepMerge<T>(base: T, changes: unknown): T {
   if (changes === null || typeof changes !== "object" || Array.isArray(changes)) return changes as T;
@@ -196,6 +276,11 @@ export class MockApi implements Api {
   private recStart = 0;
   private recTicker: unknown = null;
   private recordings: Recording[] = [];
+  private recMode: RecorderMode = "plain";
+  private mediaPlayers: MediaPlayer[] = [];
+  private live: { player: MediaPlayer; folder: string; track: number; played: number[]; opts: SessionStartOptions; lastSwitch: number; idleSince: number | null } | null = null;
+  private sessions: RecordingSession[] = [];
+  private previewTimer: ReturnType<typeof setTimeout> | null = null;
   private permission: RecorderPermission;
   private jobs: StudioJob[] = [];
   private jobTicker: unknown = null;
@@ -215,6 +300,10 @@ export class MockApi implements Api {
     this.settings.ui.show_marker = this.o.showMarker;
     const lib = this.o.empty ? [] : [...demoLibrary(), ...fillerSongs(this.o.many)];
     this.songs = lib.map((demo) => ({ demo, settings: { ...demo.settings, levels: { ...demo.settings.levels } }, lyricsOverride: null, metadata: {} }));
+    if (this.o.platform === "windows") {
+      this.mediaPlayers = MOCK_PLAYERS.slice(0, this.o.players).map((p) => ({ ...p }));
+    }
+    if (!this.o.empty && this.o.platform === "windows") this.sessions = [demoSession()];
     this.recordings = [
       { path: "Recordings/2026-11-16 21-04-12.wav", name: "2026-11-16 21-04-12.wav", duration_s: 187.4, sample_rate: 48000, channels: 2, bytes: 71_965_000, clipped: false },
       { path: "Recordings/2026-11-15 19-30-55.wav", name: "2026-11-15 19-30-55.wav", duration_s: 64.0, sample_rate: 48000, channels: 2, bytes: 24_576_000, clipped: true },
@@ -231,6 +320,8 @@ export class MockApi implements Api {
     const r = q.get("recorder");
     if (r === "denied" || r === "not_determined" || r === "granted" || r === "unavailable") o.recorder = r;
     if (q.get("empty") === "1") o.empty = true;
+    const players = Number(q.get("players"));
+    if (q.has("players") && players >= 0) o.players = Math.min(3, Math.floor(players));
     if (q.get("skin") === "0") o.skin = false;
     const lm = q.get("lyricsmotion");
     if (lm === "letter" || lm === "word") o.lyricsMotion = lm;
@@ -243,6 +334,15 @@ export class MockApi implements Api {
     const peak = Number(q.get("exportpeak"));
     if (peak > 0 && Number.isFinite(peak)) o.exportPeak = peak;
     return o;
+  }
+
+  /** Tests: stop every timer and forget every listener (the next test starts clean). */
+  dispose(): void {
+    for (const t of [this.ticker, this.recTicker, this.jobTicker]) if (t !== null) this.o.clearInterval(t);
+    this.ticker = this.recTicker = this.jobTicker = null;
+    if (this.previewTimer) clearTimeout(this.previewTimer);
+    this.previewTimer = null;
+    this.handlers.clear();
   }
 
   // --- plumbing -------------------------------------------------------------
@@ -594,12 +694,16 @@ export class MockApi implements Api {
     return this.reply({ ...this.recorder });
   }
   recorderStart() {
+    return this.startCapture("plain", null);
+  }
+  private startCapture(mode: RecorderMode, player: MediaPlayer | null): Promise<void> {
     if (this.o.recorder === "unavailable") return this.reject<void>(fail("recorder_unavailable", "No output device supports capture on this computer."));
     if (this.permission === "denied" || this.permission === "not_determined") {
       return this.reject<void>(fail("permission", "macOS has not allowed this app to record the screen's sound yet (\"Screen Recording\" permission)."));
     }
-    if (this.recorder.state === "recording") return this.reply(undefined);
+    if (this.recorder.state === "recording") return this.reject(fail("busy", "A recording is already running."));
     const mac = this.o.platform === "macos";
+    this.recMode = mode;
     this.recStart = this.o.now();
     this.recorder = {
       state: "recording",
@@ -616,29 +720,183 @@ export class MockApi implements Api {
       clipped: false,
       dropped_s: 0,
       error: null,
+      mode,
+      player: player ? { id: player.id, app_name: player.app_name } : null,
+      session: null,
+      note: null,
     };
     this.recTicker = this.o.setInterval(() => {
       const el = (this.o.now() - this.recStart) / 1000;
       const l = -14 + 8 * Math.sin(el * 2.1) + 3 * Math.sin(el * 7.3);
       const r = -15 + 8 * Math.sin(el * 1.9 + 1) + 3 * Math.sin(el * 6.1);
       this.recorder = { ...this.recorder, elapsed_s: el, peak_db: [Math.min(0, l), Math.min(0, r)], clipped: this.recorder.clipped || l > -0.1 };
+      this.tickSession();
       this.emit("recorder://level", { ...this.recorder });
     }, 50);
     this.emit("recorder://level", { ...this.recorder });
     return this.reply(undefined);
   }
-  recorderStop(): Promise<Recording> {
+  recorderStop(pausePlayer = false): Promise<Recording> {
     if (this.recorder.state !== "recording") return this.reject(fail("not_recording", "The recorder is not running."));
+    if (this.recMode === "session") return this.reject(fail("session_running", "Songs are being recorded separately; stop them with the Stop button of that panel."));
     this.o.clearInterval(this.recTicker);
+    const player = this.recorder.player ? this.mediaPlayers.find((p) => p.id === this.recorder.player?.id) : undefined;
+    if (pausePlayer && player) player.status = "paused";
+    this.recMode = "plain";
     const d = new Date();
     const pad = (n: number) => String(n).padStart(2, "0");
     const name = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}.wav`;
     const dur = (this.o.now() - this.recStart) / 1000;
     const rec: Recording = { path: `Recordings/${name}`, name, duration_s: dur, sample_rate: 48000, channels: 2, bytes: Math.round(dur * 48000 * 8), clipped: this.recorder.clipped };
     this.recordings.unshift(rec);
-    this.recorder = { ...this.recorder, state: "idle" };
+    this.recorder = { ...this.recorder, state: "idle", mode: "plain", player: null, session: null, note: null };
     this.emit("recorder://level", { ...this.recorder });
     return this.reply(rec);
+  }
+
+  // Media-player link and "Record songs separately" (additions, 2026-11-18).
+  recorderMediaSessions(): Promise<MediaPlayers> {
+    if (this.o.platform === "macos") {
+      return this.reply({ available: false, reason: "Following and controlling the music player works on Windows only for now. Start the song in your player yourself, then record.", players: [] });
+    }
+    return this.reply({ available: true, reason: null, players: this.mediaPlayers.map((p) => ({ ...p })) });
+  }
+  private findPlayer(id: string): MediaPlayer | null {
+    return this.mediaPlayers.find((p) => p.id === id) ?? null;
+  }
+  private notFound<T>(): Promise<T> {
+    return this.reject(
+      fail("player_not_found", "That music player is not open any more (or has nothing loaded). Open it and pick a song, or use the plain Record button and press play yourself."),
+    );
+  }
+  async recorderRecordAndPlay(playerId: string): Promise<RecorderStatus> {
+    const p = this.findPlayer(playerId);
+    if (!p) return this.notFound();
+    const started = this.startCapture("record_and_play", p);
+    if (this.recMode === "record_and_play") p.status = "playing";
+    await started;
+    return { ...this.recorder };
+  }
+  async recorderSessionStart(options: SessionStartOptions): Promise<RecorderStatus> {
+    const p = this.findPlayer(options.player_id);
+    if (!p) return this.notFound();
+    await this.startCapture("session", p);
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const folder = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+    this.live = { player: p, folder, track: 0, played: [0], opts: options, lastSwitch: this.o.now(), idleSince: null };
+    if (options.start_player !== false) p.status = "playing";
+    this.recorder = { ...this.recorder, session: this.liveView() };
+    const s = this.sessionFromLive("recording");
+    this.sessions.unshift(s);
+    this.emit("recorder://session", { ...s });
+    this.emit("recorder://level", { ...this.recorder });
+    return { ...this.recorder };
+  }
+  private liveView() {
+    const l = this.live;
+    if (!l) return null;
+    const t = MOCK_PLAYLIST[l.track % MOCK_PLAYLIST.length];
+    const idle = l.opts.auto_stop_idle_s ?? 30;
+    return {
+      folder: l.folder,
+      path: `C:\\Jukeoke\\Recordings\\${l.folder}`,
+      current: { title: t.title, artist: t.artist, album: t.album },
+      playback: l.player.status,
+      songs: l.played.filter((i) => !MOCK_PLAYLIST[i % MOCK_PLAYLIST.length].ad).length,
+      auto_stop_idle_s: idle,
+      max_songs: l.opts.max_songs ?? null,
+      auto_stop_in_s: l.idleSince === null || idle <= 0 ? null : Math.max(0, idle - (this.o.now() - l.idleSince) / 1000),
+    };
+  }
+  /** The simulated player moves to the next track every 12 s. */
+  private tickSession(): void {
+    const l = this.live;
+    if (!l || this.recMode !== "session") return;
+    if (l.player.status === "playing" && this.o.now() - l.lastSwitch > 12000) {
+      l.track += 1;
+      l.played.push(l.track);
+      l.lastSwitch = this.o.now();
+    }
+    this.recorder = { ...this.recorder, session: this.liveView() };
+  }
+  private sessionFromLive(state: RecordingSession["state"]): RecordingSession {
+    const l = this.live!;
+    const songs: RecordedSong[] = [];
+    let n = 0;
+    l.played.forEach((i, k) => {
+      const t = MOCK_PLAYLIST[i % MOCK_PLAYLIST.length];
+      if (t.ad) return;
+      n += 1;
+      const last = k === l.played.length - 1;
+      songs.push(mockSong(l.folder, n, t, last ? "partial" : "complete", last ? "The recording stopped during the song." : null));
+    });
+    return {
+      folder: l.folder,
+      path: `C:\\Jukeoke\\Recordings\\${l.folder}`,
+      created: l.folder,
+      player: l.player.app_name,
+      player_id: l.player.source_app_id,
+      state,
+      progress: state === "splitting" ? 0 : null,
+      stop_reason: state === "recording" ? null : "user",
+      message: null,
+      master_present: state !== "split",
+      song_count: songs.length,
+      songs: state === "split" ? songs : [],
+      excluded: [],
+    };
+  }
+  private putSession(s: RecordingSession): void {
+    this.sessions = [s, ...this.sessions.filter((x) => x.folder !== s.folder)];
+    this.emit("recorder://session", { ...s });
+  }
+  recorderSessionStop(pausePlayer: boolean): Promise<RecordingSession> {
+    if (this.recorder.state !== "recording" || this.recMode !== "session" || !this.live) {
+      return this.reject(fail("not_recording", "No songs are being recorded separately."));
+    }
+    this.o.clearInterval(this.recTicker);
+    if (pausePlayer) this.live.player.status = "paused";
+    const splitting = this.sessionFromLive("splitting");
+    const done = this.sessionFromLive("split");
+    this.live = null;
+    this.recMode = "plain";
+    this.recorder = { ...this.recorder, state: "idle", mode: "plain", player: null, session: null, note: null };
+    this.emit("recorder://level", { ...this.recorder });
+    this.putSession(splitting);
+    setTimeout(() => this.putSession(done), Math.max(20, this.o.latencyMs * 10));
+    return this.reply({ ...splitting });
+  }
+  recorderSessionsList(): Promise<{ sessions: RecordingSession[] }> {
+    return this.reply({ sessions: this.sessions.map((s) => ({ ...s })) });
+  }
+  recorderSessionSplit(folder: string): Promise<RecordingSession> {
+    const s = this.sessions.find((x) => x.folder === folder);
+    if (!s) return this.reject(fail("not_found", "That session could not be found."));
+    if (!s.master_present) return this.reject(fail("nothing_to_split", "This session's full recording is no longer there, so there is nothing to split again."));
+    const splitting = { ...s, state: "splitting" as const, progress: 0, message: null };
+    this.putSession(splitting);
+    setTimeout(() => this.putSession({ ...s, state: "split", progress: null, message: null, master_present: false }), 30);
+    return this.reply(splitting);
+  }
+  recorderPreview(path: string): Promise<void> {
+    void this.recorderPreviewStop();
+    this.emit("recorder://preview", { path, playing: true });
+    this.previewTimer = setTimeout(() => {
+      this.previewTimer = null;
+      this.emit("recorder://preview", { path, playing: false });
+    }, 3000);
+    this.previewPath = path;
+    return this.reply(undefined);
+  }
+  private previewPath: string | null = null;
+  recorderPreviewStop(): Promise<void> {
+    if (this.previewTimer) {
+      clearTimeout(this.previewTimer);
+      this.previewTimer = null;
+      if (this.previewPath) this.emit("recorder://preview", { path: this.previewPath, playing: false });
+    }
+    return this.reply(undefined);
   }
   recorderRequestPermission() {
     // The real app shows the macOS prompt; the mock pretends the user allowed it.

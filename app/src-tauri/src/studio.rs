@@ -331,6 +331,49 @@ fn file_name(p: &str) -> String {
         .unwrap_or_else(|| p.to_string())
 }
 
+/// The sidecar of a song recorded with "Record songs separately" (`<stem>.json`
+/// next to the WAV, src/recsession.rs), with the audio path.
+fn recorded_song(path: &Path) -> Option<(jk_recorder::session::SongSidecar, PathBuf)> {
+    jk_recorder::session::SongSidecar::for_audio(path).map(|sc| (sc, path.to_path_buf()))
+}
+
+/// `studio_inspect` of a recorded song: a WAV has no tags, so the title, artist,
+/// album and cover the player reported (its sidecar) fill the fields the file left
+/// empty, and `recorded` (an addition) says how complete the recording is.
+pub fn merge_recorded_song(result: &mut Value, path: &Path) {
+    let Some((sc, audio)) = recorded_song(path) else { return };
+    let Some(o) = result.as_object_mut() else { return };
+    let empty = |v: Option<&Value>| v.is_none_or(|v| v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty()));
+    // The Studio's inspect falls back to the file name for the title of an untagged
+    // file (`title_from_tags: false`, docs/STUDIO_PROTOCOL.md section 5): for a recorded
+    // song that is "01 Artist - Title", so the sidecar's title replaces it.
+    let title_from_file_name = o.get("title_from_tags").and_then(Value::as_bool) == Some(false);
+    for (key, value) in [("title", &sc.title), ("artist", &sc.artist), ("album", &sc.album)] {
+        let replaceable = empty(o.get(key)) || (key == "title" && title_from_file_name);
+        if replaceable && !value.trim().is_empty() {
+            o.insert(key.into(), json!(value));
+        }
+    }
+    if empty(o.get("cover_path"))
+        && let Some(c) = sc.cover_path(&audio)
+    {
+        o.insert("cover_path".into(), json!(c.display().to_string()));
+    }
+    o.insert(
+        "recorded".into(),
+        json!({
+            "status": match sc.status {
+                jk_recorder::session::SongStatus::Complete => "complete",
+                jk_recorder::session::SongStatus::Partial => "partial",
+                jk_recorder::session::SongStatus::Unknown => "unknown",
+            },
+            "partial_reason": sc.partial_reason,
+            "track_duration_s": sc.track_duration_s,
+            "source_player": sc.source_player.app_name,
+        }),
+    );
+}
+
 impl Studio {
     /// `cfg: Err(reason)` = no Studio on this computer (macOS, runtime missing).
     pub fn new(cfg: Result<StudioConfig, String>, sink: Arc<dyn EventSink>) -> Arc<Studio> {
@@ -908,6 +951,16 @@ impl Studio {
             return Err(ApiError::new("not_found", "That file could not be found."));
         }
         let preset = obj.get("preset").and_then(Value::as_str).unwrap_or(DEFAULT_PRESET);
+        // A song recorded with "Record songs separately": its sidecar names the cover
+        // the player showed. "No cover_path" means "the file's own cover", and for a
+        // recording that is the sidecar's (a WAV holds none); null still removes it.
+        let mut metadata = obj.get("metadata").cloned().unwrap_or_else(|| json!({}));
+        if let Some(m) = metadata.as_object_mut()
+            && !m.contains_key("cover_path")
+            && let Some(cover) = recorded_song(Path::new(path)).and_then(|(sc, p)| sc.cover_path(&p))
+        {
+            m.insert("cover_path".into(), json!(cover.display().to_string()));
+        }
         if !matches!(preset, "full" | "clean" | "permissive") {
             return Err(ApiError::bad_request(
                 "The quality preset must be \"full\", \"clean\" or \"permissive\".",
@@ -924,7 +977,7 @@ impl Studio {
             "output_dir": cfg.library_dir,
             "preset": preset,
             "language": obj.get("language").and_then(Value::as_str).unwrap_or("en"),
-            "metadata": obj.get("metadata").cloned().unwrap_or_else(|| json!({})),
+            "metadata": metadata,
             "lyrics": obj.get("lyrics").cloned().unwrap_or_else(|| json!({"mode": "auto", "text": null, "lrc": null})),
         });
         let view = StudioJob {
@@ -1133,7 +1186,9 @@ impl Studio {
         if !Path::new(path).is_file() {
             return Err(ApiError::new("not_found", "That file could not be found."));
         }
-        self.call(json!({"type": "inspect", "input": path}), None)
+        let mut r = self.call(json!({"type": "inspect", "input": path}), None)?;
+        merge_recorded_song(&mut r, Path::new(path));
+        Ok(r)
     }
 
     /// `studio_lyrics_lookup` (only ever when the user pressed the button).

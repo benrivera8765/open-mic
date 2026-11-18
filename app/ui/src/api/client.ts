@@ -26,6 +26,7 @@ import type {
   ExportFormat,
   InspectResult,
   LibraryList,
+  MediaPlayers,
   LookupResult,
   LyricsLookupQuery,
   Lyrics,
@@ -34,7 +35,9 @@ import type {
   RealignAnchor,
   Recording,
   RecorderStatus,
+  RecordingSession,
   SelfCheckResult,
+  SessionStartOptions,
   SongDetail,
   SongSettings,
   StudioModelsStatus,
@@ -49,6 +52,7 @@ export const ARG_NAMES = {
   export_backing: "options",
   studio_lyrics_lookup: "query",
   studio_submit: "job",
+  recorder_session_start: "options",
 } as const;
 
 export type Unsubscribe = () => void;
@@ -89,7 +93,8 @@ export interface Api {
   // 8. Recorder
   recorderStatus(): Promise<RecorderStatus>;
   recorderStart(): Promise<void>;
-  recorderStop(): Promise<Recording>;
+  /** `pausePlayer` (addition): after "Record & play", also pause that player. */
+  recorderStop(pausePlayer?: boolean): Promise<Recording>;
   recorderRequestPermission(): Promise<void>;
   recordingsList(): Promise<{ recordings: Recording[] }>;
   // 9. Studio
@@ -109,6 +114,19 @@ export interface Api {
   // Additions the app core implements beyond APP_API v1 (optional here).
   /** macOS translocation: native folder picker for the stick's main folder, then restart. */
   rootChoose?(): Promise<{ ok: boolean; root: string | null; message: string }>;
+  // 8. Recorder additions (the owner's request of 2026-11-18): the media player link.
+  /** The media players Windows knows about (read only). */
+  recorderMediaSessions?(): Promise<MediaPlayers>;
+  /** Starts the capture, waits for its first buffer, then tells the player to play. */
+  recorderRecordAndPlay?(playerId: string): Promise<RecorderStatus>;
+  /** "Record songs separately": one capture, split into one file per song on stop. */
+  recorderSessionStart?(options: SessionStartOptions): Promise<RecorderStatus>;
+  recorderSessionStop?(pausePlayer: boolean): Promise<RecordingSession>;
+  recorderSessionsList?(): Promise<{ sessions: RecordingSession[] }>;
+  recorderSessionSplit?(folder: string): Promise<RecordingSession>;
+  /** Plays part of a recording natively (never in the web view). */
+  recorderPreview?(path: string, startS: number, maxS: number): Promise<void>;
+  recorderPreviewStop?(): Promise<void>;
   /** Studio form: native dialog for one JPEG / PNG cover picture; null when cancelled. */
   pickCoverImage?(): Promise<string | null>;
   /** Studio form: a JPEG / PNG picture file (the inspected cover or a picked one) as a thumbnail. */
@@ -200,7 +218,16 @@ export class TauriApi implements Api {
     call<{ job_id: string }>("export_backing", { song_id, [ARG_NAMES.export_backing]: { format } });
   recorderStatus = () => call<RecorderStatus>("recorder_status");
   recorderStart = () => call<void>("recorder_start");
-  recorderStop = () => call<Recording>("recorder_stop");
+  recorderStop = (pause_player = false) => call<Recording>("recorder_stop", { pause_player });
+  recorderMediaSessions = () => call<MediaPlayers>("recorder_media_sessions");
+  recorderRecordAndPlay = (player_id: string) => call<RecorderStatus>("recorder_record_and_play", { player_id });
+  recorderSessionStart = (options: SessionStartOptions) =>
+    call<RecorderStatus>("recorder_session_start", { [ARG_NAMES.recorder_session_start]: options });
+  recorderSessionStop = (pause_player: boolean) => call<RecordingSession>("recorder_session_stop", { pause_player });
+  recorderSessionsList = () => call<{ sessions: RecordingSession[] }>("recorder_sessions_list");
+  recorderSessionSplit = (folder: string) => call<RecordingSession>("recorder_session_split", { folder });
+  recorderPreview = (path: string, start_s: number, max_s: number) => call<void>("recorder_preview", { path, start_s, max_s });
+  recorderPreviewStop = () => call<void>("recorder_preview_stop");
   recorderRequestPermission = () => call<void>("recorder_request_permission");
   recordingsList = () => call<{ recordings: Recording[] }>("recordings_list");
   studioStatus = () => call<StudioStatus>("studio_status");

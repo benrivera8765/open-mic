@@ -36,6 +36,9 @@ pub enum RecorderError {
     Io(std::io::Error),
     /// `stop()` was called on a recorder whose worker already ended.
     AlreadyStopped,
+    /// The media player is not open, refused a command, or cannot be followed
+    /// (see [`crate::media`]). The text says what to do, in plain words.
+    Player(String),
 }
 
 impl fmt::Display for RecorderError {
@@ -57,6 +60,7 @@ impl fmt::Display for RecorderError {
             RecorderError::Format(why) => write!(f, "unsupported capture format: {why}"),
             RecorderError::Io(e) => write!(f, "file error while recording: {e}"),
             RecorderError::AlreadyStopped => write!(f, "the recorder has already stopped"),
+            RecorderError::Player(why) => write!(f, "{why}"),
         }
     }
 }
