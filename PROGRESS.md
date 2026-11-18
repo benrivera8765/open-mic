@@ -51,13 +51,20 @@ Read this first in every session. Then DECISIONS.md, then docs/ARCHITECTURE.md.
 
 - 2026-11-18 Stage 7 (commit cde5519): dist/ (8.63 GB on exFAT with 32 KB clusters; proven from a subst copy: smoke 8/8, self-check 8/8, real Studio job, 0 per-user writes); shipped exe free of build-machine paths; THIRD_PARTY_LICENSES.md, README, CONTRIBUTING, screenshots; ticker >= 2.0 s lookahead on all test songs; local CI sweep all green (docs/TEST_RESULTS.md); completeness critic table docs/WORK_ORDER_STATUS.md; HANDOFF.md draft.
 
+- 2026-11-18 Gap closing (commit dea2cdf), verified twice: key-change render-ahead-and-cache mode (WO 4.5), Rubber Band allocation on the render worker fixed (RT path 0 allocations), cover-art correction, ticker pause when minimised, Mac CI evidence steps fail on missing evidence + macOS 13 availability audit + build-mac.sh path remap, full licence texts in dist/Licenses, 20-min real-app soak (0 underruns, ticker 60 fps, whole app ~0.55-0.61 GB on Windows), karaoke loudness/stereo image measured. Local CI all green (docs/TEST_RESULTS.md).
+- 2026-11-18 HANDOFF.md written. Everything that can be done unattended on this PC is done.
+
 ## In flight
 
-- Workflow `jukeoke-gaps` (wf_9e1698ef-f24) closing the critic's gaps: key-change render-ahead-and-cache fallback (WO 4.5); cover-art correction in the Studio form; ticker pause when minimised; Mac CI steps that fail when evidence is missing + macOS availability audit + build-mac.sh path remap; full licence texts in dist/Licenses; then rebuild dist + local CI + 20-min real-app soak with bubbles and CPU load + whole-app memory + engine allocation test + separation stereo/loudness; then two verifiers.
+- Nothing.
 
-## Next
+## Next (needs the owner; see HANDOFF.md section 8)
 
-- After jukeoke-gaps: update HANDOFF.md with its results (key mode, soak/memory numbers, CI hardening, licence texts), final PROGRESS/DECISIONS, commit, then delete the hourly cron (CronList/CronDelete) - the remaining work needs the owner (GitHub login, Mac, ears, licence decisions).
+- GitHub login (`gh auth login`), then a session: create the private repo, push, run CI, read the macOS job (build, availability audit REVIEW lines, exFAT self-check, SCK probe, Windows-vs-Mac render comparison) and fix what it finds.
+- MacBook: build the app (`bash scripts/build-mac.sh`) or take the CI artifact, run the self-check, bring the stick back; a session reads `Settings/selfcheck-*.txt`.
+- Listening checklist results (HANDOFF section 6).
+- Licence decisions: the Studio runtime with NVIDIA libraries + GPL code; the unlicensed "clean" preset model; 7 crates' missing notices; git history (user-folder path in 17 commits, author name).
+- Songs in `test-songs/` to run end to end.
 
 ## Notes for a fresh session
 
