@@ -326,6 +326,92 @@ interface Recording { path: string; name: string; duration_s: number; sample_rat
 
 Event `recorder://level` about 20 times per second while recording: a `RecorderStatus`.
 
+### 8.1 The media player: "Record & play" and "Record songs separately" (added 2026-11-18)
+
+The owner's request (DECISIONS D-221): start the music player together with the
+recording, and record several songs back to back, kept apart for the Studio. Windows
+only (the system's media sessions, `Windows.Media.Control`); on macOS
+`recorder_media_sessions` answers `available: false` with the reason and the other
+commands reject with `player_unavailable`. The player is generic: any app that shows in
+Windows' media controls (a music app, a browser playing audio).
+
+- `recorder_media_sessions() -> MediaPlayers` - the players Windows lists, read only
+  (nothing is played, paused or changed). The UI asks every 2.5 s while the Recorder
+  screen is open.
+- `recorder_record_and_play(player_id) -> RecorderStatus` - starts the capture exactly
+  like `recorder_start`, waits until its first buffer has arrived (at most 3 s), then
+  asks the player to play, so the song's first note is inside the recording. Rejects
+  with `player_not_found` (with a plain message that offers the plain Record button)
+  when the player is not open. If the player refuses "play", the recording keeps
+  running and `RecorderStatus.note` says so.
+- `recorder_stop(pause_player?: boolean) -> Recording` - `pause_player` (default false)
+  also pauses the player after "Record & play" ("Stop & pause": the capture stops first).
+  `Recording.note` says if the pause was refused. Rejects with `session_running` while
+  songs are recorded separately.
+- `recorder_session_start(options: SessionStartOptions) -> RecorderStatus` (argument name
+  `options`; a bare `player_id` is accepted too) - "Record songs separately": one
+  continuous capture into `<root>/Recordings/<YYYY-MM-DD HH-MM-SS>/master.wav`, started
+  before the player is told to play (if it is not playing and `start_player` is not
+  false). Every track change and play / pause / stop of that player becomes a marker on
+  the capture's timeline, saved at once to `session.json` with the cover picture. The
+  session stops by itself after the player has been paused or stopped for
+  `auto_stop_idle_s` (default 30; 0 = never), or when the song after `max_songs` starts
+  (then the player is paused unless `pause_player_at_end` is false), or the player is
+  closed. Rejects with `busy` while any recording runs.
+- `recorder_session_stop(pause_player?: boolean) -> RecordingSession` - stops following the
+  player, stops the capture, pauses the player (default true), and splits the master in
+  the background (`recorder://session` events with `progress`).
+- `recorder_sessions_list() -> { sessions: RecordingSession[] }`, newest first.
+- `recorder_session_split(folder) -> RecordingSession` - splits a session again
+  (`kept_master`, `failed`, `stopped`, or an `interrupted` one). Rejects with
+  `nothing_to_split` when the master was already deleted after a verified split.
+- `recorder_preview(path, start_s?, max_s?)` / `recorder_preview_stop()` - plays up to
+  `max_s` (default 30) seconds of a recording through the default output device,
+  natively (the web view never plays audio); only files inside the Recordings folder
+  (`bad_request` otherwise, `not_found` for a missing file). One preview at a time.
+
+```ts
+interface MediaPlayers { available: boolean; reason: string | null; players: MediaPlayer[] }
+interface MediaPlayer { id: string; source_app_id: string; app_name: string; is_current: boolean;
+  status: "closed" | "opened" | "changing" | "stopped" | "playing" | "paused" | "unknown";
+  title: string; artist: string; album: string; duration_s: number | null; can_play: boolean; can_pause: boolean }
+interface SessionStartOptions { player_id: string; auto_stop_idle_s?: number; max_songs?: number | null;
+  start_player?: boolean; pause_player_at_end?: boolean }
+// RecorderStatus additions: mode ("plain" | "record_and_play" | "session"; "plain" while idle),
+// player ({ id, app_name } | null), session (LiveSession | null), note (string | null).
+interface LiveSession { folder: string; path: string; current: { title: string; artist: string; album: string } | null;
+  playback: string; songs: number; auto_stop_idle_s: number; max_songs: number | null; auto_stop_in_s: number | null }
+interface RecordingSession { folder: string; path: string; created: string; player: string; player_id: string;
+  state: "recording" | "stopped" | "splitting" | "split" | "kept_master" | "failed" | "interrupted";
+  progress: number | null; stop_reason: "user" | "idle" | "max_songs" | "player_closed" | "interrupted" | "app_closed" | null;
+  message: string | null; master_present: boolean; song_count: number; songs: RecordedSong[]; excluded: ExcludedPart[] }
+interface RecordedSong { path: string; name: string; number: number; title: string; artist: string; album: string;
+  cover_path: string | null; duration_s: number; track_duration_s: number | null;
+  status: "complete" | "partial" | "unknown"; partial_reason: string | null;
+  start_confidence: "certain" | "uncertain" | "edge"; end_confidence: "certain" | "uncertain" | "edge"; paused_s: number }
+interface ExcludedPart { path: string; name: string; reason: string; duration_s: number }
+```
+
+Events: `recorder://session` (a `RecordingSession` when a session starts, stops, makes
+split progress or finishes splitting), `recorder://preview` (`{ path, playing }`).
+
+What a split produces (jk-recorder `session`, DECISIONS D-224..D-227): one float WAV per
+song, `<NN> <Artist> - <Title>.wav` (names safe on Windows, macOS and exFAT), a sidecar
+`<NN> <Artist> - <Title>.json` (`format: "jukeoke-recorded-song"`: title, artist, album,
+cover, recorded and track length, complete / partial / unknown, how each end was cut,
+the player) and the cover (`.jpg` / `.png`); advertisements, what came before the first
+song and after playback ended, and skips under 5 s go to `_excluded/`. The cuts copy
+samples (the song files and the excluded parts, joined in order, are the master bit for
+bit); the master is deleted only when every file was read back and matched. A session a
+crash or a closed app left behind is finished when the app starts next.
+
+Studio hand-off: the UI queues each song with `studio_submit` and
+`metadata: { title, artist, album, cover_path }` from the sidecar. `studio_inspect` of
+a recorded song fills the title, artist, album and `cover_path` the WAV cannot hold from
+its sidecar and adds `recorded: { status, partial_reason, track_duration_s,
+source_player }`; `studio_submit` without a `cover_path` key uses the sidecar's cover
+(the recording's "own" cover; `null` still removes it).
+
 ## 9. Studio (Windows with a capable GPU)
 
 - `studio_status() -> StudioStatus`
@@ -418,6 +504,8 @@ reader: the UI uses a field when present and degrades when it is absent.
 | 5 | 2026-11-18: `ui.lyrics_motion` ("word" default, "letter"), the ticker's pace (D-216). A reader without it behaves like "letter". |
 | 7 | `export_cancel(job_id)`. `export_backing` takes the format as `format` or inside `options`. `export://done` also carries `applied_gain_db` (negative when a Flac24 export was turned down to avoid clipping; 0 otherwise) and `peak` (largest absolute sample of the render before any export gain, linear). |
 | 8 | `recorder_start` returns a `RecorderStatus`; `recorder_request_permission` returns `{ permission }`. |
+| 8 | 2026-11-18 (owner's request, section 8.1): `recorder_media_sessions`, `recorder_record_and_play`, `recorder_stop(pause_player?)`, `recorder_session_start(options)`, `recorder_session_stop(pause_player?)`, `recorder_sessions_list`, `recorder_session_split(folder)`, `recorder_preview`, `recorder_preview_stop`; `RecorderStatus.mode`, `player`, `session`, `note`; `Recording.note`; events `recorder://session`, `recorder://preview`. |
+| 9 | 2026-11-18: `studio_inspect` fills a recorded song's empty title / artist / album / `cover_path` from its sidecar and adds `recorded`; `studio_submit` without `metadata.cover_path` uses the sidecar's cover. |
 | 9 | `StudioStatus.checking`; `StudioJob.stage_progress`, `error_code`; `studio_clear_finished()`; `studio_models_status(preset?)` / `studio_models_download(preset?)`; event `studio://status`. 2026-11-18: `pick_cover_image()`, `studio_cover_preview(path, max_px?)`, `metadata.cover_path` in `studio_submit`. |
 | 10 | `selfcheck_run`'s `silent`; internal `selfcheck_user_agent`. |
 

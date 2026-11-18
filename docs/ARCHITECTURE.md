@@ -46,7 +46,9 @@ crates/
                            output (WASAPI / Core Audio / null), playback clock, export,
                            FLAC writer, generated demo song
   jk-recorder/             system-audio capture: WASAPI loopback (Windows),
-                           ScreenCaptureKit (macOS 13+), writes float WAV / RF64
+                           ScreenCaptureKit (macOS 13+), writes float WAV / RF64;
+                           media-player link (Windows media sessions, `media`),
+                           recording sessions + splitter (`session`), preview player
   jk-cli/                  `jukeoke-cli`: info, verify, render, export, play, seek-test,
                            devices, make-demo-song, make-test-song, gen-test-stems,
                            render-stems, bench, ci-render
@@ -411,8 +413,40 @@ blocking pool, never on the main thread. The engine is reached through `AudioEng
   into `library://changed`, free space of the Library's volume.
 - **Export** (export.rs): `render_offline` on a worker thread into `<root>/Exports/`,
   progress events, cancel.
-- **Recorder** (recorder.rs): jk-recorder session, `recorder://level` about 20 times a
-  second, recordings index with the clip flag.
+- **Recorder** (recorder.rs, recsession.rs, medialink.rs): jk-recorder session,
+  `recorder://level` about 20 times a second, recordings index with the clip flag. Three
+  modes share the one capture (the owner's request of 18 Nov 2026, D-221..D-228):
+  - *plain*: the Record button.
+  - *record_and_play*: the capture starts, the app waits until its first buffer is in
+    (`Recorder::has_audio`, at most 3 s), then tells the chosen media player to play
+    (Windows' Global System Media Transport Controls, `jk_recorder::media`, through the
+    `MediaLink` trait; tests use a fake that never touches a real app). "Stop & pause"
+    stops the capture, then pauses that player.
+  - *session* ("Record songs separately"): one continuous master in
+    `Recordings/<date time>/master.wav`; a `MediaWatch` reports every track or playback
+    change of the player with the instant it was noticed; the instant is placed on the
+    master's timeline by `CapturePipeline::timeline_frame_at` (anchored on the newest
+    captured block, so device-clock drift does not accumulate), and a `MarkerBuilder`
+    turns the reports into markers (new title/artist = new track; empty metadata
+    ignored; repeat = position back to the start). `session.json` is saved atomically on
+    every change; the cover is fetched 0.7 s and 2.5 s after a change, only while the
+    player still shows that song. A monitor thread stops the session after the player
+    has been paused/stopped for the chosen time (default 30 s), after the song limit,
+    or when the player closes. Then `jk_recorder::session::split` runs on a background
+    thread: each track change is cut in the middle of the nearest run of near-digital
+    silence (all channels below -70 dBFS for at least 100 ms) within 2.5 s of the event
+    and no further than half-way to the neighbouring changes (D-229), or at the event
+    ("uncertain") without one; "playback ended" keeps at most 1 s of the
+    silence; parts are copied sample for sample into float WAVs (temporary file,
+    flushed, renamed), read back and hash-checked against the master; songs get a
+    sidecar JSON and their cover; advertisements, the tail after playback ended and skips
+    under 5 s go to `_excluded/`; the master is deleted only if every part matched and
+    the parts cover it exactly. Sessions a crash or a closed app left behind are finished
+    at the next start (`wav::repair` of the master, then the split; files already
+    written and matching are kept).
+  Recorded songs are previewed natively (`jk_recorder::preview`, WASAPI shared mode at
+  the file's format; the web view never plays audio). The Studio picks up a recorded
+  song's sidecar in `studio_inspect` and as its cover in `studio_submit`.
 - **Studio supervisor** (studio.rs, D-83): starts the Studio on demand
   (`<root>/Windows/Studio/python/python.exe -I -X utf8 -m jukeoke_studio serve`, with
   `JUKEOKE_MODELS_DIR=<root>/Models`), JSON lines over stdio, request timeouts, a job

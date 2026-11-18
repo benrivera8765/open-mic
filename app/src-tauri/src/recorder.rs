@@ -12,20 +12,33 @@
 //!   `jk_recorder::PERMISSION_EXPLANATION` (exposed in `AppInfo`).
 //! - What the list cannot read from the WAV header (whether it clipped) is kept in
 //!   `<root>/Settings/recordings-index.json`.
+//!
+//! Owner's request of 18 Nov 2026 (DECISIONS D-221..): three modes share the one
+//! capture. `plain` is the Record button. `record_and_play` starts the capture,
+//! waits for its first buffer, then tells the chosen media player to play, so the
+//! first note is always inside the recording. `session` ("Record songs
+//! separately", src/recsession.rs) records one continuous master into its own folder,
+//! follows the player's track changes as markers and splits the master into one file
+//! per song when it stops. The media player is reached through [`MediaLink`]
+//! (Windows' media sessions; tests use a fake that never touches a real app).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use jk_recorder::{PermissionState, Recorder, RecorderConfig, RecorderError, SourceEncoding};
+use jk_recorder::preview::Preview;
+use jk_recorder::session::SplitSettings;
+use jk_recorder::{FinishedRecording, PermissionState, Recorder, RecorderConfig, RecorderError, SourceEncoding};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ApiError, ApiResult};
 use crate::events::{EventSink, emit, names};
+use crate::medialink::MediaLink;
+use crate::recsession::{LiveSession, SessionRun};
 
 /// docs/APP_API.md `RecorderStatus.format`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -34,6 +47,13 @@ pub struct FormatView {
     pub channels: u16,
     pub sample_format: &'static str,
     pub note: String,
+}
+
+/// The media player a recording started or follows (addition, 2026-11-18).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PlayerView {
+    pub id: String,
+    pub app_name: String,
 }
 
 /// docs/APP_API.md `RecorderStatus`.
@@ -46,10 +66,20 @@ pub struct RecorderStatusView {
     pub clipped: bool,
     pub dropped_s: f64,
     pub error: Option<String>,
+    // ---- additions (owner's request, 2026-11-18) ----
+    /// `"plain" | "record_and_play" | "session"` (`"plain"` while idle).
+    pub mode: &'static str,
+    /// The player this recording started / follows.
+    pub player: Option<PlayerView>,
+    /// Session mode: what is being recorded now.
+    pub session: Option<LiveSession>,
+    /// Something the user should know that is not an error (the player did not
+    /// accept "play", for example).
+    pub note: Option<String>,
 }
 
 impl RecorderStatusView {
-    fn idle(error: Option<String>) -> Self {
+    pub(crate) fn idle(error: Option<String>) -> Self {
         RecorderStatusView {
             state: if error.is_some() { "error" } else { "idle" },
             elapsed_s: 0.0,
@@ -58,6 +88,10 @@ impl RecorderStatusView {
             clipped: false,
             dropped_s: 0.0,
             error,
+            mode: "plain",
+            player: None,
+            session: None,
+            note: None,
         }
     }
 }
@@ -72,6 +106,9 @@ pub struct Recording {
     pub channels: u16,
     pub bytes: u64,
     pub clipped: bool,
+    /// Addition: what happened to the player on "Stop & pause", when it matters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -84,6 +121,8 @@ struct IndexEntry {
 }
 
 const INDEX_FILE: &str = "recordings-index.json";
+/// "Record & play" waits this long at most for the capture's first buffer.
+const FIRST_AUDIO_TIMEOUT: Duration = Duration::from_secs(3);
 
 fn sample_format(src: &SourceEncoding) -> &'static str {
     match src {
@@ -122,13 +161,39 @@ pub fn user_message(e: &RecorderError) -> (String, String) {
         ),
         RecorderError::Io(io) => ("io", format!("The recording could not be written: {io}")),
         RecorderError::AlreadyStopped => ("not_recording", "The recording has already stopped.".to_string()),
+        RecorderError::Player(why) => ("player", why.clone()),
     };
     (code.to_string(), msg)
 }
 
-struct Active {
-    recorder: Arc<Mutex<Option<Recorder>>>,
-    path: PathBuf,
+/// What a running recording is for (decorates every status reading).
+#[derive(Clone, Default)]
+pub(crate) struct Extra {
+    pub(crate) mode: &'static str,
+    pub(crate) player: Option<PlayerView>,
+    pub(crate) note: Option<String>,
+    pub(crate) run: Option<Arc<SessionRun>>,
+}
+
+impl Extra {
+    fn plain() -> Extra {
+        Extra {
+            mode: "plain",
+            ..Extra::default()
+        }
+    }
+
+    fn decorate(&self, v: &mut RecorderStatusView) {
+        v.mode = if self.mode.is_empty() { "plain" } else { self.mode };
+        v.player = self.player.clone();
+        v.note = self.note.clone();
+        v.session = self.run.as_ref().map(|r| r.live());
+    }
+}
+
+pub(crate) struct Active {
+    pub(crate) recorder: Arc<Mutex<Option<Recorder>>>,
+    pub(crate) path: PathBuf,
     stop: Arc<AtomicBool>,
     thread: JoinHandle<()>,
 }
@@ -140,24 +205,76 @@ enum Phase {
     Stopping,
 }
 
-pub struct RecorderCtl {
-    dir: PathBuf,
+/// What [`Inner::stop_capture`] hands back.
+pub(crate) struct Stopped {
+    pub(crate) finished: FinishedRecording,
+    pub(crate) path: PathBuf,
+    pub(crate) extra: Extra,
+}
+
+pub(crate) struct Inner {
+    pub(crate) dir: PathBuf,
     index_path: PathBuf,
-    sink: Arc<dyn EventSink>,
+    pub(crate) sink: Arc<dyn EventSink>,
     phase: Mutex<Phase>,
     last: Arc<Mutex<RecorderStatusView>>,
     asked_permission: AtomicBool,
+    pub(crate) media: Arc<dyn MediaLink>,
+    pub(crate) extra: Arc<Mutex<Extra>>,
+    pub(crate) split_settings: SplitSettings,
+    /// Session folders being split now, with the fraction done.
+    pub(crate) splitting: Mutex<HashMap<PathBuf, f64>>,
+    preview: Mutex<Option<(String, Preview)>>,
+    preview_gen: std::sync::atomic::AtomicU64,
+}
+
+/// The recorder controller (a cheap handle; the state is shared with its threads).
+pub struct RecorderCtl {
+    pub(crate) inner: Arc<Inner>,
+}
+
+pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl RecorderCtl {
     pub fn new(recordings_dir: PathBuf, settings_dir: &Path, sink: Arc<dyn EventSink>) -> RecorderCtl {
+        Self::with_media(recordings_dir, settings_dir, sink, crate::medialink::system())
+    }
+
+    /// With a given media-player link (tests pass a fake one).
+    pub fn with_media(
+        recordings_dir: PathBuf,
+        settings_dir: &Path,
+        sink: Arc<dyn EventSink>,
+        media: Arc<dyn MediaLink>,
+    ) -> RecorderCtl {
+        Self::with_options(recordings_dir, settings_dir, sink, media, SplitSettings::default())
+    }
+
+    /// With a given media-player link and splitter settings (tests).
+    pub fn with_options(
+        recordings_dir: PathBuf,
+        settings_dir: &Path,
+        sink: Arc<dyn EventSink>,
+        media: Arc<dyn MediaLink>,
+        split_settings: SplitSettings,
+    ) -> RecorderCtl {
         RecorderCtl {
-            dir: recordings_dir,
-            index_path: settings_dir.join(INDEX_FILE),
-            sink,
-            phase: Mutex::new(Phase::Idle),
-            last: Arc::new(Mutex::new(RecorderStatusView::idle(None))),
-            asked_permission: AtomicBool::new(false),
+            inner: Arc::new(Inner {
+                dir: recordings_dir,
+                index_path: settings_dir.join(INDEX_FILE),
+                sink,
+                phase: Mutex::new(Phase::Idle),
+                last: Arc::new(Mutex::new(RecorderStatusView::idle(None))),
+                asked_permission: AtomicBool::new(false),
+                media,
+                extra: Arc::new(Mutex::new(Extra::plain())),
+                split_settings,
+                splitting: Mutex::new(HashMap::new()),
+                preview: Mutex::new(None),
+                preview_gen: std::sync::atomic::AtomicU64::new(0),
+            }),
         }
     }
 
@@ -166,7 +283,7 @@ impl RecorderCtl {
         match jk_recorder::permission_preflight() {
             PermissionState::Granted => "granted",
             PermissionState::NotRequired => "not_required",
-            PermissionState::NotGranted if self.asked_permission.load(Ordering::SeqCst) => "denied",
+            PermissionState::NotGranted if self.inner.asked_permission.load(Ordering::SeqCst) => "denied",
             PermissionState::NotGranted => "not_determined",
         }
     }
@@ -174,7 +291,7 @@ impl RecorderCtl {
     /// `recorder_request_permission`: shows the macOS prompt (the first time only;
     /// afterwards macOS just answers with the current state).
     pub fn request_permission(&self) -> &'static str {
-        self.asked_permission.store(true, Ordering::SeqCst);
+        self.inner.asked_permission.store(true, Ordering::SeqCst);
         match jk_recorder::permission_request() {
             PermissionState::Granted => "granted",
             PermissionState::NotRequired => "not_required",
@@ -183,36 +300,220 @@ impl RecorderCtl {
     }
 
     pub fn status(&self) -> RecorderStatusView {
-        self.last.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.inner.status()
     }
 
-    fn set_last(&self, v: RecorderStatusView) {
-        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = v.clone();
+    /// `recorder_start` (the plain Record button). Blocks until the OS has started
+    /// the stream (at most 20 s).
+    pub fn start(&self) -> ApiResult<RecorderStatusView> {
+        let path = self.inner.new_path()?;
+        self.inner.start_capture(path, Extra::plain())?;
+        Ok(self.status())
+    }
+
+    /// `recorder_record_and_play(player_id)`: starts the capture, waits until its
+    /// first buffer has arrived, then asks the player to play. If the player does not
+    /// accept the command, the recording keeps running and `note` says so.
+    pub fn record_and_play(&self, player_id: &str) -> ApiResult<RecorderStatusView> {
+        let inner = &self.inner;
+        let player = inner.find_player(player_id)?;
+        let path = inner.new_path()?;
+        let t0 = Instant::now();
+        let rec = inner.start_capture(
+            path,
+            Extra {
+                mode: "record_and_play",
+                player: Some(PlayerView {
+                    id: player.id.clone(),
+                    app_name: player.app_name.clone(),
+                }),
+                ..Extra::default()
+            },
+        )?;
+        let has_audio = wait_for_audio(&rec, FIRST_AUDIO_TIMEOUT);
+        let started = t0.elapsed();
+        let note = match inner.media.play(&player.id) {
+            Ok(()) => None,
+            Err(e) => Some(format!(
+                "The recording is running, but {} did not start: {}",
+                player.app_name,
+                user_message(&e).1
+            )),
+        };
+        crate::applog::info(&format!(
+            "recorder: record & play: capture running after {:.0} ms (first buffer: {has_audio}), play sent to {} ({})",
+            started.as_secs_f64() * 1000.0,
+            player.source_app_id,
+            if note.is_none() { "accepted" } else { "refused" }
+        ));
+        lock(&inner.extra).note = note;
+        inner.refresh_last();
+        Ok(self.status())
+    }
+
+    /// `recorder_stop(pause_player?)`: closes the file and returns what was recorded.
+    /// After "Record & play", `pause_player` also pauses that player.
+    pub fn stop_and_pause(&self, pause_player: bool) -> ApiResult<Recording> {
+        let inner = &self.inner;
+        if lock(&inner.extra).mode == "session" && inner.is_recording() {
+            return Err(ApiError::new(
+                "session_running",
+                "Songs are being recorded separately; stop them with the Stop button of that panel.",
+            ));
+        }
+        let stopped = inner.stop_capture()?;
+        let mut note = None;
+        if pause_player
+            && let Some(p) = &stopped.extra.player
+            && let Err(e) = inner.media.pause(&p.id)
+        {
+            note = Some(format!("{} was not paused: {}", p.app_name, user_message(&e).1));
+        }
+        let mut r = inner.finish_plain(&stopped)?;
+        r.note = note;
+        Ok(r)
+    }
+
+    /// `recorder_stop()`.
+    pub fn stop(&self) -> ApiResult<Recording> {
+        self.stop_and_pause(false)
+    }
+
+    /// `recordings_list`: the WAV files in the Recordings folder, newest first.
+    pub fn list(&self) -> ApiResult<Vec<Recording>> {
+        self.inner.list()
+    }
+
+    /// `recorder_preview(path, start_s, max_s)`: plays part of a recording through the
+    /// default output (natively; the web view never plays audio). Only files inside
+    /// the Recordings folder. One preview at a time.
+    pub fn preview(&self, path: &str, start_s: f64, max_s: f64) -> ApiResult<()> {
+        let inner = &self.inner;
+        let p = inner.inside_recordings(path)?;
+        self.preview_stop();
+        let pv = Preview::start(&p, start_s, max_s.clamp(1.0, 600.0)).map_err(|e| {
+            let (code, msg) = user_message(&e);
+            ApiError::new(code, msg)
+        })?;
+        let generation = inner.preview_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        *lock(&inner.preview) = Some((path.to_string(), pv));
+        emit(&*inner.sink, names::RECORDER_PREVIEW, &serde_json::json!({"path": path, "playing": true}));
+        // Tell the UI when it ends by itself.
+        let me = Arc::clone(inner);
+        let path = path.to_string();
+        let _ = std::thread::Builder::new().name("recorder-preview".into()).spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(100));
+            if me.preview_gen.load(Ordering::SeqCst) != generation {
+                return; // replaced or stopped
+            }
+            let done = lock(&me.preview).as_ref().is_none_or(|(_, p)| p.finished());
+            if done {
+                lock(&me.preview).take();
+                emit(&*me.sink, names::RECORDER_PREVIEW, &serde_json::json!({"path": path, "playing": false}));
+                return;
+            }
+        });
+        Ok(())
+    }
+
+    /// `recorder_preview_stop()`.
+    pub fn preview_stop(&self) {
+        let inner = &self.inner;
+        inner.preview_gen.fetch_add(1, Ordering::SeqCst);
+        if let Some((path, pv)) = lock(&inner.preview).take() {
+            pv.stop();
+            emit(&*inner.sink, names::RECORDER_PREVIEW, &serde_json::json!({"path": path, "playing": false}));
+        }
+    }
+
+    /// Stops a running recording (on exit) so the file is closed properly. A session
+    /// is stopped and left for the split at the next start (splitting can take a
+    /// while; the app is closing).
+    pub fn shutdown(&self) {
+        self.preview_stop();
+        let inner = &self.inner;
+        if inner.is_recording() {
+            if lock(&inner.extra).mode == "session" {
+                inner.session_stop_for_exit();
+            } else {
+                let _ = self.stop();
+            }
+        }
+    }
+}
+
+/// Waits until the capture has delivered a buffer (or the timeout).
+pub(crate) fn wait_for_audio(rec: &Mutex<Option<Recorder>>, timeout: Duration) -> bool {
+    let end = Instant::now() + timeout;
+    loop {
+        if lock(rec).as_ref().is_some_and(Recorder::has_audio) {
+            return true;
+        }
+        if Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+impl Inner {
+    pub(crate) fn status(&self) -> RecorderStatusView {
+        lock(&self.last).clone()
+    }
+
+    pub(crate) fn set_last(&self, mut v: RecorderStatusView) {
+        if v.state != "idle" && v.state != "error" {
+            lock(&self.extra).decorate(&mut v);
+        }
+        *lock(&self.last) = v.clone();
         emit(&*self.sink, names::RECORDER_LEVEL, &v);
     }
 
-    /// `recorder_start`. Blocks until the OS has started the stream (at most 20 s).
-    pub fn start(&self) -> ApiResult<RecorderStatusView> {
+    /// Re-decorate the latest reading (after the mode's details changed) and emit it.
+    pub(crate) fn refresh_last(&self) {
+        let v = lock(&self.last).clone();
+        self.set_last(v);
+    }
+
+    pub(crate) fn is_recording(&self) -> bool {
+        matches!(*lock(&self.phase), Phase::Recording(_) | Phase::Starting)
+    }
+
+    pub(crate) fn find_player(&self, id: &str) -> ApiResult<jk_recorder::media::MediaSessionInfo> {
+        if let Err(why) = self.media.available() {
+            return Err(ApiError::new("player_unavailable", why));
+        }
+        let list = self.media.sessions().map_err(|e| {
+            let (_, msg) = user_message(&e);
+            ApiError::new("player_unavailable", msg)
+        })?;
+        list.into_iter().find(|s| s.id == id).ok_or_else(|| {
+            ApiError::new(
+                "player_not_found",
+                "That music player is not open any more (or has nothing loaded). Open it and pick a song, or use the plain Record button and press play yourself.",
+            )
+        })
+    }
+
+    fn new_path(&self) -> ApiResult<PathBuf> {
+        std::fs::create_dir_all(&self.dir).map_err(|e| ApiError::io("the Recordings folder", &e))?;
+        let stem = format!("Recording {}", crate::sysinfo::local_stamp());
+        Ok(crate::export::unique_path(&self.dir, &stem, "wav", &Default::default()))
+    }
+
+    /// Start a capture into `path` in the given mode. Returns the shared recorder.
+    pub(crate) fn start_capture(&self, path: PathBuf, extra: Extra) -> ApiResult<Arc<Mutex<Option<Recorder>>>> {
         {
-            let mut phase = self.phase.lock().unwrap_or_else(|e| e.into_inner());
+            let mut phase = lock(&self.phase);
             if !matches!(*phase, Phase::Idle) {
                 return Err(ApiError::new("busy", "A recording is already running."));
             }
             *phase = Phase::Starting;
         }
+        *lock(&self.extra) = extra;
         let mut starting = RecorderStatusView::idle(None);
         starting.state = "starting";
         self.set_last(starting);
-
-        let path = match self.new_path() {
-            Ok(p) => p,
-            Err(e) => {
-                *self.phase.lock().unwrap_or_else(|e| e.into_inner()) = Phase::Idle;
-                let err = ApiError::io("the Recordings folder", &e);
-                self.set_last(RecorderStatusView::idle(Some(err.message.clone())));
-                return Err(err);
-            }
-        };
         crate::applog::info(&format!("recorder: starting into {}", path.display()));
         match Recorder::start(RecorderConfig::new(&path)) {
             Ok(rec) => {
@@ -221,34 +522,40 @@ impl RecorderCtl {
                 let recorder = Arc::new(Mutex::new(Some(rec)));
                 let stop = Arc::new(AtomicBool::new(false));
                 let spawned = {
-                    let (recorder, stop, last, sink) =
-                        (Arc::clone(&recorder), Arc::clone(&stop), Arc::clone(&self.last), Arc::clone(&self.sink));
+                    let (recorder, stop, last, sink, extra) = (
+                        Arc::clone(&recorder),
+                        Arc::clone(&stop),
+                        Arc::clone(&self.last),
+                        Arc::clone(&self.sink),
+                        Arc::clone(&self.extra),
+                    );
                     std::thread::Builder::new()
                         .name("recorder-level".into())
-                        .spawn(move || level_loop(&recorder, &stop, &last, &*sink))
+                        .spawn(move || level_loop(&recorder, &stop, &last, &*sink, &extra))
                 };
                 let thread = match spawned {
                     Ok(t) => t,
                     Err(e) => {
                         // Close the file properly before giving up.
-                        if let Some(r) = recorder.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                        if let Some(r) = lock(&recorder).take() {
                             let _ = r.stop();
                         }
-                        *self.phase.lock().unwrap_or_else(|e| e.into_inner()) = Phase::Idle;
+                        *lock(&self.phase) = Phase::Idle;
                         return Err(ApiError::internal(e));
                     }
                 };
-                *self.phase.lock().unwrap_or_else(|e| e.into_inner()) = Phase::Recording(Active {
-                    recorder,
+                *lock(&self.phase) = Phase::Recording(Active {
+                    recorder: Arc::clone(&recorder),
                     path,
                     stop,
                     thread,
                 });
-                Ok(self.status())
+                Ok(recorder)
             }
             Err(e) => {
                 crate::applog::warn(&format!("recorder: start failed: {e}"));
-                *self.phase.lock().unwrap_or_else(|e| e.into_inner()) = Phase::Idle;
+                *lock(&self.phase) = Phase::Idle;
+                *lock(&self.extra) = Extra::plain();
                 let (code, message) = user_message(&e);
                 self.set_last(RecorderStatusView::idle(Some(message.clone())));
                 Err(ApiError::new(code, message))
@@ -256,16 +563,10 @@ impl RecorderCtl {
         }
     }
 
-    fn new_path(&self) -> std::io::Result<PathBuf> {
-        std::fs::create_dir_all(&self.dir)?;
-        let stem = format!("Recording {}", crate::sysinfo::local_stamp());
-        Ok(crate::export::unique_path(&self.dir, &stem, "wav", &Default::default()))
-    }
-
-    /// `recorder_stop`: closes the file and returns what was recorded.
-    pub fn stop(&self) -> ApiResult<Recording> {
+    /// Stop the running capture (any mode) and close its file.
+    pub(crate) fn stop_capture(&self) -> ApiResult<Stopped> {
         let active = {
-            let mut phase = self.phase.lock().unwrap_or_else(|e| e.into_inner());
+            let mut phase = lock(&self.phase);
             match std::mem::replace(&mut *phase, Phase::Stopping) {
                 Phase::Recording(a) => a,
                 other => {
@@ -276,21 +577,33 @@ impl RecorderCtl {
         };
         active.stop.store(true, Ordering::SeqCst);
         let _ = active.thread.join();
-        let rec = active.recorder.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let rec = lock(&active.recorder).take();
         let result = match rec {
             Some(r) => r.stop(),
             None => Err(RecorderError::AlreadyStopped),
         };
-        *self.phase.lock().unwrap_or_else(|e| e.into_inner()) = Phase::Idle;
-        let finished = match result {
-            Ok(f) => f,
+        let extra = std::mem::replace(&mut *lock(&self.extra), Extra::plain());
+        *lock(&self.phase) = Phase::Idle;
+        match result {
+            Ok(finished) => {
+                crate::applog::info(&format!("recorder: stopped\n{}", finished.report()));
+                Ok(Stopped {
+                    finished,
+                    path: active.path,
+                    extra,
+                })
+            }
             Err(e) => {
                 let (code, message) = user_message(&e);
                 self.set_last(RecorderStatusView::idle(Some(message.clone())));
-                return Err(ApiError::new(code, message));
+                Err(ApiError::new(code, message))
             }
-        };
-        crate::applog::info(&format!("recorder: stopped\n{}", finished.report()));
+        }
+    }
+
+    /// The `Recording` of a stopped plain / "Record & play" capture.
+    fn finish_plain(&self, st: &Stopped) -> ApiResult<Recording> {
+        let finished = &st.finished;
         let Some(file) = &finished.file else {
             let msg = "Nothing was recorded: no sound arrived from the system. Play something, then record again.";
             self.set_last(RecorderStatusView::idle(Some(msg.into())));
@@ -300,13 +613,14 @@ impl RecorderCtl {
         let fmt = s.format.clone();
         let rate = fmt.as_ref().map_or(0, |f| f.sample_rate);
         let recording = Recording {
-            path: active.path.display().to_string(),
-            name: file_name(&active.path),
+            path: st.path.display().to_string(),
+            name: file_name(&st.path),
             duration_s: if rate > 0 { file.frames as f64 / rate as f64 } else { 0.0 },
             sample_rate: rate,
             channels: fmt.as_ref().map_or(0, |f| f.channels),
             bytes: file.file_bytes,
             clipped: s.clip_warning(),
+            note: None,
         };
         self.remember(
             &recording.name,
@@ -339,14 +653,25 @@ impl RecorderCtl {
         }
     }
 
-    /// `recordings_list`: the WAV files in the Recordings folder, newest first.
-    pub fn list(&self) -> ApiResult<Vec<Recording>> {
+    /// The path, if it names an existing file inside the Recordings folder.
+    pub(crate) fn inside_recordings(&self, path: &str) -> ApiResult<PathBuf> {
+        let p = PathBuf::from(path);
+        let (Ok(full), Ok(root)) = (p.canonicalize(), self.dir.canonicalize()) else {
+            return Err(ApiError::new("not_found", "That recording could not be found."));
+        };
+        if !full.starts_with(&root) || !full.is_file() {
+            return Err(ApiError::bad_request("Only recordings in the Recordings folder can be played here."));
+        }
+        Ok(p)
+    }
+
+    fn list(&self) -> ApiResult<Vec<Recording>> {
         let rd = match std::fs::read_dir(&self.dir) {
             Ok(rd) => rd,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(ApiError::io("the Recordings folder", &e)),
         };
-        let recording_now = match &*self.phase.lock().unwrap_or_else(|e| e.into_inner()) {
+        let recording_now = match &*lock(&self.phase) {
             Phase::Recording(a) => Some(a.path.clone()),
             _ => None,
         };
@@ -381,22 +706,16 @@ impl RecorderCtl {
                     sample_rate: h.sample_rate,
                     channels: h.channels,
                     bytes: meta.len(),
+                    note: None,
                 },
             ));
         }
         out.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
         Ok(out.into_iter().map(|(_, r)| r).collect())
     }
-
-    /// Stops a running recording (on exit) so the file is closed properly.
-    pub fn shutdown(&self) {
-        if matches!(*self.phase.lock().unwrap_or_else(|e| e.into_inner()), Phase::Recording(_)) {
-            let _ = self.stop();
-        }
-    }
 }
 
-fn file_name(p: &Path) -> String {
+pub(crate) fn file_name(p: &Path) -> String {
     p.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default()
@@ -407,14 +726,16 @@ fn level_loop(
     stop: &AtomicBool,
     last: &Mutex<RecorderStatusView>,
     sink: &dyn EventSink,
+    extra: &Mutex<Extra>,
 ) {
     while !stop.load(Ordering::SeqCst) {
-        let view = {
-            let guard = recorder.lock().unwrap_or_else(|e| e.into_inner());
+        let mut view = {
+            let guard = lock(recorder);
             let Some(rec) = guard.as_ref() else { break };
             view_of(&rec.status())
         };
-        *last.lock().unwrap_or_else(|e| e.into_inner()) = view.clone();
+        lock(extra).decorate(&mut view);
+        *lock(last) = view.clone();
         emit(sink, names::RECORDER_LEVEL, &view);
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -451,6 +772,10 @@ fn view_of(st: &jk_recorder::RecorderStatus) -> RecorderStatusView {
         clipped: s.clip_warning(),
         dropped_s: if rate > 0 { s.dropped_frames as f64 / rate as f64 } else { 0.0 },
         error: error.or_else(|| s.error.clone()),
+        mode: "plain",
+        player: None,
+        session: None,
+        note: None,
     }
 }
 

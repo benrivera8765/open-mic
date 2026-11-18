@@ -43,8 +43,11 @@
 
 pub mod error;
 pub mod format;
+pub mod media;
 pub mod meter;
 pub mod pipeline;
+pub mod preview;
+pub mod session;
 pub mod wav;
 
 mod platform;
@@ -454,6 +457,24 @@ impl Recorder {
     /// The real capture format, once the first buffer has arrived.
     pub fn format(&self) -> Option<CaptureFormat> {
         self.pipeline.format().cloned()
+    }
+
+    /// True once the OS has delivered at least one buffer (audio or flagged
+    /// silence): from then on, sound that starts playing is in the recording.
+    /// "Record & play" waits for this before it tells the player to play.
+    pub fn has_audio(&self) -> bool {
+        self.pipeline.stats().blocks > 0
+    }
+
+    /// The position in the recording (frame index) of what was playing at the
+    /// wall-clock instant `at`; see [`CapturePipeline::timeline_frame_at`].
+    pub fn timeline_frame_at(&self, at: Instant) -> Option<u64> {
+        self.pipeline.timeline_frame_at(at)
+    }
+
+    /// The file being written.
+    pub fn path(&self) -> &Path {
+        self.pipeline.path()
     }
 
     /// Stop the OS stream, drain the queue, finalise the file.
