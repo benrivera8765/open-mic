@@ -38,7 +38,7 @@ from pathlib import Path
 
 from . import __version__ as STUDIO_VERSION
 from . import env as studio_env
-from .errors import BadRequest, Hooks, NotFound, StudioError
+from .errors import BadRequest, Hooks, NotFound, StudioError, is_expected
 
 log = logging.getLogger("jukeoke_studio.server")
 
@@ -89,9 +89,15 @@ class Server:
                 # The app has gone (pipe closed): stop quietly.
                 self.stopping.set()
 
-    def error(self, rid, err: StudioError | BadRequest) -> None:
-        if err.detail:
-            log.info("error %s for request %s: %s", err.code, rid, err.detail)
+    def error(self, rid, err: StudioError | BadRequest, *, logged: bool = False) -> None:
+        """Answers request ``rid`` with ``err``. Expected user errors (a damaged file, a
+        missing model, a bad request) are one WARNING line; anything else an ERROR line
+        (its traceback is logged where it was caught). ``logged``: already in the log."""
+        if not logged:
+            level = (logging.INFO if err.code == "cancelled"
+                     else logging.WARNING if is_expected(err) else logging.ERROR)
+            log.log(level, "request %s failed (%s): %s%s", rid, err.code, err.message,
+                    f" [{err.detail}]" if err.detail else "")
         self.send({"type": "error", "id": rid, "error": err.to_json()})
 
     # ------------------------------------------------------------------ reading
@@ -120,11 +126,13 @@ class Server:
                 continue
             try:
                 self.dispatch(msg)
+            except StudioError as e:  # a refused request (bad_request, not_found, ...): no traceback
+                self.error(msg.get("id"), e)
             except Exception as e:  # noqa: BLE001 - one bad request never stops the server
-                log.error("request failed: %s", traceback.format_exc())
+                log.error("request %s failed: %s", msg.get("id"), traceback.format_exc())
                 from .pipeline import map_exception
 
-                self.error(msg.get("id"), map_exception(e))
+                self.error(msg.get("id"), map_exception(e), logged=True)
         self.stop(grace_s=10.0)
         return 0
 
@@ -155,9 +163,11 @@ class Server:
         except Exception as e:  # noqa: BLE001
             from .pipeline import map_exception
 
-            if not isinstance(e, StudioError):
-                log.error("%s failed: %s", msg.get("type"), traceback.format_exc())
-            self.error(rid, map_exception(e))
+            if isinstance(e, StudioError):
+                self.error(rid, e)
+            else:
+                log.error("%s %s failed: %s", msg.get("type"), rid, traceback.format_exc())
+                self.error(rid, map_exception(e), logged=True)
 
     # ------------------------------------------------------------------ session
 
@@ -211,15 +221,25 @@ class Server:
 
     def stop(self, grace_s: float) -> None:
         """Cancels the running job (its temporary files are deleted by the pipeline) and
-        forgets the queued ones; waits up to ``grace_s`` for the worker to clean up."""
+        forgets the queued ones; stops a model download (its ``.part`` file is deleted,
+        D-170); waits up to ``grace_s`` for both to clean up."""
+        from .modelzoo import download as dl
+
         with self.cv:
             self.queue.clear()
             cur = self.current
             self.stopping.set()
             self.cv.notify_all()
+        deadline = time.monotonic() + grace_s
         if cur is not None:
             cur.hooks.cancel()
-            deadline = time.monotonic() + grace_s
+        if dl.abort_downloads():
+            # The download thread sees ``stopping`` (or its closed connection), deletes its
+            # .part file and leaves. On Windows the file is delete-on-close anyway, so even
+            # a process that exits before this finishes leaves nothing behind.
+            while dl.active_downloads() and time.monotonic() < deadline:
+                time.sleep(0.05)
+        if cur is not None:
             while self.current is cur and time.monotonic() < deadline:
                 time.sleep(0.05)
 
@@ -423,11 +443,16 @@ class Server:
                 self.send({"type": "job.done", "job_id": jid, "output": str(res.output), "report": res.report})
             except BaseException as e:  # noqa: BLE001 - a failing file never stops the queue
                 err = map_exception(e)
-                if err.code != "cancelled":
+                if err.code == "cancelled":
+                    log.info("job %s cancelled", jid)
+                elif is_expected(err):
+                    # The user's file or choices (a damaged file, missing models, lyrics
+                    # that do not fit): one line, no traceback (D-173).
+                    log.warning("job %s failed (%s): %s%s", jid, err.code, err.message,
+                                f" [{err.detail}]" if err.detail else "")
+                else:
                     log.error("job %s failed (%s): %s\n%s", jid, err.code, err.detail,
                               "".join(traceback.format_exception(e)))
-                else:
-                    log.info("job %s cancelled", jid)
                 job.state, job.error_code = "failed", err.code
                 self.send({"type": "job.failed", "job_id": jid, "error": err.to_json()})
                 # Verifier finding: ``err`` is often the exception itself (Cancelled and every

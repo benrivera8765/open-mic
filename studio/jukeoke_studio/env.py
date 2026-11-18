@@ -20,6 +20,13 @@ Two jobs:
 
    ``python -I`` ignores every ``PYTHON*`` variable, so bytecode writing is switched
    off in code (``sys.dont_write_bytecode``, also set in ``__init__``).
+   The NVIDIA driver's JIT cache on the stick is capped at 256 MiB
+   (``CUDA_CACHE_MAXSIZE``), so its size does not depend on the driver's default.
+
+   Paths are made absolute with ``os.path.abspath`` (:func:`abspath`), never
+   ``Path.resolve()``: resolving turns a ``subst`` or mapped drive letter, a junction or
+   a symlink into its target, and the Studio would then report and write paths on a
+   drive the app does not know (D-169).
    The Hugging Face libraries are put in offline mode: the network is used only by the
    Studio's own downloader (``models.download``) and the LRCLIB lookup, both only on
    request.
@@ -53,6 +60,11 @@ CACHE_VARS = {
     "TORCHINDUCTOR_CACHE_DIR": "inductor",
 }
 TEMP_VARS = ("TMP", "TEMP", "TMPDIR")
+#: Set in portable mode only (the cache is on the stick): the NVIDIA driver's JIT cache
+#: limit in bytes. 256 MiB; the end-to-end run measured 183-242 MB after a few songs (D-168).
+PORTABLE_FIXED_VARS = {
+    "CUDA_CACHE_MAXSIZE": str(256 * 1024 * 1024),
+}
 #: Fixed values: no telemetry, no implicit Hugging Face network access.
 FIXED_VARS = {
     "HF_HUB_OFFLINE": "1",
@@ -82,10 +94,16 @@ class StudioEnv:
 _ENV: StudioEnv | None = None
 
 
+def abspath(p: str | os.PathLike) -> Path:
+    """``p`` made absolute and normalised (``..`` removed) without following links: a
+    ``subst`` or mapped drive letter, a junction or a symlink stays as it was given."""
+    return Path(os.path.abspath(os.fspath(p)))
+
+
 def packaged_root() -> Path | None:
     """``<root>`` when this interpreter is the packaged runtime
     ``<root>/Windows/Studio/python/python.exe``; None otherwise."""
-    exe = Path(sys.executable).resolve()
+    exe = abspath(sys.executable)
     parts = exe.parents
     try:
         python_dir, studio_dir, windows_dir = parts[0], parts[1], parts[2]
@@ -112,9 +130,9 @@ def setup(root: str | os.PathLike | None = None, models_dir: str | os.PathLike |
     for k, v in FIXED_VARS.items():
         os.environ[k] = v
     root_s = root or os.environ.get("JUKEOKE_ROOT") or packaged_root()
-    root_p = Path(root_s).resolve() if root_s else None
+    root_p = abspath(root_s) if root_s else None
     md = models_dir or os.environ.get("JUKEOKE_MODELS_DIR") or (root_p / "Models" if root_p else None)
-    models_p = Path(md).resolve() if md else None
+    models_p = abspath(md) if md else None
     set_vars: dict[str, str] = {}
     cache_p = tmp_p = hf_p = None
     if models_p is not None:
@@ -126,10 +144,14 @@ def setup(root: str | os.PathLike | None = None, models_dir: str | os.PathLike |
     if root_p is not None:
         os.environ["JUKEOKE_ROOT"] = str(root_p)
         cache_p = root_p / "Settings" / "cache"
-        tmp_p = Path(temp_dir).resolve() if temp_dir else root_p / "Settings" / "tmp" / "studio"
+        tmp_p = abspath(temp_dir) if temp_dir else root_p / "Settings" / "tmp" / "studio"
         for k, sub in CACHE_VARS.items():
             d = cache_p / sub
             os.environ[k] = set_vars[k] = str(d)
+        # Not in ``set_vars``: that holds the folders moved into the stick (the runtime
+        # check, scripts/check-studio-runtime.sh, expects every value to be such a path).
+        for k, v in PORTABLE_FIXED_VARS.items():
+            os.environ[k] = v
         for k in TEMP_VARS:
             os.environ[k] = set_vars[k] = str(tmp_p)
         # Created lazily by the libraries, but TMP must exist before tempfile uses it.
@@ -145,7 +167,7 @@ def current() -> StudioEnv:
 
 def set_temp_dir(temp_dir: str | os.PathLike) -> Path:
     """The app's ``hello.temp_dir`` (``<root>/Settings/tmp/studio``) for this session."""
-    p = Path(temp_dir).resolve()
+    p = abspath(temp_dir)
     p.mkdir(parents=True, exist_ok=True)
     env = current()
     if env.root is not None:

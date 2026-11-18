@@ -11,6 +11,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { App } from "./App";
 import { MockApi } from "./api/mock";
 import { changeSettings, changeSongSettings, loadSong, store } from "./state/app";
+import { reasonsForPanel } from "./components/Studio";
 
 const root = document.createElement("div");
 document.body.appendChild(root);
@@ -291,6 +292,44 @@ describe("on a Mac (mock platform=macos)", () => {
     store.set({ screen: "studio" });
     await until(() => !!q(".studio--unavailable"));
     expect(q(".studio--unavailable")!.textContent).toMatch(/created on a stronger computer/);
+  });
+
+  it("the unavailable Studio says 'created on a stronger computer' once, however many reasons repeat it", async () => {
+    render(null, root);
+    // Windows without a usable GPU: app_info and studio_status each give reasons, most
+    // ending with the same sentence (the core's and the Studio's wording differ slightly).
+    const weak = new MockApi({ latencyMs: 0, studio: "off", skin: false });
+    store.set({ ready: false, info: null, screen: "studio", song: null, songSettings: null, studioInbox: [], studio: null });
+    render(<App api={weak} scriptStartMs={0} />, root);
+    await until(() => !!q(".studio--unavailable") && qa(".studio__reasons li").length > 0);
+    await wait(50);
+    const text = q(".studio--unavailable")!.textContent ?? "";
+    expect(text.match(/stronger computer/g)).toHaveLength(1);
+    const items = qa(".studio__reasons li").map((li) => li.textContent);
+    // The mock's studio_status reason (the panel follows studio://status, D-159), without the sentence.
+    expect(items).toContain("The Studio is not available on this computer.");
+    expect(items.every((t) => t && !/stronger computer|played anywhere/.test(t))).toBe(true);
+    expect(new Set(items).size).toBe(items.length);
+  });
+
+  it("reasonsForPanel drops the repeated sentence and duplicates, and keeps everything else", () => {
+    expect(
+      reasonsForPanel([
+        "No NVIDIA graphics card with CUDA was found. Songs are created on a stronger computer and can be played anywhere.",
+        "The graphics card has 4.0 GB of memory; the Studio needs at least 6 GB. Songs are created on a stronger computer and can be played anywhere.",
+        "The Studio is not available on this computer. Songs are created on a stronger computer and played anywhere.",
+        "This computer cannot run the Studio. Songs are created on a stronger computer and can be played anywhere.",
+        "No NVIDIA graphics card with CUDA was found.",
+        "Songs are created on a stronger computer and can be played anywhere.",
+        "The Studio engine did not answer within 60 seconds after starting. Details are in Settings/logs/studio.log.",
+      ]),
+    ).toEqual([
+      "No NVIDIA graphics card with CUDA was found.",
+      "The graphics card has 4.0 GB of memory; the Studio needs at least 6 GB.",
+      "The Studio is not available on this computer.",
+      "This computer cannot run the Studio.",
+      "The Studio engine did not answer within 60 seconds after starting. Details are in Settings/logs/studio.log.",
+    ]);
   });
 });
 

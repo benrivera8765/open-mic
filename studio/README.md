@@ -31,13 +31,16 @@ python -I -m jukeoke_studio separate SONG OUTDIR [--preset P]     # float WAV st
 packaged runtime's own location `<root>/Windows/Studio/python/python.exe`):
 
 ```
-<root>/Models/                     separation weights + manifest.json (SHA-256 records)
+<root>/Models/                     separation weights + manifest.json (SHA-256 records of
+                                   every weight file, Hugging Face ones included: size,
+                                   mtime and volume; `bad` for a file that failed)
 <root>/Models/hf/                  alignment + Whisper weights, Hugging Face layout:
                                    models--<org>--<name>/snapshots/<commit>/<files>
 <root>/Settings/cache/huggingface  HF_HOME            (nothing is fetched: HF_HUB_OFFLINE=1)
 <root>/Settings/cache/torch        TORCH_HOME, PYTORCH_KERNEL_CACHE_PATH (torch/kernels)
 <root>/Settings/cache/xdg          XDG_CACHE_HOME
-<root>/Settings/cache/cuda         CUDA_CACHE_PATH    (driver JIT cache)
+<root>/Settings/cache/cuda         CUDA_CACHE_PATH    (driver JIT cache, capped by
+                                   CUDA_CACHE_MAXSIZE=268435456, 256 MiB)
 <root>/Settings/cache/numba        NUMBA_CACHE_DIR    (librosa's compiled functions, ~0.3 MB)
 <root>/Settings/cache/matplotlib   MPLCONFIGDIR
 <root>/Settings/cache/{triton,inductor}  TRITON_CACHE_DIR, TORCHINDUCTOR_CACHE_DIR (unused)
@@ -45,6 +48,13 @@ packaged runtime's own location `<root>/Windows/Studio/python/python.exe`):
                                    after every job), covers/ (from `inspect`)
 <root>/Library/                    finished songs (the job's output_dir)
 ```
+
+Paths are made absolute with `os.path.abspath`, never `Path.resolve()`, so a `subst` or
+mapped drive letter (or a junction) stays as the app gave it. A model download writes
+`<file>.part`, delete-on-close on Windows, so an exit, crash or kill mid-download leaves
+nothing behind. Hugging Face weights are checked against their recorded SHA-256 before
+loading (once per run; skipped when `manifest.json` already vouches for the file on this
+drive, D-172).
 
 `HF_HUB_CACHE` and `TRANSFORMERS_CACHE` point at `<root>/Models/hf`. Bytecode writing is
 off (`sys.dont_write_bytecode`: `python -I` ignores `PYTHONDONTWRITEBYTECODE`). The app's

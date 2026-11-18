@@ -4,6 +4,7 @@
 // The text strip is pre-rendered into offscreen tiles (TILE_CSS px wide), once in the
 // sung colour and once in the upcoming colour; each glyph is drawn with its own
 // fillText at the x the layout computed, so no ligature or kerning can shift it.
+// Each glyph is drawn at its own line's font size (smaller for dense lines, D-167).
 // Per frame we only clear, then blit the visible tiles twice with a translation:
 // the upcoming tiles clipped to the right of the marker, the sung tiles clipped to
 // the left, so the colour split sits exactly at the marker. Then the marker and,
@@ -143,15 +144,20 @@ export class TickerRenderer {
     const ctx = c.getContext("2d");
     if (!ctx) return null;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.font = this.font(l.fontPx);
     // Each grapheme is drawn alone, so kerning and ligatures cannot apply between
     // letters; turn kerning off anyway where the engine supports the property.
     const k = ctx as CanvasRenderingContext2D & { fontKerning?: string };
     if ("fontKerning" in k) k.fontKerning = "none";
     ctx.textBaseline = "alphabetic";
     ctx.fillStyle = color;
+    // Dense lines are drawn smaller (layout.ts point 4b); every line shares the baseline.
+    let px = -1;
     for (let n = lo; n < gs.length && gs[n].x <= x1 + pad; n++) {
       const g = gs[n];
+      if (g.px !== px) {
+        px = g.px;
+        ctx.font = this.font(px);
+      }
       ctx.fillText(g.g, g.x - x0, this.baseline);
     }
     this.stats.tilesRendered++;

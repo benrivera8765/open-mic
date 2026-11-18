@@ -36,6 +36,8 @@ declare global {
       stats: TickerStats;
       fontPx: number;
       fontScale: number;
+      minLineScale: number;
+      denseLines: number;
       glyphs: number;
       worstLookahead: number;
       /** Runs the letter-under-the-marker check on the live layout (real fonts). */
@@ -145,6 +147,8 @@ export function Ticker({ lyrics, offsetS, textSize, marker, colors }: TickerProp
       stats: r.stats,
       fontPx: layout.fontPx,
       fontScale: layout.fontScale,
+      minLineScale: layout.minLineScale,
+      denseLines: layout.denseLines,
       glyphs: layout.glyphs.length,
       worstLookahead: layout.worstLookahead,
       verify: () => verifyTickerLayout(layout),

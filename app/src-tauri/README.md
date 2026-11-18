@@ -31,7 +31,8 @@ src/
   debounce.rs, events.rs, error.rs, applog.rs, smoke.rs, screenshot.rs, webview2_loader.rs
 tests/
   fake_studio.py   a fake Studio (Python standard library only) speaking the protocol
-  studio_supervisor.rs, core_api.rs, real_engine.rs, selfcheck_core.rs, watch_and_record.rs
+  studio_supervisor.rs, core_api.rs, real_engine.rs, selfcheck_core.rs, watch_and_record.rs,
+  build_ui_dist.rs, common/
 resources/         bundled as Tauri resources (build.rs copies the demo song here)
 ```
 
@@ -78,19 +79,12 @@ picker; the chosen folder is remembered in
 path) and the app restarts. That file is the only thing the app ever writes outside
 the stick. Until a folder is chosen, settings go to a temporary folder.
 
-## Additions to docs/APP_API.md v1 (to be folded into the contract)
+## The contract
 
-Commands: `export_cancel(job_id)`, `studio_clear_finished()`, `root_choose()`,
-`selfcheck_run({ user_agent?, silent? })` (silent is new). Event: `studio://status`
-(a full `studio_status()` payload when availability or the running state changes).
-Fields: `AppInfo.identifier / mode / mode_reason / webview_version /
-translocation_help`, `capabilities.studio.checking`,
-`capabilities.recorder.permission_explanation / settings_url / backend`,
-`PlayerState.clipped / device_starved`, `StudioStatus.checking`,
-`StudioJob.error_code`, `export://done.applied_gain_db / peak`.
-Argument names where the contract leaves them open: `metadata_save(song_id, metadata)`
-(also accepts `changes` or the fields directly), `export_backing(song_id, format)`
-(also accepts `options: { format }`), `studio_submit(job)` and
-`studio_lyrics_lookup(query)` (also accept the fields directly),
-`studio_models_status(preset?)` / `studio_models_download(preset?)` (default `full`).
-`key_label` uses the arrow "→" (WORK_ORDER 4.5), not "->".
+Every command, event and field this crate implements is specified in
+`docs/APP_API.md`, including what was added during Stage 1 (section 11 there:
+`export_cancel`, `studio_clear_finished`, `root_choose`, `selfcheck_run`'s `silent`,
+`studio://status`, the extra `AppInfo` / capability / `PlayerState` / `StudioJob` /
+`export://done` fields, and the argument names). Change that document together with the
+code. (The list of additions that used to stand here was checked against
+`docs/APP_API.md` on 2026-11-17: every item is in it.)

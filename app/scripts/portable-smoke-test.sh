@@ -154,7 +154,7 @@ if clear_settings "run3"; then
   report="$root/Settings/logs/startup-error.txt"
   if [[ $code -eq 1 && -f "$report" ]] && grep -q "could not start" "$report"; then
     echo "[run3] OK: exit code 1 and Settings/logs/startup-error.txt:"
-    sed -n '1,12p' "$report" | tr -d '' | sed 's/^/        /'
+    sed -n '1,12p' "$report" | tr -d '\r' | sed 's/^/        /'
     cp "$report" "$reports/run3-startup-error.txt"
   else
     echo "[run3] FAIL: exit code $code; report present: $([[ -f "$report" ]] && echo yes || echo no)"

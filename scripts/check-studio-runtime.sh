@@ -54,9 +54,11 @@ PYEXE="$ROOT_U/Windows/Studio/python/python.exe"
 [ -x "$PYEXE" ] || { echo "no Studio runtime at $ROOT_W\\Windows\\Studio\\python" >&2; exit 2; }
 
 ARGS=()
+OUT_GIVEN=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --models|--separate|--pipeline|--out|--forbid|--sentinel-profile)
+            [ "$1" = --out ] && OUT_GIVEN="$2"
             ARGS+=("$1" "$(cygpath -w "$2")"); shift ;;
         --redirect-caches|--snapshot-user-dirs|--skip-scan|--static-only) ARGS+=("$1") ;;
         *) echo "unknown option $1" >&2; exit 2 ;;
@@ -76,8 +78,11 @@ STUDIO_TREE="$(cd "$REPO/studio" 2>/dev/null && find jukeoke_studio -name __pyca
 [ -n "$STUDIO_TREE" ] && TREE_ARGS=(--expect-studio-tree "$STUDIO_TREE")
 
 OUT_DEFAULT="$ROOT_U/Settings/tmp/runtime-check"
-mkdir -p "$OUT_DEFAULT"
-CHECK_PY="$OUT_DEFAULT/check_runtime.py"
+# The orchestrator script goes into the results folder: with --out outside the stick (as
+# scripts/make-dist.sh does) nothing is written into <root>/Settings.
+CHECK_DIR="${OUT_GIVEN:-$OUT_DEFAULT}"
+mkdir -p "$CHECK_DIR"
+CHECK_PY="$CHECK_DIR/check_runtime.py"
 cat > "$CHECK_PY" <<'PYEOF'
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Orchestrator for scripts/check-studio-runtime.sh. Standard library only; it runs with the

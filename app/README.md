@@ -1,22 +1,31 @@
-# app/ - the Jukeoke desktop app (Tauri 2 shell)
+# app/ - the Jukeoke desktop app (Tauri 2)
 
 ```
 app/
-  src-tauri/            Rust crate `jukeoke` (Tauri 2): window, commands, portable mode
-    src/lib.rs          builder, main window, app state
-    src/portable.rs     finds the portable root, decides where data goes (+ unit tests)
-    src/commands.rs     commands the UI calls (app_info, ping, smoke_report)
-    src/smoke.rs        --smoke-test self-test
-    src/screenshot.rs   saves what WebView2 rendered as PNG (Windows)
-    src/fs_atomic.rs    atomic file writes (temp + fsync + rename)
-    src/webview2_loader.rs + native/webview2_loader.c
+  src-tauri/            Rust crate `jukeoke` (Tauri 2): the app core that implements
+                        docs/APP_API.md. Module map, running and data locations:
+                        src-tauri/README.md
+    src/                core.rs + commands/ (APP_API), playback, library, settings, export,
+                        recorder, studio (supervisor), selfcheck, startup, portable, ...
+    native/webview2_loader.c + src/webview2_loader.rs
                         built-in WebView2 loader for the GNU toolchain (see below)
     windows-app-manifest.xml   the exe's application manifest
     tauri.conf.json     Tauri config (literals Tauri forces, see "Naming")
     capabilities/       Tauri permissions of the main window
     icons/              generated from icons/source/app-icon.svg (`npm run icons`)
-  ui/                   Vite + Preact + TypeScript web UI (plain placeholder page)
-  scripts/              build and verification scripts (Git Bash)
+    resources/          bundled with the app: the demo song (copied here by build.rs)
+    tests/              integration tests; fake_studio.py speaks the Studio protocol
+  ui/                   Vite + Preact + TypeScript UI
+    src/api/            types, the Tauri client and a browser mock (MockApi)
+    src/state/, src/components/   app state and the screens (Library, Stage, Mixer,
+                        Recorder, Studio, SyncEditor, Settings, overlays)
+    src/ticker/         the lyrics ticker (canvas)
+    src/skin/           the jukebox look (frame, badge, bubbles, key dial, faders)
+    src/assets/fonts/   the three bundled OFL fonts with OFL.txt and SOURCE.txt
+    scripts/            build checks (ES2022 / Safari 16.4), screenshots, real-app checks
+  scripts/              build-windows.sh, check-windows-exe.sh, portable-smoke-test.sh,
+                        check-mac.sh (+ macos-cross/: Zig shims for type-checking the macOS
+                        code from Windows), verify-smoke-report.mjs (Git Bash)
 ```
 
 ## Build on Windows (GNU toolchain, no Visual Studio)
@@ -30,8 +39,10 @@ app/scripts/build-windows.sh            # UI + cargo build --release -p jukeoke 
 By hand: `npm ci && npm run build` in `app/ui` (type-check, Vite build, and a check
 that the emitted JS parses as ES2022, the Safari 16.4 baseline), then
 `cargo build --release -p jukeoke`. The UI must be built first: the exe embeds
-`app/ui/dist`. If it is missing, `build.rs` embeds a stub page and prints a warning,
-so `cargo build --workspace` still works.
+`app/ui/dist`. If it is missing, a debug build embeds a stub page and prints a warning,
+so `cargo build --workspace` still works; a release build fails instead (set
+`JK_ALLOW_UI_STUB=1` only for builds that are never shipped). The demo song must sit
+next to the exe in `Windows/resources/` (build-windows.sh copies it).
 
 `cargo build` alone produces a finished app because the crate's default feature
 `custom-protocol` embeds the UI. For live UI development use `npm run app:dev` in

@@ -159,3 +159,46 @@ def test_inspect_has_the_protocol_fields(tmp_path):
         assert k in r
     assert r["title"] == "test-m4a" and r["title_from_tags"] is False
     assert r["embedded_lyrics"] == {"present": False, "synced": False, "text": None}
+
+
+def test_concurrent_inspects_write_the_cover_through_unique_temporary_files(tmp_path, monkeypatch):
+    """Inspects run on their own threads; tracks of one album share a cover. Every writer
+    gets its own temporary name, and each inspect returns the finished cover (D-171)."""
+    import os
+    import threading
+    import time
+
+    src = MF.flac_with_tags(tmp_path, cover=MF.png_bytes(), TITLE="Album track")
+    out = tmp_path / "covers"
+    tmp_names: list[str] = []
+    real_replace = os.replace
+
+    def slow_replace(a, b, *args, **kw):
+        if ".tmp-" in str(a):
+            tmp_names.append(os.path.basename(a))
+            time.sleep(0.01)  # widen the window in which writers overlap
+        return real_replace(a, b, *args, **kw)
+
+    monkeypatch.setattr(media.os, "replace", slow_replace)
+    for _ in range(10):
+        for p in out.glob("cover-*"):
+            p.unlink()
+        barrier = threading.Barrier(8)
+        results, errors = [], []
+
+        def run():
+            barrier.wait()
+            try:
+                results.append(media.extract_cover(src, out))
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=run) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        assert errors == [] and len(results) == 8 and len(set(results)) == 1
+        assert Path(results[0]).read_bytes() == MF.png_bytes()
+        assert [p.name for p in out.iterdir()] == [Path(results[0]).name]  # no temporary file left
+    assert tmp_names and len(tmp_names) == len(set(tmp_names))
