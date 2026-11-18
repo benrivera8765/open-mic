@@ -54,9 +54,11 @@ Read this first in every session. Then DECISIONS.md, then docs/ARCHITECTURE.md.
 - 2026-11-18 Gap closing (commit dea2cdf), verified twice: key-change render-ahead-and-cache mode (WO 4.5), Rubber Band allocation on the render worker fixed (RT path 0 allocations), cover-art correction, ticker pause when minimised, Mac CI evidence steps fail on missing evidence + macOS 13 availability audit + build-mac.sh path remap, full licence texts in dist/Licenses, 20-min real-app soak (0 underruns, ticker 60 fps, whole app ~0.55-0.61 GB on Windows), karaoke loudness/stereo image measured. Local CI all green (docs/TEST_RESULTS.md).
 - 2026-11-18 HANDOFF.md written. Everything that can be done unattended on this PC is done.
 
+- 2026-11-18 HANDOFF.md independently reviewed against the evidence and corrected (commit 519dad5). Last fixes (commit e2c5be7): Clean/Permissive model downloads from the app with licence shown first, accurate preset hints, key-progress display, real-app runs of recording -> karaoke, re-align, cover replacement, OLE drag-and-drop; dist/ rebuilt and proven again; local CI all green.
+
 ## In flight
 
-- Workflow `jukeoke-last-fixes` (wf_de597ec0-2b4): the independent HANDOFF review (commit 519dad5) found that the app cannot download the Clean/Permissive preset weights and that the preset hints contradict the measurements; fixing both, making key-cache progress monotonic, driving never-clicked features in the real app (make-from-recording, re-align, cover path, drag-drop event), rebuilding dist, re-running local CI; then a verifier. After it: apply its HANDOFF changes, commit, delete the hourly cron.
+- Nothing. The hourly continuation job was deleted on 2026-11-18: everything that can be done unattended on this PC is done.
 
 ## Next (needs the owner; see HANDOFF.md section 8)
 
