@@ -19,6 +19,7 @@ pub mod error;
 pub mod events;
 pub mod export;
 pub mod fs_atomic;
+pub mod keymode;
 pub mod keys;
 pub mod library;
 pub mod playback;

@@ -15,5 +15,5 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
     library_sort: "title",
     fullscreen_stage: false,
   },
-  audio: { device_id: null, exclusive: false, master_volume: 1.0, device_offsets_ms: {} },
+  audio: { device_id: null, exclusive: false, master_volume: 1.0, device_offsets_ms: {}, key_mode: "auto", key_cache_mb: 1024, key_benchmarks: {} },
 };

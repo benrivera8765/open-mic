@@ -1,5 +1,13 @@
 //* -*- c-basic-offset: 4 indent-tabs-mode: nil -*-  vi:set ts=8 sts=4 sw=4: */
 
+/* Modified for Jukeoke on 2026-11-18 (GPL notice of changes): in
+   BQResampler::state_for_ratio the state buffer is filled with
+   assign() instead of being replaced by a newly constructed vector,
+   so no allocation happens inside resample() when the reserved
+   capacity suffices; and in RatioOftenChanging mode the constructor
+   reserves the phase table for the largest numerator (rational_max)
+   instead of twice the sample rate. Output is unchanged. */
+
 /*
     Rubber Band Library
     An audio time-stretching and pitch-shifting library.
@@ -72,6 +80,14 @@ BQResampler::BQResampler(Parameters parameters, int channels) :
     }
 
     int phase_reserve = 2 * int(round(m_initial_rate));
+    // Jukeoke patch (2026-11-18): in RatioOftenChanging mode the phase table
+    // holds one entry per input phase (the ratio's numerator, up to about
+    // rational_max), so reserve that much: otherwise the first resample() at
+    // such a ratio grows the table (1.5 MB) on the audio thread.
+    if (m_dynamism == RatioOftenChanging &&
+        phase_reserve < m_qparams.rational_max + 16) {
+        phase_reserve = m_qparams.rational_max + 16;
+    }
     int buffer_reserve = 1000 * m_channels;
     m_state_a.phase_info.reserve(phase_reserve);
     m_state_a.buffer.reserve(buffer_reserve);
@@ -556,7 +572,10 @@ BQResampler::state_for_ratio(BQResampler::state &target_state,
             target_state.buffer = prev_state.buffer;
             target_state.fill = prev_state.fill;
         } else {
-            target_state.buffer = floatbuf(buffer_length, 0.0);
+            // Jukeoke patch (2026-11-18): assign() instead of a new vector, so the
+            // capacity reserved in the constructor is reused and the first
+            // resample() of a new instance does not allocate on the audio thread.
+            target_state.buffer.assign(buffer_length, 0.0f);
             for (int i = 0; i < prev_state.fill; ++i) {
                 int offset = i - prev_state.centre;
                 int new_ix = offset + target_state.centre;
@@ -575,7 +594,8 @@ BQResampler::state_for_ratio(BQResampler::state &target_state,
             target_state.current_phase = n_phases - 1;
         }
     } else {
-        target_state.buffer = floatbuf(buffer_length, 0.0);
+        // Jukeoke patch (2026-11-18): see above.
+        target_state.buffer.assign(buffer_length, 0.0f);
     }
 }
 

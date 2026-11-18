@@ -8,17 +8,26 @@
 #                  without GPU, portable app build + portable-mode smoke test.
 #   macos          The OLDEST Apple Silicon image GitHub hosts (macos-15 since
 #                  macos-14 was retired on 2026-11-02; docs/MAC.md has the
-#                  sources), everything compiled for macOS 13.0: crate tests,
-#                  app build + ad-hoc signature + minimum-macOS check of every
-#                  binary (scripts/build-mac.sh, the same script the owner runs
-#                  on the MacBook), launch from an exFAT disk image in
-#                  self-check mode, and a first ScreenCaptureKit capture.
+#                  sources), everything compiled for macOS 13.0: tests of the CI
+#                  scripts themselves (bash 3.2), crate tests, app build +
+#                  ad-hoc signature + minimum-macOS check of every binary
+#                  (scripts/build-mac.sh, the same script the owner runs on the
+#                  MacBook), the imported-API check against macOS 13.0
+#                  (scripts/check-macos-availability.sh), the real self-check
+#                  (--selfcheck --silent) launched from an exFAT disk image, and
+#                  a first ScreenCaptureKit capture.
 #   compare-renders  Offline renders from both platforms must match within
 #                  float tolerance (WORK_ORDER section 9).
 #
-# Parts of the project that do not exist yet are skipped with a notice, never
-# with an obscure failure. Nothing here publishes anything; the token is
-# read-only.
+# A green run is meant to PROVE the Mac rows of WORK_ORDER section 9: every step
+# fails when its evidence is missing (no app bundle, no renders, no self-check
+# report). The only tolerated gap is the Screen Recording permission, which a
+# runner may be unable to grant: then the self-check's recorder item and the
+# ScreenCaptureKit probe pass with a warning that the job summary repeats.
+# Steps can be switched off only explicitly (JK_SKIP_EXFAT, JK_SKIP_SCK,
+# JK_SKIP_RENDER, JK_SKIP_RENDER_COMPARE, each set to a reason); none is set here.
+# Evidence steps run even after an earlier failure, so one red step does not
+# hide the others. Nothing here publishes anything; the token is read-only.
 
 name: CI
 
@@ -91,6 +100,7 @@ jobs:
         run: bash scripts/ci-build-app-windows.sh dist/Windows
 
       - name: Offline render for the cross-platform comparison
+        if: ${{ !cancelled() }}
         run: bash scripts/ci-render.sh ci-out/render-windows
 
       - name: Collect results
@@ -152,32 +162,54 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Tests of the CI scripts and of the API availability checker (bash 3.2, BSD tools)
+        run: |
+          bash scripts/tests/test-ci-scripts.sh
+          python3 -I scripts/tests/test_check_macos_availability.py -v
+
       - name: Rust - tests of the crates (DSP, format, recorder ...)
+        if: ${{ !cancelled() }}
         run: bash scripts/ci-test-crates.sh
 
       - name: Build, ad-hoc sign, minimum-macOS check (scripts/build-mac.sh)
+        id: build
+        if: ${{ !cancelled() }}
+        env:
+          # The next step runs the availability check on dist/Mac and keeps the evidence.
+          JK_AVAILABILITY_IN_CI_STEP: "1"
         run: bash scripts/build-mac.sh
 
-      - name: Rust - app crate tests
-        run: |
-          if [ -f app/src-tauri/Cargo.toml ]; then
-            pkg="$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app/src-tauri/Cargo.toml | head -n 1)"
-            cargo test -p "$pkg"
-          else
-            echo "::notice::app/src-tauri not present yet; skipping the app crate tests"
-          fi
-
-      - name: Launch from an exFAT disk image (self-check)
+      - name: No API newer than macOS 13.0 without a weak reference (imports, classes, selectors)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           name="$(sed -n 's/^[[:space:]]*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' branding.json | head -n 1)"
-          app="dist/Mac/$name.app"
-          [ -d "$app" ] || app=""
-          bash scripts/ci-exfat-launch.sh "$app" ci-out/exfat
+          bash scripts/check-macos-availability.sh --max 13.0 --out ci-out/availability \
+            "dist/Mac/$name.app" dist/Mac/Tools/sck_probe
+
+      - name: Rust - app crate tests
+        if: ${{ !cancelled() }}
+        run: |
+          pkg="$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app/src-tauri/Cargo.toml | head -n 1)"
+          [ -n "$pkg" ] || { echo "::error::app/src-tauri/Cargo.toml is missing or names no package"; exit 1; }
+          cargo test -p "$pkg"
+
+      - name: Audio output device for the self-check (BlackHole only if the runner has none)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: bash scripts/ci-mac-audio-device.sh ci-out/audio
+
+      - name: Launch from an exFAT disk image (real self-check, --selfcheck --silent)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          name="$(sed -n 's/^[[:space:]]*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' branding.json | head -n 1)"
+          # Fails if the build did not produce this bundle.
+          bash scripts/ci-exfat-launch.sh "dist/Mac/$name.app" ci-out/exfat
 
       - name: First ScreenCaptureKit capture (sck_probe)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bash scripts/ci-sck-probe.sh ci-out/sck
 
       - name: Offline render for the cross-platform comparison
+        if: ${{ !cancelled() }}
         run: bash scripts/ci-render.sh ci-out/render-macos
 
       - name: Package the Mac build (ditto zip keeps permissions and signature)
@@ -208,6 +240,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # A missing download leaves its folder absent; the comparison then FAILS
+      # (it never passes having compared nothing).
       - name: Download the Windows results
         continue-on-error: true
         uses: actions/download-artifact@v8
@@ -222,5 +256,5 @@ jobs:
           name: macos-results
           path: results/macos
 
-      - name: Compare renders sample by sample
+      - name: Compare renders sample by sample (fails if either side has none)
         run: bash scripts/ci-compare-renders.sh results/windows/render-windows results/macos/render-macos

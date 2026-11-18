@@ -159,6 +159,31 @@ def png_bytes(w: int = 16, h: int = 16) -> bytes:
     return out.getvalue()
 
 
+def noise_png_bytes(w: int, h: int, seed: int = 0) -> bytes:
+    """A PNG of random RGB noise: about 3 bytes per pixel, so large ones exceed 2 MB."""
+    import av
+
+    img = np.random.default_rng(seed).integers(0, 256, (h, w, 3), dtype=np.uint8)
+    out = io.BytesIO()
+    with av.open(out, "w", format="image2pipe") as c:
+        st = c.add_stream("png", rate=1)
+        st.width, st.height, st.pix_fmt = w, h, "rgb24"
+        for pkt in st.encode(av.VideoFrame.from_ndarray(img, format="rgb24")):
+            c.mux(pkt)
+        for pkt in st.encode():
+            c.mux(pkt)
+    return out.getvalue()
+
+
+def image_size(data: bytes) -> tuple[int, int]:
+    """(width, height) of a picture, decoded with FFmpeg."""
+    import av
+
+    with av.open(io.BytesIO(data)) as c:
+        f = next(c.decode(video=0))
+    return f.width, f.height
+
+
 def mp3_with_lyrics(folder: str | Path, seconds: float = 1.0, synced: bool = True,
                     title: str = "Test Title", artist: str = "Test Artist") -> Path:
     """An MP3 with ID3 title/artist, USLT plain lyrics, optionally SYLT, and an APIC cover."""

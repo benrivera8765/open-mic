@@ -11,6 +11,10 @@ option) any later version: LICENSE.txt. Its source code is the project's reposit
                             whether it allows commercial use
   fonts\                    the SIL Open Font License of the three bundled fonts
   python\                   licence texts of Studio packages whose files ship none
+  third-party\              the licence and notice files of every library compiled into
+                            the apps (Rust crates), of the user interface's packages and
+                            of those Studio packages; MISSING.txt lists the few that
+                            publish none and what is relied on instead
 
 More licence texts travel inside the Studio itself:
 Windows\Studio\python\Lib\site-packages\*.dist-info\ (one folder per Python package),

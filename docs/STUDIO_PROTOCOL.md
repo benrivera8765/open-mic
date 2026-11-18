@@ -204,6 +204,19 @@ The Studio never contacts the network on its own.
 < {"type":"job.accepted","id":"7","job_id":"c1f0...","position":1}
 ```
 
+**(added)** `metadata.cover_path` corrects the cover (WORK_ORDER 4.1 step 1). Absent:
+the cover stored in the file is used, as before. `null`: the song gets no cover. A path:
+that picture is the cover instead. It must be a JPEG or PNG file (checked by its first
+bytes; anything else, or a missing file, is `bad_request` at submit). Up to 2 MB it is
+stored byte for byte; a larger one is re-encoded once to JPEG of at most 2 MB
+(docs/SONG_FORMAT.md 4.1), lowering the JPEG quality first and the pixel size only when
+the lowest quality does not fit; it is never enlarged, and a PNG's transparency is lost
+in that case. The file is read when the job runs; if it cannot be used then (gone,
+damaged, over 64 MB), the job goes on with the file's own cover and says so in `report.warnings`. The
+song's `provenance.metadata_source.cover` records `user`, `removed`, `tags` or `none`.
+`metadata.title` / `artist` / `album` are optional too: empty or absent means the tags
+(or the file name for the title); `album: null` means no album.
+
 `preset`: `full` (default), `clean` or **(added)** `permissive` (MIT/Apache-2.0 models
 only; no lead/backing split exists under such licences, so all vocals are removed and
 the `backing_vocals` stem is silent; see `hello.ok` `presets`).
@@ -374,3 +387,8 @@ Error codes: `bad_request`, `unknown_type`, `protocol_mismatch`, `not_found`,
 10. `realign`: `lyrics.mode` `lrc`, `lyrics.source`, `language`, `warnings`,
     `dropped_anchors`, `realign.progress`; per-anchor dropping.
 11. `shutdown` details.
+
+2026-11-18, small gaps:
+
+12. `job.submit`: `metadata.cover_path` (section 7): replace (a JPEG/PNG path) or remove
+    (`null`) the cover; absent keeps the old behaviour. `provenance.metadata_source.cover`.

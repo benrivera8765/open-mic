@@ -14,19 +14,35 @@
 #             (every bundled .dll/.pyd/.exe with its component and licence);
 #   - the hand-maintained facts below (Rubber Band, our WebView2 loader, fonts, ...).
 #
+# It also writes the folder third_party_licenses/ (scripts/make-dist.sh copies it to
+# dist/Licenses/third-party/): the actual licence and notice FILES of every Rust crate
+# linked into the shipped binaries (read from the cargo registry sources), of the npm
+# packages in the UI bundle (and the Vite/Rolldown code the build emits into it, from
+# app/ui/node_modules), of the Studio's Python packages whose wheels ship none, and
+# Rubber Band's COPYING; plus MISSING.txt, which lists exactly what could not be found
+# and what is relied on instead. MIT, BSD and Apache-2.0 require these notices to travel
+# with binaries.
+#
 # Every SPDX expression is checked for compatibility with distributing Jukeoke under
 # GPL-3.0-or-later; anything that is not plainly compatible is flagged in the output.
 #
 # Usage:
-#   scripts/gen-third-party.sh [--studio-runtime DIR] [--out FILE] [--check]
+#   scripts/gen-third-party.sh [--studio-runtime DIR] [--out FILE] [--texts-dir DIR]
+#                              [--no-texts] [--check]
 #
 #   --studio-runtime DIR  the staged `Windows/Studio` folder (default: the first that exists
-#                         of $JK_BUILD/e2e-stick/Windows/Studio,
-#                         $JK_BUILD/dist-staging/stick1/Windows/Studio, dist/Windows/Studio).
+#                         of dist/Windows/Studio (what ships), then
+#                         $JK_BUILD/dist-staging/stick1/Windows/Studio and
+#                         $JK_BUILD/e2e-stick/Windows/Studio).
 #                         Without one (CI, a Mac) the Python sections of the existing file
 #                         are kept unchanged and a warning is printed.
 #   --out FILE            output (default: THIRD_PARTY_LICENSES.md in the repo root).
-#   --check               write nothing; exit 1 if the file is out of date.
+#   --texts-dir DIR       the licence-text folder (default: third_party_licenses/ in the
+#                         repo root). Needs the crates' sources (cargo fetch) and
+#                         app/ui/node_modules (npm ci). Without a Studio runtime its
+#                         python-packages.txt is kept as it was.
+#   --no-texts            do not touch (or check) the licence-text folder.
+#   --check               write nothing; exit 1 if the file or the folder is out of date.
 #
 # Needs: cargo (offline is fine once the crates are fetched), Python 3.8+ (standard library
 # only; $PYTHON overrides the interpreter). The output is deterministic and holds no
@@ -37,20 +53,23 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$ROOT/THIRD_PARTY_LICENSES.md"
 RUNTIME=""
 CHECK=0
+TEXTS="$ROOT/third_party_licenses"
 while [ $# -gt 0 ]; do
     case "$1" in
         --studio-runtime) RUNTIME="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
+        --texts-dir) TEXTS="$2"; shift 2 ;;
+        --no-texts) TEXTS=""; shift ;;
         --check) CHECK=1; shift ;;
-        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,49p' "$0"; exit 0 ;;
         *) echo "gen-third-party: unknown option $1" >&2; exit 2 ;;
     esac
 done
 
 if [ -z "$RUNTIME" ]; then
-    for c in ${JK_BUILD:+"$JK_BUILD/e2e-stick/Windows/Studio"} \
+    for c in "$ROOT/dist/Windows/Studio" \
              ${JK_BUILD:+"$JK_BUILD/dist-staging/stick1/Windows/Studio"} \
-             "$ROOT/dist/Windows/Studio"; do
+             ${JK_BUILD:+"$JK_BUILD/e2e-stick/Windows/Studio"}; do
         if [ -f "$c/runtime-binaries.tsv" ]; then RUNTIME="$c"; break; fi
     done
 fi
@@ -77,7 +96,7 @@ meta() {  # meta <target> <outfile>
 meta x86_64-pc-windows-gnu "$TMPD/meta-windows.json"
 meta aarch64-apple-darwin "$TMPD/meta-macos.json"
 
-"$PY" -I -X utf8 - "$ROOT" "$TMPD" "${RUNTIME:-}" "$OUT" "$CHECK" <<'PYEOF'
+"$PY" -I -X utf8 - "$ROOT" "$TMPD" "${RUNTIME:-}" "$OUT" "$CHECK" "$TEXTS" <<'PYEOF'
 import collections
 import csv
 import email.parser
@@ -88,6 +107,7 @@ import re
 import sys
 
 ROOT, TMPD, RUNTIME, OUT, CHECK = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5] == "1"
+TEXTS = sys.argv[6]
 warnings = []
 
 # --------------------------------------------------------------------------------------
@@ -243,6 +263,9 @@ def rust_graph(path):
         src = p.get("source") or ""
         return {"name": p["name"], "version": p["version"], "license": p.get("license") or "",
                 "license_file": bool(p.get("license_file")),
+                "license_path": p.get("license_file") or "",
+                "dir": os.path.dirname(p["manifest_path"]),
+                "authors": p.get("authors") or [], "repository": p.get("repository") or "",
                 "source": "workspace" if i in ws else ("crates.io" if "crates.io-index" in src else src.split("+")[0] or "path"),
                 "workspace": i in ws}
     return ({i: info(i) for i in linked}, {i: info(i) for i in build - linked})
@@ -548,11 +571,15 @@ w("2. **Model weights are not covered by this file.** None are shipped in the re
   "(`bs_inst_resurrection_unwa`) and the 'best measured' set have **no published licence**: they "
   "may be downloaded by a user for themselves, but must not be put on a stick that is given to "
   "others, and commercial use is unclear (`MODELS.md`).")
-w("3. **Licence texts must travel with the binaries.** MIT/BSD/Apache-2.0 require their notices "
-  "in binary distributions. The stick should carry `LICENSE`, this file and the licence texts "
-  "(the Python wheels keep theirs in their `*.dist-info` folders; the wheels marked 'none in "
-  "wheel' in section 4 ship no text, so the dist step should add them); the fonts' `OFL.txt` "
-  "files are in the repository but not yet on the stick.")
+w("3. **Licence texts travel with the binaries.** MIT/BSD/Apache-2.0 require their notices "
+  "in binary distributions. `third_party_licenses/` (generated by this script, copied to "
+  "`Licenses/third-party/` on the stick and into the release archives) holds the licence and "
+  "notice files of every linked Rust crate, of the UI bundle's npm packages and of the Studio "
+  "packages marked 'none in wheel' in section 4; the other Python wheels keep theirs in their "
+  "`*.dist-info` folders, and the fonts' `OFL.txt` files are in `Licenses/fonts/`. What could "
+  "not be found is listed in `third_party_licenses/MISSING.txt` (crates whose published package "
+  "has no licence file, and native code inside the `tokenizers` and `ctranslate2` wheels whose "
+  "own notices those wheels do not carry).")
 w("4. **`lameenc` (LAME, LGPL-3.0-or-later)** is installed only because `demucs` declares it. "
   "Nothing imports it: `demucs.audio` (the only importer) is never loaded by the Studio "
   "(checked: importing `demucs.apply`, `demucs.states` and the Studio's modules leaves "
@@ -798,19 +825,287 @@ w("")
 text = "\n".join(L).rstrip("\n") + "\n"
 text = re.sub(r"\n{3,}", "\n\n", text)
 
+
+# --------------------------------------------------------------------------------------
+# Licence-text folder (third_party_licenses/)
+# --------------------------------------------------------------------------------------
+LIC_NAME = re.compile(r"^(LICEN[CS]E|COPYING|NOTICE|COPYRIGHT|UNLICENSE)", re.I)
+RULE = "=" * 88
+THIN = "-" * 88
+
+
+def read_text(path):
+    with open(path, "rb") as f:
+        b = f.read()
+    t = b.decode("utf-8", errors="replace").lstrip("\ufeff")
+    t = t.replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(line.rstrip() for line in t.split("\n")).strip("\n") + "\n"
+
+
+# Notice files BELOW a package's top folder that cover code or data compiled into the
+# binary (licence_files only looks at the top). regex-syntax's Unicode tables are generated
+# from the Unicode data files, whose licence asks for its notice with every copy. (Others
+# found by a scan of the linked crates are not compiled for Windows or macOS: rfd's
+# xdg_desktop_portal backend, tracing-core's no_std spin module.)
+NESTED_NOTICES = {"regex-syntax": ["src/unicode_tables/LICENSE-UNICODE"]}
+
+
+def licence_files(d, extra="", name=""):
+    """Licence/notice files at the top of a package folder (and in a LICENSES/ folder)."""
+    out = set()
+    for rel in NESTED_NOTICES.get(name, []):
+        if os.path.isfile(os.path.join(d, rel)):
+            out.add(rel)
+    if os.path.isdir(d):
+        for fn in os.listdir(d):
+            fp = os.path.join(d, fn)
+            if LIC_NAME.match(fn) and os.path.isfile(fp):
+                out.add(fn)
+            if fn.upper() == "LICENSES" and os.path.isdir(fp):
+                out.update(f"{fn}/{x}" for x in os.listdir(fp) if os.path.isfile(os.path.join(fp, x)))
+        if extra and os.path.isfile(os.path.join(d, extra)):
+            out.add(extra.replace("\\", "/"))
+    return sorted(out, key=str.lower)
+
+
+def grouped(entries, title, intro):
+    """entries: [(label, filename, text)] -> one document, identical texts printed once."""
+    groups = collections.OrderedDict()
+    for label, fn, t in sorted(entries, key=lambda e: (e[0].lower(), e[1].lower())):
+        groups.setdefault(t, []).append(f"{label} ({fn})")
+    order = sorted(groups.items(), key=lambda kv: kv[1][0].lower())
+    out = [title, "=" * len(title), "", intro, "",
+           f"{len({e[0] for e in entries})} components, {len(order)} distinct texts.", ""]
+    for i, (t, users) in enumerate(order, 1):
+        out += [RULE, f"Text {i} of {len(order)}, used by: " + ", ".join(users), THIN, "", t.rstrip("\n"), ""]
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def build_texts():
+    files, missing, errors = collections.OrderedDict(), [], []
+    apache = read_text(os.path.join(ROOT, "scripts", "dist", "licenses", "Apache-2.0.txt"))
+
+    # Rust: every crate linked into the shipped binaries, except our workspace crates
+    rust_entries, mpl_missing = [], []
+    for v in sorted(rust_linked.values(), key=lambda v: (v["name"], v["version"])):
+        if v["workspace"]:
+            continue
+        label = crate_label(v)
+        if not os.path.isdir(v["dir"]):
+            errors.append(f"{label}: sources not found in the cargo registry (run `cargo fetch --locked`)")
+            continue
+        fns = licence_files(v["dir"], v["license_path"], v["name"])
+        if fns:
+            for fn in fns:
+                rust_entries.append((label, fn, read_text(os.path.join(v["dir"], fn))))
+            continue
+        ids = spdx_ids(v["license"])
+        who = ", ".join(v["authors"]) or "no authors listed"
+        repo = v["repository"] or "no repository listed"
+        if "Zlib" in ids:
+            missing.append(f"{label}: `{v['license']}`; the published package has no licence file. "
+                           f"Used under Zlib, which requires no notice in binary distributions. "
+                           f"Authors: {who}; source: {repo}.")
+        elif "Apache-2.0" in ids:
+            rust_entries.append((label, "no licence file in the package; Apache-2.0 chosen from "
+                                 f"`{v['license']}`, standard text", apache))
+            missing.append(f"{label}: `{v['license']}`; the published package has no licence file. "
+                           f"Used under Apache-2.0, whose standard text is in rust-crates.txt "
+                           f"(the package has no NOTICE file either). Authors: {who}; source: {repo}.")
+        elif ids == ["MPL-2.0"]:
+            mpl_missing.append(label)
+            missing.append(f"{label}: `MPL-2.0`; the published package has no licence file. MPL-2.0 "
+                           f"needs no copyright notice in a binary, but a copy of the licence and where "
+                           f"the source is: the standard MPL-2.0 text other crates ship is listed for it "
+                           f"in rust-crates.txt; the source is the crates.io package ({repo}).")
+        else:
+            missing.append(f"{label}: `{v['license']}`; the published package has NO licence file, so "
+                           f"its copyright notice is not reproduced here. Authors (Cargo.toml): {who}; "
+                           f"source and licence text: {repo}. TO DO before a public release: copy the "
+                           f"notice from the repository at this version.")
+    mpl = [t for _, _, t in rust_entries if t.startswith("Mozilla Public License Version 2.0")]
+    for label in mpl_missing:
+        if mpl:
+            rust_entries.append((label, "no licence file in the package; the standard MPL-2.0 text", mpl[0]))
+        else:
+            errors.append(f"{label}: MPL-2.0 without a licence file, and no other crate ships the MPL-2.0 text")
+    files["rust-crates.txt"] = grouped(
+        rust_entries, "Licence and notice texts: Rust crates",
+        "Every Rust crate linked into the shipped binaries (the app, jukeoke-cli, sck_probe; "
+        "THIRD_PARTY_LICENSES.md section 2.1), with the licence and notice files of its published "
+        "package exactly as they are in the cargo registry. Our own crates are GPL-3.0-or-later "
+        "(LICENSE). A crate marked (Windows) or (macOS) is only in that build.")
+
+    # npm: the UI bundle's packages and the code the build emits into it
+    nm = os.path.join(ROOT, "app", "ui", "node_modules")
+    npm_entries = []
+    if not os.path.isdir(nm):
+        errors.append("app/ui/node_modules is missing (run `npm ci` in app/ui)")
+    for p in sorted(npm_prod, key=lambda p: p["name"]):
+        d = os.path.join(nm, *p["name"].split("/"))
+        fns = licence_files(d)
+        if not fns:
+            (errors if os.path.isdir(nm) else []).append(f"npm {p['name']} {p['version']}: no licence file in {d}")
+            continue
+        for fn in fns:
+            npm_entries.append((f"{p['name']} {p['version']}", fn, read_text(os.path.join(d, fn))))
+    for pkg, fn, note in (("vite", "LICENSE.md", "module-preload helper emitted into the bundle; Vite's own licence only"),
+                          ("rolldown", "LICENSE", "runtime helpers (__export, __name) emitted into the bundle")):
+        fp = os.path.join(nm, pkg, fn)
+        if not os.path.isfile(fp):
+            if os.path.isdir(nm):
+                errors.append(f"npm {pkg}: {fn} not found")
+            continue
+        t = read_text(fp)
+        if pkg == "vite":   # its LICENSE.md appends the licences of Vite's own bundled tools
+            t = t.split("# Licenses of bundled dependencies")[0].rstrip("\n") + "\n"
+        ver = (json.load(open(os.path.join(nm, pkg, "package.json"), encoding="utf-8")) or {}).get("version", "?")
+        npm_entries.append((f"{pkg} {ver}", f"{fn}; {note}", t))
+    files["npm-packages.txt"] = grouped(
+        npm_entries, "Licence and notice texts: the UI bundle",
+        "The npm packages in the shipped UI bundle (THIRD_PARTY_LICENSES.md section 3.1) and the "
+        "build tools whose code is emitted into it, from app/ui/node_modules.")
+
+    # Python: the Studio packages whose wheels ship no licence file
+    old_py = ""
+    if TEXTS and os.path.isfile(os.path.join(TEXTS, "python-packages.txt")):
+        old_py = read_text(os.path.join(TEXTS, "python-packages.txt"))
+    if py_rows is not None:
+        site = os.path.join(RUNTIME, "python", "Lib", "site-packages")
+        py_entries = []
+        known = {"ctranslate2": ("ctranslate2-{v}-LICENSE.txt", "verbatim from the upstream repository at "
+                                 "the release tag (scripts/dist/licenses/SOURCES.txt)"),
+                 "flatbuffers": ("Apache-2.0.txt", "the standard Apache License 2.0 text that the "
+                                 "package declares; the upstream file (google/flatbuffers, LICENSE at "
+                                 "the release tag) was not fetched or compared"),
+                 "tokenizers": ("Apache-2.0.txt", "the standard Apache License 2.0 text that the "
+                                "package declares; the upstream file (huggingface/tokenizers, LICENSE "
+                                "at the release tag) was not fetched or compared")}
+        for r in sorted(py_rows, key=lambda r: r["name"].lower()):
+            if r["files"] or r["name"] == "jukeoke-studio":
+                continue
+            key = r["name"].lower()
+            label = f"{r['name']} {r['version']}"
+            pkg_dir = os.path.join(site, key.replace("-", "_"))
+            in_pkg = licence_files(pkg_dir)
+            if key in known:
+                fn, how = known[key]
+                fp = os.path.join(ROOT, "scripts", "dist", "licenses", fn.format(v=r["version"]))
+                if os.path.isfile(fp):
+                    py_entries.append((label, how, read_text(fp)))
+                else:
+                    errors.append(f"{label}: {fp} is missing (add the upstream licence text)")
+            elif in_pkg:
+                for f2 in in_pkg:
+                    py_entries.append((label, f"{f2}, from the package folder", read_text(os.path.join(pkg_dir, f2))))
+            else:
+                missing.append(f"Python {label}: the wheel ships no licence file (declared `{r['spdx']}`). "
+                               "TO DO: add its upstream licence text to scripts/dist/licenses/.")
+        py_doc = grouped(
+            py_entries, "Licence texts: Studio Python packages whose wheels ship none",
+            "Every other package in the Studio runtime carries its licence files in "
+            "Windows/Studio/python/Lib/site-packages/<package>.dist-info/. onnxruntime's "
+            "ThirdPartyNotices.txt stays in site-packages/onnxruntime/.")
+        files["python-packages.txt"] = py_doc
+    elif old_py:
+        files["python-packages.txt"] = old_py
+        warnings.append("no Studio runtime: third_party_licenses/python-packages.txt kept as it was")
+    else:
+        errors.append("no Studio runtime and no previous python-packages.txt (use --studio-runtime DIR)")
+    missing += [
+        "Python tokenizers: tokenizers.pyd is compiled Rust; the crates statically linked into it are "
+        "not listed in the wheel and their notices are not carried by it (upstream ships none either).",
+        "Python ctranslate2: ctranslate2.dll links third-party C++ libraries; the wheel carries no notices "
+        "for them. The upstream repository lists them under third_party/.",
+    ]
+
+    # Vendored
+    cp = os.path.join(ROOT, "crates", "jk-rubberband", "vendor", "rubberband", "COPYING")
+    if os.path.isfile(cp):
+        files["vendored.txt"] = grouped(
+            [(f"Rubber Band Library {rb_tag.lstrip('v')}", "COPYING", read_text(cp))],
+            "Licence texts: vendored code",
+            "Rubber Band Library, compiled into the app on both platforms, is GPL-2.0-or-later and "
+            "used under GPL-3.0-or-later (LICENSE). Its own COPYING file follows.")
+    else:
+        errors.append("crates/jk-rubberband/vendor/rubberband/COPYING is missing")
+
+    m = ["Licence texts that could not be found", "======================================", "",
+         "Components whose published package carries no licence or notice file, what their licence "
+         "requires in a binary distribution, and what this project relies on instead. Generated by "
+         "scripts/gen-third-party.sh.", ""]
+    m += [f"- {x}" for x in missing] if missing else ["- nothing"]
+    files["MISSING.txt"] = "\n".join(m) + "\n"
+    files["README.txt"] = "\n".join([
+        "Third-party licence and notice texts", "====================================", "",
+        "Generated by scripts/gen-third-party.sh from Cargo.lock, app/ui/package-lock.json and the "
+        "Studio runtime; do not edit by hand. MIT, BSD and Apache-2.0 require these notices to "
+        "travel with the binaries. Which component uses which licence, and whether it is "
+        "compatible with GPL-3.0-or-later: THIRD_PARTY_LICENSES.md.", "",
+        "  rust-crates.txt      every Rust crate linked into the app, jukeoke-cli or sck_probe",
+        "  npm-packages.txt     the npm packages in the UI bundle and the code the build emits",
+        "  python-packages.txt  Studio packages whose wheels ship no licence file",
+        "  vendored.txt         Rubber Band's COPYING",
+        "  MISSING.txt          what could not be found, and what is relied on instead", "",
+        "The fonts' SIL Open Font License texts are in Licenses/fonts/ on the stick "
+        "(app/ui/src/assets/fonts/*/OFL.txt in the repository).", ""])
+    return files, missing, errors
+
+
+texts_out_of_date = []
+if TEXTS:
+    tfiles, tmissing, terrors = build_texts()
+    for e in terrors:
+        print("gen-third-party: ERROR: " + e, file=sys.stderr)
+    if terrors:
+        sys.exit("gen-third-party: the licence-text folder cannot be complete (errors above)")
+    existing = set()
+    if os.path.isdir(TEXTS):
+        existing = {f for f in os.listdir(TEXTS) if os.path.isfile(os.path.join(TEXTS, f))}
+    for name, content in tfiles.items():
+        fp = os.path.join(TEXTS, name)
+        cur = None
+        if os.path.isfile(fp):
+            with open(fp, encoding="utf-8", newline="") as f:
+                cur = f.read()
+        if cur != content:
+            texts_out_of_date.append(name)
+    texts_out_of_date += sorted(existing - set(tfiles))
+
 for msg in warnings:
     print("gen-third-party: WARNING: " + msg, file=sys.stderr)
 old = read(os.path.relpath(OUT, ROOT)) if os.path.exists(OUT) else None
 if CHECK:
+    bad = False
     if old != text:
         print(f"gen-third-party: {os.path.basename(OUT)} is out of date; run scripts/gen-third-party.sh", file=sys.stderr)
+        bad = True
+    if texts_out_of_date:
+        print(f"gen-third-party: {os.path.basename(TEXTS)}/ is out of date ({', '.join(texts_out_of_date)}); "
+              "run scripts/gen-third-party.sh", file=sys.stderr)
+        bad = True
+    if bad:
         sys.exit(1)
-    print(f"gen-third-party: {os.path.basename(OUT)} is up to date")
+    print(f"gen-third-party: {os.path.basename(OUT)} is up to date" +
+          (f"; {os.path.basename(TEXTS)}/ is up to date ({len(tfiles)} files)" if TEXTS else ""))
     sys.exit(0)
 tmp = OUT + ".tmp"
 with open(tmp, "w", encoding="utf-8", newline="\n") as f:
     f.write(text)
 os.replace(tmp, OUT)
+if TEXTS:
+    os.makedirs(TEXTS, exist_ok=True)
+    for name, content in tfiles.items():
+        tp = os.path.join(TEXTS, name + ".tmp")
+        with open(tp, "w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
+        os.replace(tp, os.path.join(TEXTS, name))
+    for name in os.listdir(TEXTS):
+        if name not in tfiles and os.path.isfile(os.path.join(TEXTS, name)):
+            os.remove(os.path.join(TEXTS, name))
+    print(f"gen-third-party: wrote {os.path.basename(TEXTS)}/: " +
+          ", ".join(f"{n} ({len(c) // 1024} KB)" for n, c in tfiles.items()) +
+          f"; {len(tmissing)} item(s) in MISSING.txt")
 print(f"gen-third-party: wrote {os.path.basename(OUT)}: Rust {len(rust_linked)} linked + "
       f"{len(rust_build)} build-time, npm {len(npm_prod)} shipped + {len(npm_dev)} dev, Python "
       f"{len(py_rows) if py_rows is not None else 'kept'}, binaries "

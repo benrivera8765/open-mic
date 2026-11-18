@@ -13,7 +13,8 @@ copyrighted material:
 - a **4-minute song** (`jukeoke-cli make-test-song song4min.jksong --seconds 240`: 4
   stereo 24-bit stems at 44.1 kHz, 103 MB file).
 
-**Nothing here has run on macOS.** The Core Audio backend type-checks for
+Sections 11 (real-time allocation test) and 12 (20 minutes in the real app, whole-app
+memory) were added on 2026-11-18. **Nothing here has run on macOS.** The Core Audio backend type-checks for
 `aarch64-apple-darwin` (section 8). Every Mac number has to come from the macOS CI job or
 the owner's MacBook.
 
@@ -232,3 +233,155 @@ cargo run --release -p jk-cli -- seek-test "$JK_BUILD/demo.jksong" --seeks 20
 cargo run --release -p jk-engine --example device_switch -- "$JK_BUILD/demo.jksong"
 cargo run --release -p jk-cli -- export "$JK_BUILD/song4min.jksong" --format flac24 --out x.flac
 ```
+
+## 11. Real-time path: zero allocations (test, 2026-11-18)
+
+`cargo test --release -p jk-engine --test rt_alloc -- --nocapture`
+(`crates/jk-engine/tests/rt_alloc.rs`, part of the workspace tests and of local CI).
+
+**Instrument.** A counting global allocator sees every Rust allocation and free. On
+Windows with the GNU toolchain the test also redirects the executable's import slots of
+the C runtime's `malloc`, `calloc`, `realloc`, `free`, `_aligned_malloc` and
+`_aligned_free` through counters, so Rubber Band's C++ (which allocates with
+`_aligned_malloc` and libstdc++'s `operator new`) is counted too. Each call is
+attributed to its thread by name: `jk-render` (render worker), `jk-null-out` /
+`jk-wasapi-out` (the device thread: the device callback `Filler::fill` plus the device
+API calls), `jk-engine-house` (house-keeping, expected to allocate). Each thread's own
+start-up (its buffers, the thread-priority string) is before the counted window.
+
+**Positive controls** (the test fails if they see nothing): the capture engine's Vec
+growth on the device thread is counted (3 Rust allocations within 0.05 s); during the
+key-change phases the house thread's Rust and C/C++ allocations are counted (256 Rust,
+101,711 C/C++ allocations: it builds the Rubber Band instances).
+
+**Result** (null device at 48 kHz with the 44.1 to 48 kHz resampler, a generated 30 s
+stereo song; counts are Rust alloc / Rust free / C alloc / C free):
+
+| Phase (counted from the steady state) | Render worker | Device thread | House thread |
+|---|---|---|---|
+| play at key 0, 2 s | 0/0/0/0 | 0/0/0/0 | 0/0/0/0 |
+| 25 key changes, every key from -12 to +12 | 0/0/0/0 | 0/0/0/0 | 0/0/72182/72182 |
+| 4 seeks at key +3 | 0/0/0/0 | 0/0/0/0 | 0/16/13124/13124 |
+| 8 mixer changes (guide, backing off/on and level, drums, other, shift drums on/off, reset) and 3 master changes | 0/0/0/0 | 0/0/0/0 | 0/0/6562/6562 |
+| pause and resume | 0/0/0/0 | 0/0/0/0 | 0/0/0/0 |
+| song change while playing (key -2) | 0/0/0/0 | 0/0/0/0 | 0/335/16405/22879 |
+| prerender mode (null device 44.1 kHz, 20 s song): key +4 prepared then played from the cache | 0/0/0/0 | 0/0/0/0 | 232/210/0/0 |
+| prerender: 3 seeks on the cached key | 0/0/0/0 | 0/0/0/0 | 24/27/0/0 |
+| prerender: mix change (re-render) and live drum level | 0/0/0/0 | 0/0/0/0 | 247/227/0/0 |
+| prerender: back to key 0 | 0/0/0/0 | 0/0/0/0 | 0/1/0/0 |
+
+0 underruns, 0 Rubber Band instances built on the render thread, 0 cache misses;
+longest device callback 7.3-7.9 us, longest worker block 0.06-1.8 ms
+(`$JK_BUILD/final/rt_alloc_final.log`, the final code). With
+`JK_RT_ALLOC_REAL_DEVICE=1` the real-time phases also ran on the default device
+(Realtek, WASAPI shared 48 kHz, master 0 = digital silence): all zero on the worker and
+on `jk-wasapi-out` (so the WASAPI calls in the device loop do not allocate either),
+0 underruns, 0 device starved, longest callback 8.5 us
+(`$JK_BUILD/final/rt_alloc_realdevice.log`).
+
+**What it found, and the fix.** The first run failed: on the render worker, the first
+`process()` of every new Rubber Band instance allocated 568 bytes and freed the buffer
+reserved by the constructor (Rubber Band's `BQResampler::state_for_ratio` replaced its
+state buffer with a newly constructed vector), and one key at 44.1 kHz grew the
+resampler's phase table by 1,524,032 bytes there (the constructor reserves 2 x the
+sample rate entries, the ratio's numerator can reach `rational_max` = 96000). Both
+happened on every key change, every seek at a shifted key and every "shift drums"
+toggle. The vendored `BQResampler.cpp` now fills the buffer with `assign()` (reusing the
+reserved capacity) and reserves the phase table for `rational_max + 16` entries in the
+real-time (RatioOftenChanging) mode; the change is marked in the file and in
+`crates/jk-rubberband/vendor/VENDORED.md`. The output is unchanged: the 18 golden
+renders of `scripts/ci-render.sh` are byte-identical to the earlier Windows renders
+(`ci-compare-renders.sh`: 18 files, 0 failures, max difference 0), and
+`cargo test --release -p jk-rubberband -p jk-dsp -p jk-engine` passes (49 tests, among
+them the real-time-equals-offline and prerender bit-identity tests).
+
+**Not covered.** Lock waits are not measurable with this instrument; the worker and the
+callback use only atomics and SPSC rings (no `Mutex`, `RwLock`, `Condvar` or channel
+receive in `Filler::fill` or `Worker::run`, checked by reading the code). On macOS the
+C runtime hooks are not installed (Rust allocations only) and the Core Audio callback
+thread is not named by us, so there the test covers the render worker and the null
+device. The macOS run of this test has never happened.
+
+## 12. 20 minutes in the real app: skin, bubbles, ticker, key changes, CPU load (2026-11-18)
+
+WORK_ORDER 9 "Smooth playback", trap 11 and 4.10 "Sustained performance" / "Memory", on
+Windows. Earlier long runs were the CLI engine without UI (sections 2 and 9); the real app
+with bubbles had run for 5 s without load.
+
+```
+# a copy of dist/ (Models left out: playback does not use them) plus the 4-minute song
+node app/ui/scripts/real-app-soak.mjs <copy>\Windows\Jukeoke.exe <copy> <out> "Feel (Stripped)" 20 14 30
+```
+
+**Set-up.** The release exe from `$JK_BUILD/final/soak-copy` (built by
+`scripts/make-dist.sh` at 02:24-02:28 with the Rubber Band fix of section 11), driven over
+WebView2's DevTools port. Song: "Feel (Stripped)" by Cortez (CC BY, JamendoLyrics),
+made by the Studio in the end-to-end run: 4:00.6, 48 kHz, 4 stereo stems. Settings: skin,
+bubbles and full motion on; Stage (lyrics ticker) visible; window 1440x900; default
+output device (Realtek, WASAPI shared, 48 kHz, 2 ch f32, 1056-frame buffer) at **master 0,
+so the device played digital zeros** (the reported output peak stayed at the -120 dB
+floor in all 1,187 one-second samples; the script stops if it rises above -100 dBFS);
+`audio.key_mode` = `realtime` (what `auto` picks on this PC; the heavier path). A key
+change every 30 s through `player_set` (the command the key controls call): +3, -2, +5,
+0, -7, +12, -12, +2, repeated, 39 changes. The song looped 5 times by a seek to 0 three
+seconds before its end. **14 busy threads** on the 16-thread CPU in a separate process
+for the whole run (47.7 M work units). The display runs at about 178 Hz.
+
+| Measure | Result |
+|---|---|
+| Duration | 1200.7 s of playback, state `playing` in every sample |
+| Underruns (callback found the output ring empty) | **0** (120,371 callbacks, 0 frames of silence) |
+| Device starved (WASAPI endpoint buffer empty) | **0** |
+| Render worker lead, minimum while playing (target 150 ms) | **140.0 ms** (no sample of the 119 below it) |
+| Longest device callback / longest worker block | 149.6 us / 14.5 ms (the lead absorbs it) |
+| Render worker CPU | 14.2 % of one core (170.9 s busy in 1200.7 s), MMCSS "Pro Audio" |
+| Stem reader starved, Rubber Band shortfall, instances built on the render thread | 0, 0, 0 |
+| Device clock vs the OS counter | -20.82 ppm (as in section 2) |
+| Ticker | 72,041 frames = **60.000 fps** mean (cap 60), 0 frames missing against 60 per second; every 10 s window 59.9-60.1 fps; draw time mean 0.025 ms, max 1.5 ms |
+| Bubbles | 29.3 fps mean (cap 30; 28.6-29.7 per window), 49 bubbles alive, draw time mean 0.067 ms, max 0.8 ms |
+| Display frames (requestAnimationFrame) | 213,269 at 177.6 per second; interval median 5.5 ms, 99th and 99.9th percentile 6.5 ms, max 12.5 ms; **0 intervals over 25 ms**; 3 frames over 1.5x the median (one missed refresh each) in 20 minutes |
+| Page visibility | `visible` in all 119 samples |
+
+### Whole-app memory (WORK_ORDER 4.10: "under about 1 GB" for all processes)
+
+`app/ui/scripts/soak-memory.ps1` sampled every process under Jukeoke.exe every 2 s
+(`Win32_Process`: working set, private bytes, and the OS's per-process peak counters):
+Jukeoke.exe and its seven WebView2 processes (browser, renderer, GPU, network and storage
+utilities, crashpad handler). 581 samples over the run.
+
+| | Working set (resident) | Private bytes (commit) |
+|---|---|---|
+| Steady state, 60 s to the end of playback: median / maximum of the summed tree | **551 MB / 557 MB** | **488 MB / 504 MB** |
+| Maximum of the summed tree over the whole run | 605 MB (at 1,203.7 s, after playback ended, see below) | **1,122 MB** (first sample, see below) |
+| Sum of each process's own OS peak (upper bound; the peaks are not simultaneous) | 653 MB | 1,330 MB |
+| Growth: mean of the first 3 minutes vs the last 3 minutes | 541 -> 557 MB | 516 -> 503 MB |
+
+Per process (OS peak working set / peak private bytes): GPU process 209 / 1,094 MB,
+WebView2 browser 147 / 56 MB, renderer 144 / 88 MB, **Jukeoke.exe 70 / 69 MB** (the core
+and the audio engine), network utility 43 / 12 MB, crashpad 21 / 4 MB, storage utility
+20 / 8 MB.
+
+- **Against the 1 GB budget, on Windows:** the resident memory of the whole app stays
+  between 0.51 and 0.61 GB for the whole run; its committed private memory settles
+  at 0.48-0.50 GB from the first minute on (0.46-0.72 GB during the first minute). Two transient private-bytes peaks go above that, both
+  in the WebView2 GPU process: **1.12 GB in the first 4 s after the window appeared**
+  (GPU process 1.0 GB, back to 0.53 GB 4 s later and 0.31 GB after a minute) and 0.97 GB
+  in the second-to-last sample (1,203.7 s, 3 s after playback ended; the last sample, 2 s
+  later, was 0.76 GB), taken while the test driver read the final statistics and
+  disconnected DevTools (cause not determined). Neither shows up as resident memory.
+- **The Studio is not part of the player budget.** On this PC the start-up probe launches
+  the Studio's Python, which stays idle until its 10-minute idle shutdown: 775 MB working
+  set, 1.95-2.10 GB private bytes, gone at 601 s, as designed. The Mac has no Studio.
+- **This is Windows with WebView2 and a discrete GPU, not the Mac.** WKWebView on
+  Ventura has a different process model (WebContent, GPU, Networking) and the M1 has
+  unified memory, so the Mac's number can only come from the owner's MacBook (Activity
+  Monitor, "Memory" column, for Jukeoke and its "Web Content" processes) or the
+  self-check. The engine's share is small on both: Jukeoke.exe peaked at 70 MB here.
+
+Evidence: `$JK_BUILD/final/soak20/soak.json` (every sample, the diagnostics every 10 s,
+the frame histogram), `memory.csv`, `soak20.log`; process types in
+`$JK_BUILD/final/soak20-webview-types.txt`. A 30 s trial with 2 load threads before it
+(`$JK_BUILD/final/soak-trial/`) gave the same picture.
+
+**Not shown by this run:** a throttling fanless machine (the M1), a Bluetooth or USB
+device, exclusive mode, the prerender key mode on a real song, a minimised window.

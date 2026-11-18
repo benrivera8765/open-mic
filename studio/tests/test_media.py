@@ -152,6 +152,50 @@ def test_unusual_cover_is_converted_to_jpeg(tmp_path):
     assert Path(path).read_bytes() == data and path.endswith(".jpg")
 
 
+def test_user_cover_small_jpeg_and_png_are_kept_byte_for_byte(tmp_path):
+    """protocol 7 metadata.cover_path: a JPEG / PNG up to 2 MB goes in unchanged (and a
+    small one is never enlarged)."""
+    for name, data in (("c.jpg", MF.jpeg_bytes(24, 16)), ("c.png", MF.png_bytes(10, 6))):
+        p = tmp_path / name
+        p.write_bytes(data)
+        assert media.user_cover(p) == data
+        assert media.is_jpeg_or_png_file(p)
+
+
+@pytest.mark.parametrize("w,h,same_size", [(1000, 800, True), (1800, 1800, True), (2600, 2600, False)])
+def test_user_cover_over_2mb_is_reencoded_to_jpeg_quality_first(tmp_path, w, h, same_size):
+    """Over 2 MB (SONG_FORMAT 4.1): re-encoded once to JPEG <= 2 MB, lowering the quality
+    first; the pixel size only drops when even the lowest quality does not fit. Never
+    larger than the original."""
+    big = MF.noise_png_bytes(w, h)
+    assert len(big) > media.MAX_COVER_BYTES
+    p = tmp_path / "big.png"
+    p.write_bytes(big)
+    out = media.user_cover(p)
+    assert out[:3] == b"\xff\xd8\xff" and len(out) <= media.MAX_COVER_BYTES
+    w2, h2 = MF.image_size(out)
+    assert w2 <= w and h2 <= h
+    assert ((w2, h2) == (w, h)) is same_size
+    if not same_size:  # shrunk only as far as needed: the first size step that fits
+        assert max(w2, h2) == 2000
+
+
+def test_user_cover_refuses_other_files_with_plain_messages(tmp_path):
+    with pytest.raises(ValueError, match="could not be found"):
+        media.user_cover(tmp_path / "missing.png")
+    with pytest.raises(ValueError, match="could not be found"):
+        media.user_cover(tmp_path)  # a folder
+    gif = tmp_path / "c.gif"
+    gif.write_bytes(b"GIF89a" + bytes(64))
+    with pytest.raises(ValueError, match="JPEG or PNG"):
+        media.user_cover(gif)
+    assert not media.is_jpeg_or_png_file(gif) and not media.is_jpeg_or_png_file(tmp_path / "missing.png")
+    broken = tmp_path / "broken.jpg"
+    broken.write_bytes(b"\xff\xd8\xff\xe0" + bytes(100))
+    with pytest.raises(ValueError, match="damaged"):
+        media.user_cover(broken)
+
+
 def test_inspect_has_the_protocol_fields(tmp_path):
     r = media.inspect(MF.make("m4a", tmp_path, seconds=0.5), tmp_path / "covers")
     for k in ("ok", "title", "artist", "album", "duration_seconds", "container", "codec", "sample_rate",

@@ -31,7 +31,9 @@
 #                                manifest.json, SHA256SUMS.txt, README.txt
 #   dist/Settings/README.txt     nothing else: no machine state, no WebView2 profile
 #   dist/Licenses/               LICENSE, THIRD_PARTY_LICENSES.md, MODELS.md, font licences,
-#                                licence texts of Python packages that ship none
+#                                licence texts of Python packages that ship none, and
+#                                third-party/: the licence and notice files of every linked
+#                                Rust crate and bundled npm package (scripts/gen-third-party.sh)
 #
 # Re-runnable: the app and the runtime are rebuilt every time; model files already in place
 # (same size and time) are not copied again but always re-hashed. Logs, the runtime check
@@ -189,7 +191,7 @@ step "5. Licenses/"
 rm -rf "$OUT/Licenses"
 mkdir -p "$OUT/Licenses/fonts" "$OUT/Licenses/python"
 cp "$REPO/LICENSE" "$OUT/Licenses/LICENSE.txt"
-cp "$REPO/THIRD_PARTY_LICENSES.md" "$REPO/MODELS.md" "$OUT/Licenses/"
+cp "$REPO/MODELS.md" "$OUT/Licenses/"   # THIRD_PARTY_LICENSES.md: generated for this build below
 for d in "$REPO"/app/ui/src/assets/fonts/*/; do
     f="$(basename "$d")"
     mkdir -p "$OUT/Licenses/fonts/$f"
@@ -208,22 +210,35 @@ for pkg in ctranslate2 flatbuffers tokenizers; do
     cp "$src" "$OUT/Licenses/python/$pkg-$ver-LICENSE.txt"
 done
 subst_name "$HERE/dist/Licenses-README.txt" > "$OUT/Licenses/README.txt"
-# Is the shipped THIRD_PARTY_LICENSES.md right for THIS runtime? Regenerate into the log
-# folder and compare, ignoring the "Inputs of this run" line (it names the runtime's build
-# time, which changes on every build even when every package is the same).
+# The licence and notice texts of every linked Rust crate, the UI bundle's npm packages and
+# the Studio packages whose wheels ship none (MIT/BSD/Apache-2.0 require them with the
+# binaries). Generated for THIS build (its Cargo.lock, node_modules and runtime) into the
+# log folder and copied to Licenses/third-party/; a dist without them is not made.
+# THIRD_PARTY_LICENSES.md is regenerated the same way and compared, ignoring the "Inputs of
+# this run" line (it names the runtime's build time, which changes on every build).
 set +e
 bash "$REPO/scripts/gen-third-party.sh" --studio-runtime "$OUT/Windows/Studio" --out "$LOG/THIRD_PARTY_LICENSES.md" \
-    > "$LOG/third-party.log" 2>&1
+    --texts-dir "$LOG/third_party_licenses" > "$LOG/third-party.log" 2>&1
 tp=$?
 set -e
-if [ "$tp" -ne 0 ]; then
-    echo "WARNING: scripts/gen-third-party.sh failed (exit $tp, $LOG/third-party.log)"
-elif diff <(grep -v '^Inputs of this run' "$REPO/THIRD_PARTY_LICENSES.md") \
-          <(grep -v '^Inputs of this run' "$LOG/THIRD_PARTY_LICENSES.md") > "$LOG/third-party.diff"; then
-    echo "THIRD_PARTY_LICENSES.md matches this runtime (apart from the runtime's build time)"
+if [ "$tp" -ne 0 ] || [ ! -f "$LOG/third_party_licenses/rust-crates.txt" ]; then
+    cat "$LOG/third-party.log" >&2
+    echo "scripts/gen-third-party.sh failed (exit $tp): the licence texts cannot be collected" >&2
+    exit 1
+fi
+cp -r "$LOG/third_party_licenses" "$OUT/Licenses/third-party"
+# The list generated for THIS build (its "Inputs" line names the runtime that ships), not the
+# repository copy, which may name an earlier runtime build.
+cp "$LOG/THIRD_PARTY_LICENSES.md" "$OUT/Licenses/THIRD_PARTY_LICENSES.md"
+echo "Licenses/third-party: $(find "$OUT/Licenses/third-party" -type f | wc -l) files, $(du -sk "$OUT/Licenses/third-party" | cut -f1) KB"
+if diff <(grep -v '^Inputs of this run' "$REPO/THIRD_PARTY_LICENSES.md") \
+        <(grep -v '^Inputs of this run' "$LOG/THIRD_PARTY_LICENSES.md") > "$LOG/third-party.diff" &&
+   diff -r "$REPO/third_party_licenses" "$LOG/third_party_licenses" >> "$LOG/third-party.diff"; then
+    echo "THIRD_PARTY_LICENSES.md and third_party_licenses/ match this build (apart from the runtime's build time)"
 else
-    echo "WARNING: THIRD_PARTY_LICENSES.md differs from what this runtime needs ($LOG/third-party.diff):" \
-         "run scripts/gen-third-party.sh --studio-runtime dist/Windows/Studio and make-dist.sh again"
+    echo "WARNING: THIRD_PARTY_LICENSES.md or third_party_licenses/ in the repository differ from this build" \
+         "($LOG/third-party.diff); the dist carries the texts for this build. Run" \
+         "scripts/gen-third-party.sh --studio-runtime dist/Windows/Studio to update the repository copies."
 fi
 done_step licences
 

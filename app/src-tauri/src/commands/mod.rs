@@ -66,6 +66,7 @@ macro_rules! all_commands {
             $crate::commands::player_set,
             $crate::commands::player_set_master,
             $crate::commands::player_state,
+            $crate::commands::player_diagnostics,
             $crate::commands::devices_list,
             $crate::commands::device_set,
             // recorder
@@ -85,6 +86,8 @@ macro_rules! all_commands {
             $crate::commands::studio_models_download,
             $crate::commands::studio_realign,
             $crate::commands::pick_files,
+            $crate::commands::pick_cover_image,
+            $crate::commands::studio_cover_preview,
         ]
     };
 }

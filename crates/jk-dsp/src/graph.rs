@@ -24,6 +24,18 @@
 //!   `L + prime_len` frames to crossfade at once and produced 69 ms blocks under CPU load).
 //!   A change requested while a transition runs waits for it to finish (only the latest
 //!   request is kept).
+//! * **Prerendered key (key-change render-ahead cache, WORK_ORDER 4.5).** A third kind of
+//!   route, `Cached(slot)`, plays pitch-path output that a background renderer made ahead
+//!   of time with this same graph (`GraphConfig::pitched_only`). The caller passes the
+//!   cached frames with each block (aligned with the input frames, like the stems), so
+//!   the cached route at output frame `u` is `cache[u] + drums[u]`: exactly the
+//!   operations of the real-time `Shift` route, hence bit-identical output for the same
+//!   start point. With [`PitchGraph::set_auto_route`]`(false)` ("prerender policy") the
+//!   graph never starts a real-time shifter by itself: routes change only on request
+//!   ([`PitchGraph::request_cached`], [`PitchGraph::request_bypass`]), with the same
+//!   40 ms equal-power crossfade, and a missing cache block
+//!   ([`PitchGraph::cache_miss`]) fades to the bypass so that the fade ends where the
+//!   data ends (possible because `latency() > crossfade_len()`).
 //! * Deterministic: no threads, no I/O, no clocks, no allocation after construction.
 //!   Gains ramp per sample and crossfades are counted in samples, so the result does not
 //!   depend on block size (checked by the tests).
@@ -37,6 +49,10 @@ use jk_rubberband::{Stretcher, StretcherConfig};
 /// How many never-used Rubber Band instances the graph can hold for upcoming key
 /// changes, and how many replaced ones it can hold until the caller collects them.
 pub const MAX_SPARE_STRETCHERS: usize = 4;
+
+/// Slots for pitched material rendered ahead (the key cache): the one heard and the one
+/// being switched to.
+pub const CACHE_SLOTS: usize = 2;
 
 /// Construction parameters for [`PitchGraph`].
 #[derive(Clone, Copy, Debug)]
@@ -56,11 +72,22 @@ pub struct GraphConfig {
     /// pre-built instance through [`PitchGraph::offer_stretcher`], so the render worker
     /// never constructs (allocates) one. Output is identical either way.
     pub inline_stretchers: bool,
+    /// Output only the pitch path (no drum bus): what the key cache stores. The cached
+    /// route of a playback graph adds the live drum bus back, so the sum is the same
+    /// arithmetic as the real-time route. Default `false`.
+    pub pitched_only: bool,
 }
 
 impl GraphConfig {
     pub fn new(sample_rate: u32) -> Self {
-        GraphConfig { sample_rate, max_block: 1024, crossfade_ms: 40.0, gain_ramp_ms: 20.0, inline_stretchers: true }
+        GraphConfig {
+            sample_rate,
+            max_block: 1024,
+            crossfade_ms: 40.0,
+            gain_ramp_ms: 20.0,
+            inline_stretchers: true,
+            pitched_only: false,
+        }
     }
 }
 
@@ -80,12 +107,34 @@ pub struct GraphStats {
     pub inline_drops: u64,
     /// Blocks in which a key change waited for a pre-built instance.
     pub deferred_blocks: u64,
+    /// Cached-route blocks whose data was missing (the graph faded to the bypass).
+    pub cache_misses: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Route {
     Bypass,
     Shift(usize),
+    Cached(usize),
+}
+
+/// What a route is, for callers (diagnostics, the engine's cache feeds).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RouteInfo {
+    /// Key 0: the plain mix, delayed by the graph latency.
+    Bypass,
+    /// A real-time Rubber Band path at this key.
+    Shift { semitones: i32 },
+    /// Prerendered pitch-path material from cache slot `slot`.
+    Cached { slot: usize, semitones: i32 },
+}
+
+/// One slot of prerendered pitch-path material, on the graph's absolute timeline.
+struct CacheSlot {
+    hist: AbsRing,
+    /// The cached material already contains the drums ("shift drums" was on).
+    drums_in: bool,
+    semitones: i32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -142,6 +191,14 @@ pub struct PitchGraph {
     spares: [Option<Stretcher>; MAX_SPARE_STRETCHERS],
     /// Replaced instances waiting to be freed by the caller (off the real-time thread).
     retired: [Option<Stretcher>; MAX_SPARE_STRETCHERS],
+    /// Prerendered pitch-path material (key cache).
+    cached: [CacheSlot; CACHE_SLOTS],
+    /// `true` (default): routes follow the parameters (real-time key changes). `false`:
+    /// prerender policy, routes change only on request.
+    auto_route: bool,
+    /// Prerender policy: the requested route, started at the next block (after any
+    /// running crossfade).
+    route_req: Option<Route>,
     // Scratch, allocated once.
     bus: [Vec<f32>; CHANNELS],
     drums: [Vec<f32>; CHANNELS],
@@ -195,6 +252,12 @@ impl PitchGraph {
             params,
             spares: Default::default(),
             retired: Default::default(),
+            cached: [
+                CacheSlot { hist: AbsRing::new(CHANNELS, cap, base), drums_in: false, semitones: 0 },
+                CacheSlot { hist: AbsRing::new(CHANNELS, cap, base), drums_in: false, semitones: 0 },
+            ],
+            auto_route: true,
+            route_req: None,
             bus: mk(cfg.max_block),
             drums: mk(cfg.max_block),
             a: mk(cfg.max_block),
@@ -250,6 +313,108 @@ impl PitchGraph {
         match route {
             Route::Bypass => 0,
             Route::Shift(s) => self.paths[s].semitones,
+            Route::Cached(k) => self.cached[k].semitones,
+        }
+    }
+
+    fn route_info(&self, r: Route) -> RouteInfo {
+        match r {
+            Route::Bypass => RouteInfo::Bypass,
+            Route::Shift(s) => RouteInfo::Shift { semitones: self.paths[s].semitones },
+            Route::Cached(k) => RouteInfo::Cached { slot: k, semitones: self.cached[k].semitones },
+        }
+    }
+
+    /// The route heard now and, during a crossfade, the route being faded to.
+    pub fn route(&self) -> (RouteInfo, Option<RouteInfo>) {
+        match self.xfade {
+            Some(x) => (self.route_info(x.from), Some(self.route_info(x.to))),
+            None => (self.route_info(self.current), None),
+        }
+    }
+
+    /// Is cache slot `k` heard, being faded in or out, or requested?
+    pub fn cache_slot_in_use(&self, k: usize) -> bool {
+        let r = Route::Cached(k);
+        self.current == r || self.route_req == Some(r) || self.xfade.is_some_and(|x| x.from == r || x.to == r)
+    }
+
+    /// A cache slot that is neither heard nor requested (to load the next key into).
+    pub fn free_cache_slot(&self) -> Option<usize> {
+        (0..CACHE_SLOTS).find(|&k| !self.cache_slot_in_use(k))
+    }
+
+    /// `true`: routes follow the parameters (real-time key changes, the default).
+    /// `false`: prerender policy: the graph never starts a real-time shifter by itself;
+    /// the route heard now (even a running `Shift`) stays until
+    /// [`request_cached`](Self::request_cached) or [`request_bypass`](Self::request_bypass).
+    /// Turning it back on makes the graph move to the parameters' key the usual way
+    /// (prime + crossfade from whatever is heard, a cached route included).
+    pub fn set_auto_route(&mut self, on: bool) {
+        self.auto_route = on;
+        self.route_req = None;
+    }
+
+    pub fn auto_route(&self) -> bool {
+        self.auto_route
+    }
+
+    /// Prerender policy: crossfade to cache slot `slot` at the next block. The caller
+    /// passes that slot's frames from that block on (see [`process_cached`](Self::process_cached)).
+    /// `drums_in`: the cached material already holds the drums.
+    pub fn request_cached(&mut self, slot: usize, semitones: i32, drums_in: bool) {
+        if slot >= CACHE_SLOTS || self.auto_route {
+            return;
+        }
+        if !self.cache_slot_in_use(slot) {
+            self.cached[slot].drums_in = drums_in;
+            self.cached[slot].semitones = semitones;
+        }
+        self.route_req = Some(Route::Cached(slot));
+    }
+
+    /// Prerender policy: crossfade to the bypass (key 0) at the next block.
+    pub fn request_bypass(&mut self) {
+        if !self.auto_route {
+            self.route_req = Some(Route::Bypass);
+        }
+    }
+
+    /// Reset (see [`reset`](Self::reset)) and, in the prerender policy, start on cache slot
+    /// `slot` (no crossfade: used at a seek, which the engine fades in itself).
+    pub fn reset_cached(&mut self, slot: usize, semitones: i32, drums_in: bool) {
+        self.reset();
+        if slot < CACHE_SLOTS && !self.auto_route {
+            self.cached[slot].drums_in = drums_in;
+            self.cached[slot].semitones = semitones;
+            self.current = Route::Cached(slot);
+        }
+    }
+
+    /// Cache slot `slot` has no data from the next input frame `t` on. If it is heard,
+    /// the graph crossfades to the bypass so that the fade ends at output frame `t`
+    /// (the frames before `t` are already in the slot's history). Rare by design (the
+    /// engine switches to a cached key only well ahead of the renderer); never a click
+    /// unless it happens during the 40 ms of a crossfade into that slot.
+    pub fn cache_miss(&mut self, slot: usize) {
+        let r = Route::Cached(slot);
+        if self.route_req == Some(r) {
+            self.route_req = None;
+        }
+        let t = self.in_pos;
+        let u_next = t - self.latency as u64;
+        let len = self.table.len() as u64;
+        match self.xfade.as_mut() {
+            None if self.current == r => {
+                self.stats.cache_misses += 1;
+                self.stats.transitions += 1;
+                self.xfade = Some(Crossfade { from: r, to: Route::Bypass, start: t.saturating_sub(len).max(u_next) });
+            }
+            Some(x) if x.to == r => {
+                self.stats.cache_misses += 1;
+                x.to = Route::Bypass;
+            }
+            _ => {}
         }
     }
 
@@ -269,9 +434,13 @@ impl PitchGraph {
         for (ramp, v) in self.gains.iter_mut().zip(g) {
             ramp.snap(v);
         }
+        for s in &mut self.cached {
+            s.hist.clear(self.base);
+        }
         self.xfade = None;
+        self.route_req = None;
         self.current = Route::Bypass;
-        if self.params.semitones != 0 {
+        if self.auto_route && self.params.semitones != 0 {
             let from = self.in_pos - (self.latency + self.prime_len) as u64;
             self.restart_path(0, self.params.semitones, self.params.shift_drums, from);
             self.prime_path(0, from, self.in_pos);
@@ -310,12 +479,12 @@ impl PitchGraph {
     /// True when [`reset`](Self::reset) would have to construct a Rubber Band instance
     /// (key not 0, no spare, path used). The real-time engine waits for a spare first.
     pub fn reset_needs_stretcher(&self) -> bool {
-        self.params.semitones != 0 && self.paths[0].needs_fresh() && self.spare_count() == 0
+        self.auto_route && self.params.semitones != 0 && self.paths[0].needs_fresh() && self.spare_count() == 0
     }
 
     /// True when a key change is waiting for a spare instance (`inline_stretchers` off).
     pub fn waiting_for_stretcher(&self) -> bool {
-        self.xfade.is_none() && !self.route_matches(self.current) && !self.can_start_transition()
+        self.auto_route && self.xfade.is_none() && !self.route_matches(self.current) && !self.can_start_transition()
     }
 
     fn take_spare(&mut self) -> Option<Stretcher> {
@@ -357,7 +526,7 @@ impl PitchGraph {
         }
         let slot = match self.current {
             Route::Shift(s) => 1 - s,
-            Route::Bypass => 0,
+            Route::Bypass | Route::Cached(_) => 0,
         };
         !self.paths[slot].needs_fresh() || self.spare_count() > 0
     }
@@ -398,6 +567,8 @@ impl PitchGraph {
                     && self.paths[s].semitones == self.params.semitones
                     && self.paths[s].drums_in == self.params.shift_drums
             }
+            // The automatic (real-time) policy never targets a cached route.
+            Route::Cached(_) => false,
         }
     }
 
@@ -426,7 +597,7 @@ impl PitchGraph {
         } else {
             let slot = match self.current {
                 Route::Shift(s) => 1 - s,
-                Route::Bypass => 0,
+                Route::Bypass | Route::Cached(_) => 0,
             };
             let from = t - self.prime_len as u64;
             self.restart_path(slot, self.params.semitones, self.params.shift_drums, from);
@@ -442,6 +613,8 @@ impl PitchGraph {
     fn render_route(
         route: Route,
         paths: &[ShiftPath; 2],
+        cached: &[CacheSlot; CACHE_SLOTS],
+        pitched_only: bool,
         hist_bus: &AbsRing,
         hist_drums: &AbsRing,
         stats: &mut GraphStats,
@@ -468,7 +641,19 @@ impl PitchGraph {
                         out[c][..n].iter_mut().for_each(|v| *v = 0.0);
                     }
                 }
-                if !p.drums_in {
+                if !p.drums_in && !pitched_only {
+                    for c in 0..CHANNELS {
+                        hist_drums.add_channel_into(c, u, &mut out[c][..n]);
+                    }
+                }
+            }
+            Route::Cached(k) => {
+                // Same arithmetic as the Shift route: pitch-path output, then + drums.
+                let cs = &cached[k];
+                for c in 0..CHANNELS {
+                    cs.hist.read_channel(c, u, &mut out[c][..n]);
+                }
+                if !cs.drums_in && !pitched_only {
                     for c in 0..CHANNELS {
                         hist_drums.add_channel_into(c, u, &mut out[c][..n]);
                     }
@@ -490,6 +675,21 @@ impl PitchGraph {
         &mut self,
         input: &StemBlock,
         extra: Option<&ExtraBlock>,
+        frames: usize,
+        out: [&mut [f32]; CHANNELS],
+    ) {
+        self.process_cached(input, extra, [None, None], frames, out)
+    }
+
+    /// [`process_ext`](Self::process_ext) plus prerendered pitch-path frames for each
+    /// cache slot, aligned with this block's input frames (`None` = no data: silence,
+    /// which only matters if that slot is heard; report it with
+    /// [`cache_miss`](Self::cache_miss) before this call).
+    pub fn process_cached(
+        &mut self,
+        input: &StemBlock,
+        extra: Option<&ExtraBlock>,
+        cached: [Option<[&[f32]; CHANNELS]>; CACHE_SLOTS],
         frames: usize,
         out: [&mut [f32]; CHANNELS],
     ) {
@@ -531,14 +731,31 @@ impl PitchGraph {
             let [d0, d1] = &self.drums;
             self.hist_drums.push(&[&d0[..frames], &d1[..frames]], frames);
         }
+        for (slot, data) in self.cached.iter_mut().zip(cached) {
+            match data {
+                Some([l, r]) => slot.hist.push(&[&l[..frames], &r[..frames]], frames),
+                None => slot.hist.push_silence(frames),
+            }
+        }
 
         // 2. Key / routing change: start a transition if none is running (and, in the
         //    real-time engine, once a pre-built Rubber Band instance is at hand).
-        if self.xfade.is_none() && !self.route_matches(self.current) {
-            if self.can_start_transition() {
-                self.start_transition(t);
-            } else {
-                self.stats.deferred_blocks += 1;
+        if self.xfade.is_none() {
+            if self.auto_route {
+                if !self.route_matches(self.current) {
+                    if self.can_start_transition() {
+                        self.start_transition(t);
+                    } else {
+                        self.stats.deferred_blocks += 1;
+                    }
+                }
+            } else if let Some(r) = self.route_req.take()
+                && r != self.current
+            {
+                // Prerender policy: an explicit switch (to a cached key or the bypass);
+                // the same crossfade as a real-time key change, starting at output t.
+                self.stats.transitions += 1;
+                self.xfade = Some(Crossfade { from: self.current, to: r, start: t });
             }
         }
 
@@ -563,7 +780,7 @@ impl PitchGraph {
         match self.xfade {
             None => {
                 Self::render_route(
-                    self.current, &self.paths, &self.hist_bus, &self.hist_drums,
+                    self.current, &self.paths, &self.cached, self.cfg.pitched_only, &self.hist_bus, &self.hist_drums,
                     &mut self.stats, u, frames, &mut self.a,
                 );
                 out_l[..frames].copy_from_slice(&self.a[0][..frames]);
@@ -571,7 +788,7 @@ impl PitchGraph {
             }
             Some(x) => {
                 Self::render_route(
-                    x.from, &self.paths, &self.hist_bus, &self.hist_drums,
+                    x.from, &self.paths, &self.cached, self.cfg.pitched_only, &self.hist_bus, &self.hist_drums,
                     &mut self.stats, u, frames, &mut self.a,
                 );
                 let len = self.table.len() as u64;
@@ -583,7 +800,7 @@ impl PitchGraph {
                     out_r[..frames].copy_from_slice(&self.a[1][..frames]);
                 } else {
                     Self::render_route(
-                        x.to, &self.paths, &self.hist_bus, &self.hist_drums,
+                        x.to, &self.paths, &self.cached, self.cfg.pitched_only, &self.hist_bus, &self.hist_drums,
                         &mut self.stats, u, frames, &mut self.b,
                     );
                     for i in 0..frames {
@@ -615,7 +832,7 @@ impl PitchGraph {
     /// Diagnostics: Rubber Band's start pad / start delay for the path currently heard.
     pub fn shifter_delays(&self) -> Option<(usize, usize)> {
         match self.current {
-            Route::Bypass => None,
+            Route::Bypass | Route::Cached(_) => None,
             Route::Shift(s) => Some((self.paths[s].preferred_start_pad(), self.paths[s].start_delay())),
         }
     }
@@ -625,7 +842,7 @@ impl PitchGraph {
     pub fn shifter_headroom(&self) -> Option<i64> {
         let u = self.in_pos as i64 - self.latency as i64;
         match self.current {
-            Route::Bypass => None,
+            Route::Bypass | Route::Cached(_) => None,
             Route::Shift(s) => Some(self.paths[s].available_end() as i64 - u),
         }
     }

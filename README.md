@@ -62,6 +62,10 @@ Double-click `Windows\Jukeoke.exe`. Windows 11 needs nothing installed (the app 
 Edge WebView2 that comes with Windows). The app is not code-signed: if Windows shows
 "Windows protected your PC", choose **More info**, then **Run anyway**.
 
+The recorder captures the system mix after Windows' own processing, so sound-driver
+effects such as "Audio enhancements" end up in the recording: for an exact copy, turn them
+off for the output device (*Settings > System > Sound >* your speakers or headphones).
+
 ### Mac (macOS 13 Ventura or later, Apple Silicon)
 
 Open `Mac/Jukeoke.app` from the stick.
@@ -83,7 +87,8 @@ Open `Mac/Jukeoke.app` from the stick.
   may ask again after each new version.
 - For a recording with no sample-rate conversion, set the Mac's output to 48,000 Hz in
   *Audio MIDI Setup* (macOS converts other rates to 48 kHz before an app can record them).
-  The recorder always shows the format you are getting.
+  The format the recorder shows is exactly what ScreenCaptureKit (macOS's capture
+  service) delivers.
 - **Self-check** (button at the top right): plays a quiet test tone, renders and shifts the
   bundled demo song, makes a three-second test recording and writes a plain-text report into
   `Settings/` on the stick. Bring that report back if something does not work.
@@ -99,7 +104,8 @@ and plays as usual and says why the Studio is unavailable.
 1. Open **Studio** and, the first time, press **Download models** (about 3.8 GB with the
    lyrics models; nothing is downloaded until you press it).
 2. Drop audio or video files on the window (mp3, m4a, flac, wav, ogg, opus, aiff, wma, mp4,
-   mkv, mov, webm, avi), or choose them. Check the title and artist.
+   mkv, mov, webm, avi), or choose them. Check the title, artist and album, and replace
+   the cover picture with a JPEG or PNG, or remove it, if you like.
 3. Choose where the lyrics come from: paste them, choose an `.lrc` file, use the lyrics
    inside the file, press **Look up lyrics online**, or let the Studio write down what is
    sung (marked "unchecked" until you correct it).

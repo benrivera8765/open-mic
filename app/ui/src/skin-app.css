@@ -344,6 +344,26 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
+}
+
+/* "Preparing key +2... 40%" (render ahead and cache): a small plate under the dial,
+   out of the flow so the dial never moves. */
+.skin-console__key .key-prepare {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translate(-50%, 85%);
+  margin: 0;
+  padding: 0.15em 0.6em;
+  white-space: nowrap;
+  font-size: clamp(10px, 1.3vh, 26px);
+  font-variant-numeric: tabular-nums;
+  color: #f6efd9;
+  background: rgba(20, 8, 12, 0.82);
+  border: 1px solid rgba(246, 239, 217, 0.35);
+  border-radius: 999px;
+  z-index: 2;
 }
 
 .skin-console__mix {

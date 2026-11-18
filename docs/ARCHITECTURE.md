@@ -118,6 +118,30 @@ PITCH BUS out + DRUM BUS out --> resampler (only if device rate != song rate)
   (40 ms, equal-power) from the old path to the new one. Rubber Band is idle at 0. The
   change is heard about 280 ms after the click. The skin's key dial commits 160 ms
   after the hand stops, so spinning it does not build one instance per detent.
+- **Render ahead and cache** (WORK_ORDER 4.5 last bullet; crates/jk-engine/src/keycache.rs,
+  jk-dsp's cached route). Mode `realtime` is the path above. Mode `prerender` (setting
+  `audio.key_mode`; "auto" picks it when Rubber Band measured below 3x real time on this
+  computer and rate, or before any measurement) renders the pitch path (the graph with
+  `pitched_only`: the shifted mix of lead x guide + backing + other, + drums with "shift
+  drums") on a below-normal-priority thread into `<Settings>/cache/keys/` (raw f32, one
+  file per song + key + pitched levels, `index.json`, LRU eviction above
+  `audio.key_cache_mb`, partial files deleted at the next start). Rendering starts at the
+  play position (cells of 32768 frames; each run starts like a real-time seek: reset +
+  priming), then fills the rest of the song; where two runs meet, the earlier one
+  crossfades (40 ms equal power) into the later one's pre-roll, so the file never jumps
+  and written cells are never rewritten. Control (house thread) keeps the previous key
+  until 5 s are rendered ahead with a renderer above 1.1x real time (else to the end of
+  the song), then hands the worker a feed (a 2 s lock-free ring filled by a reader
+  thread) and the worker's graph crossfades to its `Cached` route: cached frames + the
+  live drum bus, the same arithmetic as the real-time route, so the output is
+  bit-identical for the same start point (tests/keycache.rs). Seeks start on the cached
+  key when it is ready there, otherwise on the previous key, and move the renderer
+  there first. A missing cache block fades to the bypass before the gap (never seen in
+  tests). Mixer levels: the drum level stays live; another level renders a new entry
+  while the old mix plays (per-stem caches were rejected: shifting stems separately is
+  not the same waveform as shifting the mix, residual about +1 dB, at 3x the CPU).
+  Disk: about 90 MB per key for a 4-minute 48 kHz song; memory: 2 s rings + one
+  renderer graph. The render worker and the callback still never allocate or lock.
 - **One latency for the whole graph.** Every path is delayed to the same total latency L
   (longest R3 FFT x 9/8: 4608 frames at 44.1/48 kHz). Drums and the bypass path are
   delayed by exactly L; per-key correction tables remove R3's systematic transient bias.
@@ -228,7 +252,9 @@ PITCH BUS out + DRUM BUS out --> resampler (only if device rate != song rate)
   enters 3 s before it is sung; the font shrinks (to 0.6x at most) to keep 2 s of text
   ahead (D-96). Text is pre-rendered into 1024 CSS-px tiles per colour (sung and
   upcoming, LRU cache); each frame blits them with a clip at the marker. Capped at
-  60 fps, stopped when idle or the page is hidden.
+  60 fps, stopped when idle, when the page is hidden, or when the native window is
+  minimised (Tauri's resize event + `isMinimized`, as for the skin; WebView2 keeps a
+  minimised page "visible"; `src/ticker/frameloop.ts`).
 - Skin animation (D-104, D-107): the light drift is a Web Animations transform on
   gradient strips inside masked regions, stepped 12 times a second, one palette cycle per
   40 s; static art is SVG/JPEG images (cached rasters, no filters re-run on repaint);

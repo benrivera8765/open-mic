@@ -186,6 +186,9 @@ pub struct Snapshot {
     /// Monotonic nanoseconds (engine clock) of the device callback that produced
     /// `position_s`; lets a caller interpolate between snapshots. 0 = no callback yet.
     pub position_ns: u64,
+    /// Key-change mode in effect and, in prerender mode, the key or mix being prepared.
+    #[serde(default)]
+    pub key: crate::keycache::KeyStatus,
 }
 
 impl Snapshot {
@@ -202,6 +205,7 @@ impl Snapshot {
             clipped: false,
             error: None,
             position_ns: 0,
+            key: Default::default(),
         }
     }
 }
@@ -354,6 +358,29 @@ impl Engine {
     /// Master volume, linear 0..1, smoothed per device buffer.
     pub fn set_master(&self, v: f32) {
         self.inner.set_master(v)
+    }
+
+    /// How key changes are made (WORK_ORDER 4.5): `Realtime` (default) or `Prerender`
+    /// (render ahead into the key cache, keep the previous key until enough is ready,
+    /// then crossfade). Prerender needs [`set_key_cache`](Self::set_key_cache); without a
+    /// usable cache the real-time path is used and `Snapshot::key.note` says why. The
+    /// app's "auto" uses [`crate::choose_key_mode`] with [`crate::benchmark_realtime_factor`].
+    pub fn set_key_mode(&self, mode: crate::keycache::KeyMode) {
+        self.inner.set_key_mode(mode)
+    }
+
+    /// The key cache folder (`<root>/Settings/cache/keys`; `None` = no cache) and its
+    /// size cap in bytes (least recently used entries are evicted; entries in use are
+    /// kept even above the cap). Deletes partial files left by an earlier session.
+    pub fn set_key_cache(&self, dir: Option<&Path>, cap_bytes: u64) -> Result<(), EngineError> {
+        self.inner.set_key_cache(dir, cap_bytes)
+    }
+
+    /// Test hook: run the render worker's graph and the key renderer `factor` times
+    /// slower (busy-waiting), as on a slow computer. 1.0 = normal.
+    #[doc(hidden)]
+    pub fn debug_set_slowdown(&self, factor: f64) {
+        self.inner.debug_set_slowdown(factor)
     }
 
     pub fn snapshot(&self) -> Snapshot {

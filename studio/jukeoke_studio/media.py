@@ -20,6 +20,10 @@ Pipeline step 1 (WORKING ORDER 4.1) and the protocol's ``inspect`` (section 5).
   else (BMP, WebP, a 5 MB scan) is re-encoded once to JPEG at most 1400 px, because the
   song format allows JPEG/PNG up to 2 MB (docs/SONG_FORMAT.md 4.1). A cover is artwork,
   not audio; the audio rules do not apply to it.
+* A cover the user chose instead (protocol 7 ``metadata.cover_path``, :func:`user_cover`):
+  JPEG or PNG only; up to 2 MB kept byte for byte, a larger one re-encoded once to JPEG,
+  lowering the quality first and the pixel size only when that is not enough (never
+  enlarged).
 """
 
 from __future__ import annotations
@@ -49,6 +53,12 @@ _LOSSLESS = {"flac", "alac", "wavpack", "ape", "tta", "truehd", "mlp", "wmalossl
 
 MAX_COVER_BYTES = 2 * 1024 * 1024
 COVER_MAX_PX = 1400
+#: Largest picture file accepted as a user-chosen cover (it is read into memory once).
+MAX_USER_COVER_FILE = 64 * 1024 * 1024
+#: A user cover over 2 MB: pixel sizes (longer side; None = its own size) and MJPEG
+#: qscales tried in order, so the quality drops before the size does.
+USER_COVER_SIDES = (None, 3000, 2000, COVER_MAX_PX, 1000)
+USER_COVER_QSCALES = (2, 3, 5, 8, 12)
 
 # ITU-R BS.775 stereo fold-down, by FFmpeg channel name.
 _C = 0.7071067811865476
@@ -390,34 +400,90 @@ def raw_cover(path: str | os.PathLike) -> bytes | None:
     return None
 
 
-def _to_jpeg(data: bytes) -> bytes | None:
-    """Re-encodes an image (any format FFmpeg reads) as JPEG, at most COVER_MAX_PX."""
+def _to_jpeg(data: bytes, sides: tuple = (COVER_MAX_PX,), qscales: tuple = (3, 5, 8, 12)) -> bytes | None:
+    """Re-encodes an image (any format FFmpeg reads) as JPEG of at most 2 MB. Tries each
+    longer-side limit in ``sides`` (None: the image's own size) with each MJPEG qscale in
+    ``qscales`` and returns the first that fits. Never enlarges."""
     import av
 
     try:
         with av.open(io.BytesIO(data), "r") as c:
             frame = next(c.decode(video=0))
         w, h = frame.width, frame.height
-        scale = min(1.0, COVER_MAX_PX / max(w, h))
-        w2, h2 = max(2, int(w * scale) // 2 * 2), max(2, int(h * scale) // 2 * 2)
-        for q in (3, 5, 8, 12):
-            out = io.BytesIO()
-            with av.open(out, "w", format="mjpeg") as oc:
-                st = oc.add_stream("mjpeg", rate=1)
-                st.width, st.height, st.pix_fmt = w2, h2, "yuvj420p"
-                st.codec_context.qscale = q
-                st.codec_context.options = {"qmin": str(q), "qmax": str(q)}
-                f2 = frame.reformat(width=w2, height=h2, format="yuvj420p")
-                for pkt in st.encode(f2):
-                    oc.mux(pkt)
-                for pkt in st.encode():
-                    oc.mux(pkt)
-            b = out.getvalue()
-            if _image_kind(b) == "jpeg" and len(b) <= MAX_COVER_BYTES:
-                return b
+        tried = set()
+        for side in sides:
+            scale = 1.0 if side is None else min(1.0, side / max(w, h))
+            w2, h2 = max(2, int(w * scale) // 2 * 2), max(2, int(h * scale) // 2 * 2)
+            if (w2, h2) in tried:
+                continue
+            tried.add((w2, h2))
+            f2 = frame.reformat(width=w2, height=h2, format="yuvj420p")
+            for q in qscales:
+                out = io.BytesIO()
+                with av.open(out, "w", format="mjpeg") as oc:
+                    st = oc.add_stream("mjpeg", rate=1)
+                    st.width, st.height, st.pix_fmt = w2, h2, "yuvj420p"
+                    st.codec_context.qscale = q
+                    st.codec_context.options = {"qmin": str(q), "qmax": str(q)}
+                    for pkt in st.encode(f2):
+                        oc.mux(pkt)
+                    for pkt in st.encode():
+                        oc.mux(pkt)
+                b = out.getvalue()
+                if _image_kind(b) == "jpeg" and len(b) <= MAX_COVER_BYTES:
+                    return b
     except Exception as e:  # noqa: BLE001
         log.info("cover could not be converted to JPEG: %s", e)
     return None
+
+
+def _decodes(data: bytes) -> bool:
+    """True when FFmpeg can decode the picture (not just its first bytes)."""
+    import av
+
+    try:
+        with av.open(io.BytesIO(data), "r") as c:
+            next(c.decode(video=0))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def user_cover(path: str | os.PathLike) -> bytes:
+    """The picture the user chose as the song's cover (protocol 7 ``metadata.cover_path``),
+    ready for the song file: a JPEG or PNG of at most 2 MB byte for byte; a larger one
+    re-encoded once to JPEG (quality lowered first, the pixel size only if that is not
+    enough; never enlarged; a PNG's transparency is lost then). Raises ValueError with a
+    plain message."""
+    p = Path(path)
+    try:
+        size = p.stat().st_size if p.is_file() else -1
+    except OSError:
+        size = -1
+    if size < 0:
+        raise ValueError("The chosen cover picture could not be found.")
+    if size > MAX_USER_COVER_FILE:
+        raise ValueError("The chosen cover picture is larger than 64 MB.")
+    data = p.read_bytes()
+    if _image_kind(data) is None:
+        raise ValueError("The cover picture must be a JPEG or PNG image.")
+    if len(data) <= MAX_COVER_BYTES:
+        if not _decodes(data):
+            raise ValueError("The chosen cover picture is damaged and could not be read.")
+        return data
+    j = _to_jpeg(data, USER_COVER_SIDES, USER_COVER_QSCALES)
+    if j is None:
+        raise ValueError("The chosen cover picture could not be read.")
+    return j
+
+
+def is_jpeg_or_png_file(path: str | os.PathLike) -> bool:
+    """A quick check at ``job.submit``: the file exists and starts like a JPEG or PNG."""
+    try:
+        with open(path, "rb") as f:
+            return _image_kind(f.read(8)) is not None
+    except OSError:
+        return False
 
 
 def cover_for_song(path: str | os.PathLike) -> tuple[bytes | None, str | None]:

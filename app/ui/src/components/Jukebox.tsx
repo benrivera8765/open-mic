@@ -21,6 +21,7 @@ import type { Api } from "../api/client";
 import { formatTime, percent } from "../lib/format";
 import { keyLabel } from "../lib/keys";
 import { Fader, KeyDial, PlateButton, TransportIcon } from "../skin";
+import { KeyPrepareNote } from "./KeyControl";
 import { changeSongSettings, restart, seek, seekBy, setKey, setMaster, togglePlay, useApp } from "../state/app";
 import { usePosition } from "./Transport";
 
@@ -101,6 +102,7 @@ function SkinKey() {
   return (
     <div class="skin-console__key" data-semitones={semis}>
       <KeyDial key={song?.summary.song_id ?? ""} semitones={semis} label={label} onChange={setKey} disabled={!song} />
+      <KeyPrepareNote />
     </div>
   );
 }

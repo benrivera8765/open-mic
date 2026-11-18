@@ -140,6 +140,15 @@ impl Core {
             Arc::clone(&library),
             o.slot_save_delay,
         ));
+        player.attach();
+        {
+            // Key change: the cache folder (never a per-user folder in portable mode)
+            // and the mode inputs (src/keymode.rs).
+            let a = settings.get().audio;
+            player.configure_key_cache(crate::keymode::cache_dir(&o.layout).as_deref(), crate::keymode::cache_bytes(&a));
+            let me = crate::keymode::machine_id();
+            player.set_key_config(a.key_mode, crate::keymode::factors_for(&me, &a.key_benchmarks));
+        }
         let exports = Arc::new(Exports::new(
             paths.exports.clone(),
             Arc::clone(&o.sink),
@@ -173,6 +182,18 @@ impl Core {
     /// temp file clean-up, Studio probe.
     pub fn start_background(self: &Arc<Self>) {
         self.player.start_clock();
+        // "auto" key mode: measurements are saved per computer and rate; the common
+        // rates are measured now, in the background, before a song needs them.
+        let weak = Arc::downgrade(self);
+        self.player.set_bench_hook(Arc::new(move |rate, factor| {
+            if let Some(core) = weak.upgrade() {
+                let key = crate::keymode::bench_key(&crate::keymode::machine_id(), rate);
+                core.settings.update(|s| {
+                    s.audio.key_benchmarks.insert(key.clone(), (factor * 100.0).round() / 100.0);
+                });
+            }
+        }));
+        self.player.measure_rates(&[44_100, 48_000]);
         *self.watcher.lock().unwrap_or_else(|e| e.into_inner()) =
             Watcher::start(&self.paths.library, Arc::clone(&self.sink));
         let me = Arc::clone(self);
@@ -253,6 +274,16 @@ impl Core {
         if after.audio.device_id != before.audio.device_id || after.audio.exclusive != before.audio.exclusive {
             self.player
                 .set_device(after.audio.device_id.as_deref(), after.audio.exclusive)?;
+        }
+        if after.audio.key_cache_mb != before.audio.key_cache_mb {
+            self.player.configure_key_cache(
+                crate::keymode::cache_dir(&self.layout).as_deref(),
+                crate::keymode::cache_bytes(&after.audio),
+            );
+        }
+        if after.audio.key_mode != before.audio.key_mode || after.audio.key_benchmarks != before.audio.key_benchmarks {
+            let me = crate::keymode::machine_id();
+            self.player.set_key_config(after.audio.key_mode, crate::keymode::factors_for(&me, &after.audio.key_benchmarks));
         }
         Ok(after)
     }

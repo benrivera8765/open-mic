@@ -178,7 +178,25 @@ export interface PlayerState {
   error: string | null;
   /** "A major -> B major (+2)" */
   key_label: string | null;
+  /** Addition (WORK_ORDER 4.5): how key changes are made now. */
+  key_mode?: "realtime" | "prerender";
+  /** Addition: prerender mode, a key or mix being rendered before it is heard. */
+  key_preparing?: KeyPreparing | null;
+  /** Addition: why prerender was asked for but real time is used. */
+  key_note?: string | null;
 }
+
+/** "Preparing key +2... 40%" (render ahead and cache, WORK_ORDER 4.5). */
+export interface KeyPreparing {
+  semitones: number;
+  /** "key": a new key; "mix": same key, a level of a pitched stem changed. */
+  reason: "key" | "mix";
+  /** 0..1 of what must be rendered before the switch. */
+  progress: number;
+}
+
+/** `settings.audio.key_mode`. */
+export type KeyModeSetting = "auto" | "realtime" | "prerender";
 
 /** Payload of `playback://clock`. */
 export interface ClockEvent {
@@ -227,6 +245,12 @@ export interface AppSettings {
     master_volume: number;
     /** Bluetooth latency per device id. */
     device_offsets_ms: Record<string, number>;
+    /** Key change: "auto" (default) renders ahead on computers too slow for real time. */
+    key_mode?: KeyModeSetting;
+    /** Size cap of the key cache in MB (64..65536, default 1024). */
+    key_cache_mb?: number;
+    /** Measured Rubber Band speed per computer and sample rate (written by the core). */
+    key_benchmarks?: Record<string, number>;
   };
 }
 
@@ -385,7 +409,9 @@ export interface StudioSubmitRequest {
   input: string;
   preset: StudioPreset;
   language: string;
-  metadata: { title: string; artist: string; album: string | null };
+  /** `cover_path` (STUDIO_PROTOCOL 7, added): absent = the file's own cover, null = no
+   * cover, a path = that JPEG / PNG picture instead. */
+  metadata: { title: string; artist: string; album: string | null; cover_path?: string | null };
   /** `source`: STUDIO_PROTOCOL 7 `lyrics.source`, e.g. "online:lrclib" for a lookup
    * result; null or absent = the Studio's default (`user_text` / `lrc`). */
   lyrics: { mode: StudioLyricsMode; text: string | null; lrc: string | null; source?: string | null };

@@ -631,7 +631,8 @@ export class MockApi implements Api {
       lossy,
       has_video: video,
       embedded_lyrics: ext === "flac" ? { present: true, synced: false, text: "Twinkle, twinkle, little star,\nHow I wonder what you are!" } : { present: false, synced: false, text: null },
-      cover_path: null,
+      // The demo FLAC carries a cover (served by studioCoverPreview), the others none.
+      cover_path: ext === "flac" ? "C:\\Jukeoke\\Settings\\tmp\\studio\\covers\\cover-demo.png" : null,
     });
   }
 
@@ -748,6 +749,17 @@ export class MockApi implements Api {
       }
     }, 100);
     return this.reply(undefined);
+  }
+
+  pickCoverImage() {
+    return this.reply<string | null>("C:\\Users\\you\\Pictures\\My cover.jpg");
+  }
+
+  studioCoverPreview(path: string, maxPx: number) {
+    if (!/\.(jpe?g|png)$/i.test(path)) return this.reject<{ data_url: string | null }>(fail("bad_request", "The cover picture must be a JPEG or PNG image."));
+    const name = (path.split(/[\\/]/).pop() ?? path).replace(/\.[^.]+$/, "");
+    const colors: [string, string] = /demo/.test(name) ? ["#f6c453", "#c2410c"] : ["#60a5fa", "#7c3aed"];
+    return this.reply({ data_url: coverDataUrl(name, colors, maxPx) });
   }
 
   pickFiles() {

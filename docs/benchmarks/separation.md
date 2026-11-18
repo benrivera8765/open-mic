@@ -660,6 +660,70 @@ Re-run from scratch, not read back from the morning's files:
 | Licence tags and revisions of the default models (Hugging Face API) | `anvuew/BS-RoFormer` gpl-3.0, `anvuew/karaoke_bs_roformer` gpl-3.0, `SYH99999/bs_roformer_4stems_ft` apache-2.0; the pinned revisions are still each repository's current head |
 | CPU tests, whole `studio/tests` (after `pyproject.toml` gained the lyrics/alignment dependencies) | 145 passed, 1 skipped (a network test), 20 GPU tests deselected |
 
+### 6.9 Loudness and stereo image of the karaoke mix (2026-11-18)
+
+WORK_ORDER 4.1 asks for "the stereo image and loudness unchanged". Measured on the cached
+estimates of sections 5.1 and 5.4 (no model was re-run), karaoke mix against the true
+one, estimate minus truth per track:
+
+```
+studio-venv python -I studio/bench/karaoke_image.py --json $JK_BUILD/final/karaoke_image.json   # 46 s, CPU only
+```
+
+- **Loudness**: integrated loudness, ITU-R BS.1770-4 / EBU R128 (K-weighting, 400 ms
+  blocks with 75 % overlap, -70 LUFS absolute and -10 LU relative gates). Implemented in
+  the script, because pyloudnorm is not installed and nothing may be downloaded. Checked
+  against the standard: its 48 kHz K-weighting coefficients are reproduced to 9e-16, and
+  the EBU Tech 3341 stereo 1 kHz sines at -23 and -33 dBFS read -22.99 / -32.99 LUFS
+  (44.1 kHz) and -22.99 / -32.99 LUFS (48 kHz), within the 0.1 LU tolerance.
+- **Stereo image**: inter-channel correlation (zero lag, whole excerpt); side-to-mid
+  energy ratio with M = (L+R)/2 and S = (L-R)/2; the mid and side levels on their own;
+  the left/right balance. Side-to-mid is not compared on 3 ccMixter tracks whose true
+  mix is mono (side below -60 dB relative to mid).
+- **Sets**: the 18 ccMixter mixes (45 s excerpts, true lead, backing and instrumental
+  known), the shipped overlaps (karaoke model 8, others 2). Default karaoke mix "full"
+  with backing on = mix - lead estimate, against mix - true lead; "clean" = instrumental
+  model + estimated backing; backing off = mix - vocals estimate, against the true
+  instrumental. MUSDB18-HQ test (50 tracks, 60 s excerpts): MUSDB has no lead/backing
+  split, so the lead is all vocals there: mix - vocals estimate (`bs_roformer_anvuew_ft1`)
+  against mix - true vocals.
+
+| set, variant | tracks | loudness difference, LU: mean / mean abs / worst | within 0.5 LU | correlation difference: mean / worst | side-to-mid difference, dB: mean / mean abs / worst | balance, dB worst |
+|---|---|---|---|---|---|---|
+| MUSDB18-HQ, full (vocals removed) | 50 | -0.10 / 0.10 / -0.30 | 50 of 50 | +0.002 / +0.013 | -0.08 / 0.09 / -0.80 | -0.09 |
+| ccMixter, **full, backing on (the default)** | 18 | -0.25 / 0.42 / -2.99 | 14 of 18 | -0.001 / +0.015 | +0.09 / 0.23 / +1.04 (15 stereo tracks) | -0.06 |
+| ccMixter, full, backing on, without ccm-68969 | 17 | -0.09 / 0.27 / +1.47 | 14 of 17 | -0.001 / +0.015 | as above | -0.06 |
+| ccMixter, clean, backing on | 18 | -0.21 / 0.42 / -3.01 | 14 of 18 | -0.003 / -0.014 | +0.38 / 0.50 / +3.12 | -0.09 |
+| ccMixter, full, backing off | 18 | -2.32 / 2.33 / -40.55 | 17 of 18 | -0.002 / -0.012 | +0.29 / 0.30 / +3.45 | +0.18 |
+| ccMixter, full, backing off, without ccm-68969 | 17 | -0.07 / 0.08 / -0.31 | 17 of 17 | -0.002 / -0.012 | as above | +0.18 |
+
+Reading it:
+
+- **Loudness.** With the vocals or the lead removed by the default "full" strategy, the
+  median track changes by less than 0.1 LU (MUSDB median -0.09 LU, ccMixter -0.05 LU),
+  and every MUSDB track stays within 0.3 LU. The karaoke mix is slightly quieter on
+  average because the estimate removes a little more than the true vocal (mid level
+  -0.06 dB on MUSDB). The ccMixter outliers are the tracks whose lead/backing split is
+  hard: ccm-68969 (-2.99 LU with backing on) is the track already named in 5.4 whose
+  instrument the vocal model largely takes for voice (backing off it loses 40.6 LU, i.e.
+  the instrumental is almost gone); ccm-68853 -1.33 LU and ccm-39381 +1.47 LU are songs
+  where the karaoke model moves energy between lead and backing.
+- **Stereo image.** Inter-channel correlation moves by at most 0.015 on any track of
+  either set. Side-to-mid stays within 0.5 dB on 49 of 50 MUSDB tracks (worst -0.80 dB,
+  "Triviul feat. The Fiend - Widow", where the side level drops 0.94 dB: the vocal
+  estimate takes some of the vocal's stereo reverb along) and on 13 of 15 stereo ccMixter
+  tracks with the default (worst +1.04 dB). The left/right balance moves by less than
+  0.2 dB everywhere. "clean" widens the image more (side-to-mid +0.38 dB on average, up
+  to +3.1 dB on ccm-33628, whose side level rises by 3.1 dB): the instrumental model adds
+  side energy that is not in the recording, one more reason "full" is the default.
+- **Limits.** These are 45-60 s excerpts. Neither set is a modern commercial master
+  (ccMixter mixes are sparse home productions; MUSDB is 2010s semi-professional
+  material). A correlation or side-to-mid difference is a number, not a judgement: the
+  listening checklist should add "stereo width and loudness of the karaoke mix against
+  the original" (owner's ears).
+
+Per-track values: `$JK_BUILD/final/karaoke_image.json`.
+
 ## 7. Recommendations
 
 | | choice | licence (commercial use) | why |

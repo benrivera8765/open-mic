@@ -46,6 +46,11 @@ impl AtomicF32 {
 /// consumed of that generation's segment (low `FILLER_SEG_BITS` bits).
 pub const FILLER_SEG_BITS: u32 = 40;
 
+/// `Shared::key_route` values.
+pub const ROUTE_BYPASS: u32 = 0;
+pub const ROUTE_SHIFT: u32 = 1;
+pub const ROUTE_CACHED: u32 = 2;
+
 /// Everything the threads share.
 #[derive(Default)]
 pub struct Shared {
@@ -125,6 +130,18 @@ pub struct Shared {
     /// Key heard at the worker's output.
     pub audible_semitones: AtomicI32,
 
+    /// Key cache (prerender mode): the worker's next input frame, the route its graph
+    /// heads for (`ROUTE_*`), the cache entry tag of that route when cached, the tag of
+    /// a feed waiting to be switched to, and cached blocks that were missing.
+    pub worker_song_in: AtomicU64,
+    pub key_route: AtomicU32,
+    pub key_route_tag: AtomicU64,
+    pub key_pending_tag: AtomicU64,
+    pub cache_misses: AtomicU64,
+    /// Test hook: the render worker's graph and the key renderer run this many times
+    /// slower (x100; 100 or less = normal), simulating a slow computer.
+    pub debug_slowdown_x100: AtomicU32,
+
     // ---- written by the reader -------------------------------------------------------
     /// A stem could not be decoded (message in the control state).
     pub reader_failed: AtomicBool,
@@ -150,6 +167,7 @@ impl Shared {
             &self.reader_starved,
             &self.deferred_blocks,
             &self.shortfall_frames,
+            &self.cache_misses,
         ] {
             a.store(0, Relaxed);
         }

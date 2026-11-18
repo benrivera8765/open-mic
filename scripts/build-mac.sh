@@ -18,8 +18,15 @@
 #   5. Builds the app for Apple Silicon with macOS 13.0 as the minimum system.
 #   6. Signs it "ad hoc" (no Apple account needed; Apple Silicon refuses to
 #      run code without at least this).
-#   7. Checks every program and library inside the app declares macOS 13.0
-#      or older as its minimum (scripts/check-macos-minos.sh).
+#   7. Checks every program and library inside the app:
+#      a. declares macOS 13.0 or older as its minimum (scripts/check-macos-minos.sh);
+#      b. links no API newer than macOS 13.0 without a weak reference
+#         (scripts/check-macos-availability.sh: imported symbols, Objective-C
+#         classes and selectors against the SDK headers' availability annotations);
+#      c. contains no path of this Mac (your home folder, this checkout): the
+#         build remaps them with --remap-path-prefix, as the Windows build does,
+#         so your account name does not travel with every copy of the app
+#         (scripts/check-macos-paths.sh).
 #   8. Copies the result to dist/Mac/Jukeoke.app (and the recorder self-check
 #      tool to dist/Mac/Tools/sck_probe).
 #
@@ -28,7 +35,10 @@
 #   --skip-app    build only the recorder self-check tool, not the app
 #
 # Environment (optional): JK_NONINTERACTIVE=1 (CI: never open installers),
-#   JK_TOOLS_DIR (where Node is unpacked), JK_SKIP_TESTS=1.
+#   JK_TOOLS_DIR (where Node is unpacked), JK_SKIP_TESTS=1,
+#   JK_ALLOW_NEWER_API=1 (step 7b warns instead of stopping),
+#   JK_ALLOW_BUILD_PATHS=1 (step 7c warns instead of stopping),
+#   JK_AVAILABILITY_IN_CI_STEP=1 (CI runs step 7b as its own step instead).
 #
 # Takes 5 to 20 minutes the first time (downloads and compiles), then less.
 # Needs about 3 GB of free disk space. Never uses sudo.
@@ -49,7 +59,7 @@ for arg in "$@"; do
     case "$arg" in
         --no-install) NO_INSTALL=1 ;;
         --skip-app) SKIP_APP=1 ;;
-        -h|--help) sed -n '4,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '4,49p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
     esac
 done
@@ -165,9 +175,40 @@ mkdir -p "$ROOT/dist/Mac/Tools"
 # Use the exact dependency versions in Cargo.lock when the checkout has one.
 LOCKED=""
 if [ -f "$ROOT/Cargo.lock" ]; then LOCKED="--locked"; fi
+
+# No path of this Mac in the binaries (the Mac twin of app/scripts/build-windows.sh).
+# Without this a Rust release binary holds hundreds of copies of
+# /Users/<you>/.cargo/registry/... (panic locations of dependencies), the checkout's
+# path (env!("CARGO_MANIFEST_DIR") in developer fallbacks) and the object-file paths the
+# linker records for debuggers. Fixes, all for this build only:
+#   * --remap-path-prefix for the home folder, the checkout, the target folder and
+#     CARGO_HOME (rustc applies the LAST matching rule, so the broad home folder comes
+#     first). They go in CARGO_ENCODED_RUSTFLAGS (separated by 0x1f), which every cargo
+#     run inherits, including the one the Tauri CLI starts, and which survives spaces
+#     in paths; .cargo/config.toml sets no rustflags for this target, so none are lost;
+#   * JK_DIST_BUILD=1: portable::SOURCE_DIR becomes None (no CARGO_MANIFEST_DIR);
+#   * CARGO_PROFILE_RELEASE_STRIP=debuginfo: no debug info and no linker stabs naming
+#     target/.../*.o (the Windows build strips its exe too);
+#   * Rubber Band's __FILE__: -ffile-prefix-map in crates/jk-rubberband/build.rs.
+# Step 7c fails the build if any such path is left.
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+if [ -n "${RUSTFLAGS:-}" ] || [ -n "${CARGO_ENCODED_RUSTFLAGS:-}" ]; then
+    info "note: RUSTFLAGS/CARGO_ENCODED_RUSTFLAGS from your shell are replaced for this build"
+fi
+sep="$(printf '\037')"
+CARGO_ENCODED_RUSTFLAGS=""
+for pair in "$HOME=/home" "$ROOT=/jukeoke" "$TARGET_DIR=/target" "${CARGO_HOME:-$HOME/.cargo}=/cargo"; do
+    case "$pair" in =*) continue ;; esac
+    CARGO_ENCODED_RUSTFLAGS="${CARGO_ENCODED_RUSTFLAGS:+$CARGO_ENCODED_RUSTFLAGS$sep}--remap-path-prefix=$pair"
+done
+export CARGO_ENCODED_RUSTFLAGS
+export JK_DIST_BUILD=1
+export CARGO_PROFILE_RELEASE_STRIP=debuginfo
+unset RUSTFLAGS
+info "path remapping: home -> /home, checkout -> /jukeoke, target -> /target, cargo -> /cargo"
 info "Building the recorder self-check tool (sck_probe) ..."
 cargo build --release $LOCKED -p jk-recorder --example sck_probe --target "$TARGET"
-PROBE="$ROOT/target/$TARGET/release/examples/sck_probe"
+PROBE="$TARGET_DIR/$TARGET/release/examples/sck_probe"
 [ -x "$PROBE" ] || die "the sck_probe build did not produce $PROBE"
 
 APP=""
@@ -207,7 +248,7 @@ else
     # the UI are, instead of letting it search from the current folder.
     (cd "$ROOT/app" && TAURI_APP_PATH="$ROOT/app/src-tauri" TAURI_FRONTEND_PATH="$ROOT/app/ui" \
         "${TAURI[@]}" build --target "$TARGET" --bundles app)
-    for d in "$ROOT/target/$TARGET/release/bundle/macos" "$ROOT/app/src-tauri/target/$TARGET/release/bundle/macos"; do
+    for d in "$TARGET_DIR/$TARGET/release/bundle/macos" "$ROOT/app/src-tauri/target/$TARGET/release/bundle/macos"; do
         if [ -d "$d/$APP_NAME.app" ]; then
             APP="$d/$APP_NAME.app"
             break
@@ -237,8 +278,45 @@ if [ -n "$APP" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-step "7/8  Checking every binary declares macOS $MIN_MACOS or older as its minimum"
+step "7/8  Checking every binary: minimum macOS $MIN_MACOS, no newer API, no path of this Mac"
+info "7a. declared minimum macOS (scripts/check-macos-minos.sh)"
 bash "$ROOT/scripts/check-macos-minos.sh" --max "$MIN_MACOS" --require-arm64 "$PROBE" ${APP:+"$APP"}
+
+if [ "${JK_AVAILABILITY_IN_CI_STEP:-0}" = 1 ]; then
+    info "7b. API availability: skipped here, CI runs it as its own step on dist/Mac"
+else
+    info "7b. no API newer than macOS $MIN_MACOS without a weak reference (scripts/check-macos-availability.sh)"
+    set +e
+    bash "$ROOT/scripts/check-macos-availability.sh" --max "$MIN_MACOS" \
+        --out "$TARGET_DIR/$TARGET/macos-availability" "$PROBE" ${APP:+"$APP"}
+    avail=$?
+    set -e
+    case "$avail" in
+        0) info "API availability: ok (evidence in $TARGET_DIR/$TARGET/macos-availability)" ;;
+        1) if [ "${JK_ALLOW_NEWER_API:-0}" = 1 ]; then
+               info "WARNING: a binary links an API newer than macOS $MIN_MACOS (FAIL lines above); continuing because JK_ALLOW_NEWER_API=1"
+           else
+               die "a binary links an API newer than macOS $MIN_MACOS without a weak reference (FAIL lines above): it would not open on macOS $MIN_MACOS. If you are sure this is a false alarm, run again with JK_ALLOW_NEWER_API=1 and report it."
+           fi ;;
+        *) # CI (release.yml runs this step here) must not pass on a check that did not run;
+           # on the MacBook a tool problem only warns.
+           if [ "${GITHUB_ACTIONS:-}" = true ]; then
+               die "the API availability check could not run (exit $avail, see above); CI does not pass an unchecked build"
+           fi
+           info "WARNING: the API availability check could not run (exit $avail, see above); the app was not checked for APIs newer than macOS $MIN_MACOS" ;;
+    esac
+fi
+
+info "7c. no path of this Mac in the build (scripts/check-macos-paths.sh)"
+forbid=(--forbid "$HOME")
+case "$ROOT/" in "$HOME"/*) ;; *) forbid+=(--forbid "$ROOT") ;; esac
+if ! bash "$ROOT/scripts/check-macos-paths.sh" "${forbid[@]}" "$PROBE" ${APP:+"$APP"}; then
+    if [ "${JK_ALLOW_BUILD_PATHS:-0}" = 1 ]; then
+        info "WARNING: the build contains paths of this Mac (above); continuing because JK_ALLOW_BUILD_PATHS=1. Do not give this build to anyone."
+    else
+        die "the build contains paths of this Mac (your home folder or this checkout; see FOUND lines above), which would publish your account name with the app. Run again with JK_ALLOW_BUILD_PATHS=1 to keep such a build for yourself only, and report it."
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 step "8/8  Copying to dist/Mac"
@@ -262,7 +340,8 @@ Next steps (docs/MAC.md has the details and the exact wording macOS shows):
     double-click. A copy downloaded from the internet needs Control-click >
     Open > Open the first time.
   * Check the recorder without the app:  dist/Mac/Tools/sck_probe --request --tone
-    (from Terminal; macOS will then ask for Screen Recording for "Terminal").
+    (from Terminal; macOS will then ask for Screen Recording for "Terminal"; --tone
+    plays a 3-second test tone at -20 dBFS, so turn the volume down first).
   * Every new build is a new ad-hoc signature, so macOS may ask for the
     Screen Recording permission again after you install a new build.
 EOF
