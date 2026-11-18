@@ -7,7 +7,8 @@ use tauri::{AppHandle, State};
 
 use super::blocking;
 use crate::AppState;
-use crate::error::ApiResult;
+use crate::error::{ApiError, ApiResult};
+use crate::library::Cover;
 use crate::studio::StudioStatus;
 
 /// `studio_status()`.
@@ -138,4 +139,105 @@ pub async fn pick_files(app: AppHandle) -> ApiResult<Vec<String>> {
             .collect())
     })
     .await
+}
+
+/// Picture files a cover can be chosen from (SONG_FORMAT 4.1 allows JPEG and PNG).
+pub const COVER_EXTENSIONS: [&str; 3] = ["jpg", "jpeg", "png"];
+
+/// Largest picture file read for a preview; the Studio refuses larger user covers too
+/// (studio/jukeoke_studio/media.py `MAX_USER_COVER_FILE`).
+const MAX_COVER_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// `pick_cover_image() -> string | null` (addition): the native open dialog for one
+/// JPEG or PNG picture, used by the Studio form to replace a song's cover. The path is
+/// passed on as `metadata.cover_path` (STUDIO_PROTOCOL section 7).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn pick_cover_image(app: AppHandle) -> ApiResult<Option<String>> {
+    blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        let mut dialog = app
+            .dialog()
+            .file()
+            .set_title("Choose a cover picture")
+            .add_filter("JPEG or PNG picture", &COVER_EXTENSIONS);
+        if let Some(w) = crate::main_window(&app) {
+            dialog = dialog.set_parent(&w);
+        }
+        Ok(dialog
+            .blocking_pick_file()
+            .and_then(|p| p.into_path().ok())
+            .map(|p| p.display().to_string()))
+    })
+    .await
+}
+
+/// `studio_cover_preview(path, max_px) -> { data_url }` (addition): a JPEG or PNG
+/// picture file (the cover `studio_inspect` extracted, or one the user picked) as a
+/// thumbnail `data:` URL for the Studio form. Anything that is not a JPEG or PNG
+/// picture is refused, so this cannot be used to read other files.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn studio_cover_preview(path: String, max_px: Option<u32>) -> ApiResult<Cover> {
+    blocking(move || cover_preview(std::path::Path::new(&path), max_px.unwrap_or(256))).await
+}
+
+/// See [`studio_cover_preview`].
+pub fn cover_preview(path: &std::path::Path, max_px: u32) -> ApiResult<Cover> {
+    let not_found = || ApiError::new("not_found", "That picture could not be found.");
+    let meta = std::fs::metadata(path).map_err(|_| not_found())?;
+    if !meta.is_file() {
+        return Err(not_found());
+    }
+    if meta.len() > MAX_COVER_FILE_BYTES {
+        return Err(ApiError::bad_request("That picture is larger than 64 MB."));
+    }
+    let bytes = std::fs::read(path).map_err(|_| not_found())?;
+    let url = crate::library::thumbnail_data_url("", &bytes, max_px.clamp(16, 1024))
+        .map_err(|_| ApiError::bad_request("The cover picture must be a JPEG or PNG image."))?;
+    Ok(Cover { data_url: Some(url) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([x as u8, y as u8, 90]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn cover_preview_shows_jpeg_and_png_and_refuses_anything_else() {
+        let dir = std::env::temp_dir().join(format!("jk-cover-preview-{}", crate::fs_atomic::random_u32()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A small PNG comes back unchanged; a big one as a thumbnail of at most max_px.
+        let small = dir.join("small.png");
+        std::fs::write(&small, png(40, 30)).unwrap();
+        let url = cover_preview(&small, 256).unwrap().data_url.unwrap();
+        assert!(url.starts_with("data:image/png;base64,"));
+        let big = dir.join("big.png");
+        std::fs::write(&big, png(600, 300)).unwrap();
+        let url = cover_preview(&big, 128).unwrap().data_url.unwrap();
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(url.split_once(',').unwrap().1)
+            .unwrap();
+        let thumb = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (128, 64));
+        // Not a picture, a folder, a missing file: refused with a plain message.
+        let gif = dir.join("x.gif");
+        std::fs::write(&gif, b"GIF89a................").unwrap();
+        let text = dir.join("notes.txt");
+        std::fs::write(&text, b"secret text").unwrap();
+        for p in [&gif, &text] {
+            let e = cover_preview(p, 128).unwrap_err();
+            assert_eq!(e.code, "bad_request", "{}", e.message);
+        }
+        assert_eq!(cover_preview(&dir, 128).unwrap_err().code, "not_found");
+        assert_eq!(cover_preview(&dir.join("missing.jpg"), 128).unwrap_err().code, "not_found");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

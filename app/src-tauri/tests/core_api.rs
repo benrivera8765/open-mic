@@ -354,3 +354,46 @@ fn engine_errors_become_playback_error_events() {
     assert!(matches!(err.code.as_str(), "not_a_song" | "truncated" | "damaged"), "{err:?}");
     assert_eq!(a.core.player.state().song_id, None);
 }
+
+#[test]
+fn key_mode_follows_the_setting_and_this_computers_measurement() {
+    use jukeoke_lib::engine::KeyMode;
+    let a = app("keymode", FakeRenderer::default());
+    // The key cache lives in the portable Settings folder (WORK_ORDER 4.8).
+    let (dir, cap) = a.engine.key_cache.lock().unwrap().clone().expect("key cache configured");
+    assert_eq!(dir, a.root.join("Settings").join("cache").join("keys"));
+    assert_eq!(cap, 1024 * 1024 * 1024);
+    let last = || *a.engine.key_modes.lock().unwrap().last().expect("a key mode was set");
+    // "realtime" first, so no background measurement races the test.
+    a.core.settings_set(&json!({"audio": {"key_mode": "realtime"}})).unwrap();
+    let id = "Jukeoke - Test Tone.jksong";
+    let rate = a.core.player.load(id).unwrap().sample_rate;
+    assert_eq!(last(), KeyMode::Realtime);
+    let key = jukeoke_lib::keymode::bench_key(&jukeoke_lib::keymode::machine_id(), rate);
+    let bench = |f: f64| {
+        let mut m = serde_json::Map::new();
+        m.insert(key.clone(), json!(f));
+        json!({"audio": {"key_benchmarks": Value::Object(m)}})
+    };
+    // A slow computer (measured 2x): auto renders ahead; a fast one shifts in real time.
+    a.core.settings_set(&bench(2.0)).unwrap();
+    a.core.settings_set(&json!({"audio": {"key_mode": "auto"}})).unwrap();
+    assert_eq!(last(), KeyMode::Prerender);
+    a.core.settings_set(&bench(9.0)).unwrap();
+    assert_eq!(last(), KeyMode::Realtime);
+    a.core.settings_set(&json!({"audio": {"key_mode": "prerender"}})).unwrap();
+    assert_eq!(last(), KeyMode::Prerender);
+    // A load sets the mode before the engine loads the song.
+    a.engine.key_modes.lock().unwrap().clear();
+    a.engine.take_calls();
+    a.core.player.load(id).unwrap();
+    assert_eq!(*a.engine.key_modes.lock().unwrap(), vec![KeyMode::Prerender]);
+    // The cache cap follows its setting.
+    a.core.settings_set(&json!({"audio": {"key_cache_mb": 256}})).unwrap();
+    assert_eq!(a.engine.key_cache.lock().unwrap().clone().unwrap().1, 256 * 1024 * 1024);
+    // PlayerState carries the mode fields (APP_API section 3 additions).
+    let st = serde_json::to_value(a.core.player.state()).unwrap();
+    for k in ["key_mode", "key_preparing", "key_note"] {
+        assert!(st.get(k).is_some(), "PlayerState.{k} missing");
+    }
+}

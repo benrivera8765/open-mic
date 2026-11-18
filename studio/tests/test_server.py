@@ -317,6 +317,44 @@ def test_lyrics_sources_through_the_pipeline(studio, root, tmp_path):
     assert r["type"] == "error" and r["error"]["code"] == "bad_request"
 
 
+def test_cover_override_replace_remove_and_refuse(studio, root, tmp_path):
+    """protocol 7 metadata.cover_path (added): a picture the user chose replaces the file's
+    cover, null removes it, absent keeps it; a wrong pick is refused at submit."""
+    studio.hello()
+    src = MF.mp3_with_lyrics(tmp_path, seconds=3.0)  # carries an APIC JPEG cover
+    png = MF.png_bytes(20, 12)
+    pick = tmp_path / "my cover.png"
+    pick.write_bytes(png)
+    big = tmp_path / "big.png"
+    big.write_bytes(MF.noise_png_bytes(1000, 800))
+    cases = {"rep": {"cover_path": str(pick)}, "rem": {"cover_path": None}, "keep": {},
+             "big": {"cover_path": str(big)}}
+    for jid, cov in cases.items():
+        r = submit(studio, jid, src, root / "Library", metadata={"title": f"Cover {jid}", "artist": "C", **cov},
+                   lyrics={"mode": "auto"})
+        assert r["type"] == "job.accepted", r
+    songs = {}
+    for jid in cases:
+        d = studio.job_end(jid)
+        assert d["type"] == "job.done", d
+        songs[jid] = jksong.open_song(d["output"])
+        verify_strict(Path(d["output"]))
+    assert songs["rep"].read_chunk("cover") == png and songs["rep"].chunk_entry("cover")["type"] == "image/png"
+    assert songs["rep"].manifest["provenance"]["metadata_source"]["cover"] == "user"
+    assert songs["rem"].manifest["cover"] is None
+    assert songs["rem"].manifest["provenance"]["metadata_source"]["cover"] == "removed"
+    assert songs["keep"].read_chunk("cover")[:3] == b"\xff\xd8\xff"
+    assert songs["keep"].manifest["provenance"]["metadata_source"]["cover"] == "tags"
+    b = songs["big"].read_chunk("cover")
+    assert b[:3] == b"\xff\xd8\xff" and len(b) <= 2 * 1024 * 1024 and MF.image_size(b) == (1000, 800)
+    # Refused at submit, before any work: missing file, not a JPEG/PNG, wrong type.
+    gif = tmp_path / "c.gif"
+    gif.write_bytes(b"GIF89a" + bytes(32))
+    for jid, cp in (("m", str(tmp_path / "missing.jpg")), ("g", str(gif)), ("t", 5)):
+        r = submit(studio, f"bad-{jid}", src, root / "Library", metadata={"cover_path": cp})
+        assert r["type"] == "error" and r["error"]["code"] == "bad_request", r
+
+
 def test_realign_keeps_feasible_anchors(studio, root, tmp_path):
     studio.hello()
     src = MF.make("wav16", tmp_path, seconds=10.0)

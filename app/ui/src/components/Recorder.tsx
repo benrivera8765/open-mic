@@ -6,7 +6,9 @@
 // macOS: explains the "Screen Recording" permission BEFORE asking for it (4.10).
 // Class hooks: .recorder, .recorder__button, .recorder__button--on, .recorder__meter,
 // .recorder__meter-bar, .recorder__meter-fill, .recorder__elapsed, .recorder__format,
-// .recorder__clip, .recorder__permission, .recordings, .recordings__item.
+// .recorder__clip, .recorder__permission, .recorder__honesty, .recordings, .recordings__item.
+// Honest about the capture (4.6): Windows' own processing ("Audio enhancements") is in
+// the mix; on the Mac the format shown is what ScreenCaptureKit delivers.
 import { useState } from "preact/hooks";
 import type { RecorderStatus } from "../api/types";
 import { errorMessage } from "../api/client";
@@ -112,6 +114,11 @@ export function Recorder() {
         <p class="hint">
           Records everything this computer is playing, losslessly. It captures the system mix exactly as the output device receives it, so the quality ceiling is that device's format, shown below.
           Saved to <code>{info.paths.recordings}</code>.
+        </p>
+        <p class="hint recorder__honesty">
+          {mac
+            ? "On a Mac, the format shown is the one macOS's capture service (ScreenCaptureKit) delivers; set the output to 48,000 Hz in Audio MIDI Setup to avoid a sample-rate conversion."
+            : "The mix is captured after Windows' own processing, so sound-driver effects such as “Audio enhancements” are in the recording: for an exact copy, turn them off for the output device (Settings → System → Sound → your speakers or headphones)."}
         </p>
         {!cap.available && <Note kind="warn">The recorder is not available on this computer: {cap.reason ?? "no reason was given."}</Note>}
         {cap.available && needsPermission && <MacPermission permission={cap.permission as "denied" | "not_determined"} />}

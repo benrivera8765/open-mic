@@ -81,6 +81,14 @@ jobs:
           for f in LICENSE THIRD_PARTY_LICENSES.md MODELS.md README.md; do
             if [ -f "$f" ]; then cp "$f" stage/; fi
           done
+          # The licence and notice texts of every linked crate and bundled npm package
+          # (scripts/gen-third-party.sh): MIT, BSD and Apache-2.0 require them.
+          cp -r third_party_licenses stage/third_party_licenses
+          # The UI's fonts are in the app: their SIL OFL texts travel with it (as on the stick).
+          for d in app/ui/src/assets/fonts/*/; do
+            mkdir -p "stage/third_party_licenses/fonts/$(basename "$d")"
+            cp "$d"OFL.txt "$d"SOURCE.txt "stage/third_party_licenses/fonts/$(basename "$d")/"
+          done
           ls -la stage stage/Windows 2>/dev/null || true
       - name: Fail if there is nothing to release
         run: |
@@ -114,7 +122,9 @@ jobs:
           node-version: "24"
       - name: Build, ad-hoc sign, minimum-macOS check
         run: bash scripts/build-mac.sh
-      - name: Launch from an exFAT image (self-check)
+      - name: Audio output device for the self-check (BlackHole only if the runner has none)
+        run: bash scripts/ci-mac-audio-device.sh ci-out/audio
+      - name: Launch from an exFAT image (real self-check, --selfcheck --silent)
         env:
           APP_NAME: ${{ needs.meta.outputs.name }}
         run: bash scripts/ci-exfat-launch.sh "dist/Mac/$APP_NAME.app" ci-out/exfat
@@ -131,6 +141,11 @@ jobs:
           ditto -c -k --keepParent "$app" "stage/$APP_NAME.app.zip"
           for f in LICENSE THIRD_PARTY_LICENSES.md MODELS.md README.md docs/MAC.md; do
             if [ -f "$f" ]; then cp "$f" stage/; fi
+          done
+          cp -r third_party_licenses stage/third_party_licenses
+          for d in app/ui/src/assets/fonts/*/; do
+            mkdir -p "stage/third_party_licenses/fonts/$(basename "$d")"
+            cp "$d"OFL.txt "$d"SOURCE.txt "stage/third_party_licenses/fonts/$(basename "$d")/"
           done
           cp -r ci-out/exfat stage/exfat-selfcheck 2>/dev/null || true
       - uses: actions/upload-artifact@v7

@@ -23,11 +23,12 @@ pub mod ring;
 pub mod shifter;
 pub mod smooth;
 
-pub use graph::{DspError, GraphConfig, GraphStats, PitchGraph, MAX_SPARE_STRETCHERS};
+pub use graph::{DspError, GraphConfig, GraphStats, PitchGraph, RouteInfo, CACHE_SLOTS, MAX_SPARE_STRETCHERS};
 pub use params::{ExtraBlock, MixParams, Stem, StemBlock, CHANNELS, MAX_SEMITONES, MIN_SEMITONES};
 pub use render::{render, resample_whole, ParamEvent, RenderOptions, RenderOutput, StemsRef};
 pub use resample::OutputResampler;
-pub use shifter::{stretcher_config, RB_QUANTUM};
+pub use shifter::{r3_longest_fft, stretcher_config, RB_QUANTUM};
+pub use smooth::EqualPowerTable;
 /// Re-exported so callers can build and pass Rubber Band instances without a direct
 /// dependency on the wrapper crate.
 pub use jk_rubberband::{semitones_to_scale, Stretcher, StretcherConfig};

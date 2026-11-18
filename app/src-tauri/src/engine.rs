@@ -10,8 +10,8 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
 pub use jk_engine::{
-    DeviceInfo, DeviceStatus, EngineConfig, EngineError, EngineEvent, ExportFormat, LoadedSong,
-    MixParams, PlaybackState, RenderReport, Snapshot,
+    DeviceInfo, DeviceStatus, EngineConfig, EngineError, EngineEvent, ExportFormat, KeyMode,
+    LoadedSong, MixParams, PlaybackState, RenderReport, Snapshot,
 };
 
 /// What the app needs from a player engine (mirrors `jk_engine::Engine`).
@@ -27,6 +27,17 @@ pub trait AudioEngine: Send + Sync + 'static {
     fn set_master(&self, v: f32);
     fn snapshot(&self) -> Snapshot;
     fn events(&self) -> crossbeam_channel::Receiver<EngineEvent>;
+    /// Key change by real time or render-ahead (WORK_ORDER 4.5). Default: ignored.
+    fn set_key_mode(&self, _mode: KeyMode) {}
+    /// The key cache folder and size cap. Default: ignored.
+    fn set_key_cache(&self, _dir: Option<&Path>, _cap_bytes: u64) -> Result<(), EngineError> {
+        Ok(())
+    }
+    /// Engine counters and timings (underruns, worker lead, longest callback...) for
+    /// soak tests and support. Default: none.
+    fn diagnostics(&self) -> Option<jk_engine::engine::Diagnostics> {
+        None
+    }
 }
 
 impl AudioEngine for jk_engine::Engine {
@@ -62,6 +73,15 @@ impl AudioEngine for jk_engine::Engine {
     }
     fn events(&self) -> crossbeam_channel::Receiver<EngineEvent> {
         jk_engine::Engine::events(self)
+    }
+    fn set_key_mode(&self, mode: KeyMode) {
+        jk_engine::Engine::set_key_mode(self, mode)
+    }
+    fn set_key_cache(&self, dir: Option<&Path>, cap_bytes: u64) -> Result<(), EngineError> {
+        jk_engine::Engine::set_key_cache(self, dir, cap_bytes)
+    }
+    fn diagnostics(&self) -> Option<jk_engine::engine::Diagnostics> {
+        Some(jk_engine::Engine::diagnostics(self))
     }
 }
 
@@ -109,6 +129,7 @@ pub fn empty_snapshot() -> Snapshot {
         clipped: false,
         error: None,
         position_ns: 0,
+        key: Default::default(),
     }
 }
 
@@ -181,6 +202,9 @@ pub mod fake {
 
     pub struct FakeEngine {
         pub calls: Mutex<Vec<Call>>,
+        /// Key modes set, in order (kept apart from `calls`, which tests compare whole).
+        pub key_modes: Mutex<Vec<KeyMode>>,
+        pub key_cache: Mutex<Option<(std::path::PathBuf, u64)>>,
         st: Mutex<St>,
         tx: crossbeam_channel::Sender<EngineEvent>,
         rx: crossbeam_channel::Receiver<EngineEvent>,
@@ -191,6 +215,8 @@ pub mod fake {
             let (tx, rx) = crossbeam_channel::bounded(256);
             FakeEngine {
                 calls: Mutex::new(Vec::new()),
+                key_modes: Mutex::new(Vec::new()),
+                key_cache: Mutex::new(None),
                 st: Mutex::new(St {
                     state: PlaybackState::Empty,
                     base_pos: 0.0,
@@ -318,6 +344,13 @@ pub mod fake {
         }
         fn events(&self) -> crossbeam_channel::Receiver<EngineEvent> {
             self.rx.clone()
+        }
+        fn set_key_mode(&self, mode: KeyMode) {
+            self.key_modes.lock().unwrap().push(mode);
+        }
+        fn set_key_cache(&self, dir: Option<&Path>, cap_bytes: u64) -> Result<(), EngineError> {
+            *self.key_cache.lock().unwrap() = dir.map(|d| (d.to_path_buf(), cap_bytes));
+            Ok(())
         }
     }
 

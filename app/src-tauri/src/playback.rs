@@ -10,11 +10,14 @@
 //! - A dedicated clock thread reads `Engine::snapshot()` about 30 times per second
 //!   while playing and emits `playback://clock`; it also turns engine notifications
 //!   into `playback://state` and `playback://error`.
+//! - Key-change mode (src/keymode.rs): before each load the engine gets the mode for
+//!   the song's sample rate; "auto" measures this computer once per rate in the
+//!   background and reports the result through a hook (saved in the app settings).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -26,6 +29,7 @@ use crate::engine::{AudioEngine, EngineError, EngineEvent, MixParams, PlaybackSt
 use crate::error::{ApiError, ApiResult};
 use crate::events::{EventSink, emit, names};
 use crate::keys::{Key, key_label};
+use crate::settings::KeyModeSetting;
 use crate::library::{Library, SongSummary};
 
 /// The singer's settings for a song (docs/APP_API.md `SongSettings`).
@@ -232,7 +236,38 @@ pub struct PlayerState {
     /// Addition: output peak per channel over the last ~0.3 s, in dBFS (master volume
     /// included; -120 stands for silence, since JSON has no -infinity).
     pub output_peak_db: Vec<f64>,
+    /// Addition: how key changes are made now, "realtime" or "prerender" (WORK_ORDER 4.5).
+    pub key_mode: &'static str,
+    /// Addition: prerender mode, a key or mix being rendered before it is heard.
+    pub key_preparing: Option<KeyPreparing>,
+    /// Addition: why prerender was asked for but real time is used (plain words).
+    pub key_note: Option<String>,
 }
+
+/// `PlayerState.key_preparing`: the UI shows "Preparing key +2... 40%".
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct KeyPreparing {
+    pub semitones: i32,
+    /// "key" or "mix" (same key, a pitched-stem level changed).
+    pub reason: String,
+    /// 0..1.
+    pub progress: f64,
+}
+
+/// What the clock thread compares to decide whether to emit `playback://state`.
+type StateKey = (&'static str, Option<String>, &'static str, Option<(i32, String, i32)>, Option<String>);
+
+/// Key-change mode inputs (the setting and this computer's measurements by rate).
+#[derive(Default)]
+struct KeyConfig {
+    setting: KeyModeSetting,
+    factors: BTreeMap<u32, f64>,
+    /// Rates being measured now.
+    measuring: BTreeSet<u32>,
+}
+
+/// Called with (sample rate, real-time factor) after a measurement.
+pub type BenchHook = Arc<dyn Fn(u32, f64) + Send + Sync>;
 
 /// Linear peak to dBFS for the UI, floored at -120 dB.
 fn peak_db(x: f32) -> f64 {
@@ -284,6 +319,13 @@ pub struct Player {
     /// Wakes the clock thread at once after a command changed the state (it would
     /// otherwise notice a play only at its next idle check, up to 250 ms later).
     clock_wake: (crossbeam_channel::Sender<()>, crossbeam_channel::Receiver<()>),
+    key: Mutex<KeyConfig>,
+    /// Sample rate of the loaded song (0 = none).
+    current_rate: AtomicU32,
+    bench_hook: Mutex<Option<BenchHook>>,
+    /// Serialises measurements (two at once would measure each other).
+    bench_lock: Arc<Mutex<()>>,
+    me: OnceLock<Weak<Player>>,
 }
 
 fn state_name(s: PlaybackState) -> &'static str {
@@ -327,6 +369,100 @@ impl Player {
             seq: AtomicU64::new(0),
             clock: Mutex::new(None),
             clock_wake: crossbeam_channel::bounded(1),
+            key: Mutex::new(KeyConfig::default()),
+            current_rate: AtomicU32::new(0),
+            bench_hook: Mutex::new(None),
+            bench_lock: Arc::new(Mutex::new(())),
+            me: OnceLock::new(),
+        }
+    }
+
+    /// Lets the player start background measurements (call once after `Arc::new`).
+    pub fn attach(self: &Arc<Self>) {
+        let _ = self.me.set(Arc::downgrade(self));
+    }
+
+    /// Where "auto" measurements go (the app settings).
+    pub fn set_bench_hook(&self, hook: BenchHook) {
+        *self.bench_hook.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
+    /// The key-mode setting and this computer's factors by rate; applied to the loaded
+    /// song at once.
+    pub fn set_key_config(&self, setting: KeyModeSetting, factors: BTreeMap<u32, f64>) {
+        {
+            let mut k = self.key.lock().unwrap_or_else(|e| e.into_inner());
+            k.setting = setting;
+            for (r, f) in factors {
+                k.factors.insert(r, f);
+            }
+        }
+        let rate = self.current_rate.load(Ordering::SeqCst);
+        if rate != 0 {
+            self.engine.set_key_mode(self.key_mode_for(rate));
+            self.measure_rates(&[rate]);
+        }
+    }
+
+    /// The engine mode for a song at `rate`.
+    pub fn key_mode_for(&self, rate: u32) -> jk_engine::KeyMode {
+        let k = self.key.lock().unwrap_or_else(|e| e.into_inner());
+        crate::keymode::resolve(k.setting, k.factors.get(&rate).copied())
+    }
+
+    /// "auto": measure the rates not measured on this computer yet, one after the other,
+    /// on a background thread; each result is kept, reported to the hook and applied.
+    pub fn measure_rates(&self, rates: &[u32]) {
+        let todo: Vec<u32> = {
+            let mut k = self.key.lock().unwrap_or_else(|e| e.into_inner());
+            if k.setting != KeyModeSetting::Auto {
+                return;
+            }
+            let todo: Vec<u32> = rates.iter().copied().filter(|r| !k.factors.contains_key(r) && !k.measuring.contains(r)).collect();
+            k.measuring.extend(todo.iter().copied());
+            todo
+        };
+        let Some(me) = self.me.get().cloned() else { return };
+        if todo.is_empty() {
+            return;
+        }
+        let lock = Arc::clone(&self.bench_lock);
+        let _ = std::thread::Builder::new().name("key-benchmark".into()).spawn(move || {
+            let _g = lock.lock().unwrap_or_else(|e| e.into_inner());
+            for rate in todo {
+                let result = jk_engine::benchmark_realtime_factor(rate);
+                let Some(p) = me.upgrade() else { return };
+                {
+                    let mut k = p.key.lock().unwrap_or_else(|e| e.into_inner());
+                    k.measuring.remove(&rate);
+                    if let Ok(f) = result {
+                        k.factors.insert(rate, f);
+                    }
+                }
+                match result {
+                    Ok(f) => {
+                        crate::applog::info(&format!(
+                            "key change: Rubber Band runs {f:.1}x real time at {rate} Hz on this computer; mode {:?}",
+                            jk_engine::choose_key_mode(Some(f))
+                        ));
+                        let hook = p.bench_hook.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                        if let Some(h) = hook {
+                            h(rate, f);
+                        }
+                        if p.current_rate.load(Ordering::SeqCst) == rate {
+                            p.engine.set_key_mode(p.key_mode_for(rate));
+                        }
+                    }
+                    Err(e) => crate::applog::warn(&format!("key change benchmark at {rate} Hz failed: {e}")),
+                }
+            }
+        });
+    }
+
+    /// The key cache folder and cap (prerender mode).
+    pub fn configure_key_cache(&self, dir: Option<&Path>, cap_bytes: u64) {
+        if let Err(e) = self.engine.set_key_cache(dir, cap_bytes) {
+            crate::applog::warn(&format!("key cache: {e}"));
         }
     }
 
@@ -375,6 +511,16 @@ impl Player {
             clipped: snap.clipped,
             device_starved: snap.device_starved,
             output_peak_db: snap.output_peak.iter().map(|&p| peak_db(p)).collect(),
+            key_mode: match snap.key.mode {
+                jk_engine::KeyMode::Realtime => "realtime",
+                jk_engine::KeyMode::Prerender => "prerender",
+            },
+            key_preparing: snap.key.preparing.as_ref().map(|p| KeyPreparing {
+                semitones: p.semitones,
+                reason: p.reason.clone(),
+                progress: (p.progress as f64).clamp(0.0, 1.0),
+            }),
+            key_note: snap.key.note.clone(),
         }
     }
 
@@ -450,7 +596,12 @@ impl Player {
             .unwrap_or((0, 0));
         let summary = crate::library::summary_of(&song, song_id.to_string(), st);
         let key = crate::library::song_key(&song);
+        let rate = song.manifest().sample_rate;
         drop(song);
+        // Key-change mode for this sample rate (before the engine builds its graph).
+        self.current_rate.store(rate, Ordering::SeqCst);
+        self.engine.set_key_mode(self.key_mode_for(rate));
+        self.measure_rates(&[rate]);
 
         // Unload first so the old song's file is closed even if the new one fails.
         self.set_current(None);
@@ -624,7 +775,7 @@ impl Player {
         // A tick this close to its deadline is taken now rather than waited for.
         const SLACK: Duration = Duration::from_millis(4);
         let rx = self.engine.events();
-        let mut last_state: Option<(&'static str, Option<String>)> = None;
+        let mut last_state: Option<StateKey> = None;
         let mut next_tick = Instant::now();
         let mut last_pos = f64::NAN;
         while !stop.load(Ordering::SeqCst) {
@@ -661,7 +812,9 @@ impl Player {
             // The snapshot is the truth; engine events only wake us early.
             let snap = self.engine.snapshot();
             let st = self.state_from(&snap);
-            let key = (st.state, st.song_id.clone());
+            // Key preparation progress counts in whole percent (a few dozen events).
+            let prep = st.key_preparing.as_ref().map(|p| (p.semitones, p.reason.clone(), (p.progress * 100.0).round() as i32));
+            let key: StateKey = (st.state, st.song_id.clone(), st.key_mode, prep, st.key_note.clone());
             let changed = last_state.as_ref() != Some(&key);
             if changed {
                 emit(&*self.sink, names::PLAYBACK_STATE, &st);

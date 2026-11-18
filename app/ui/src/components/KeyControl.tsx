@@ -7,8 +7,28 @@
 // .key-control__label, .key-control__value, .key-control__scale, .key-control__tick,
 // .key-control__tick--on, .key-control__tick--zero, .key-control__reset.
 import { useRef } from "preact/hooks";
+import type { KeyPreparing } from "../api/types";
 import { KEY_MAX, KEY_MIN, keyLabel, signed } from "../lib/keys";
 import { setKey, shiftKey, useApp } from "../state/app";
+
+/** "Preparing key +2… 40%" while a key (or mix) is rendered ahead (WORK_ORDER 4.5). */
+export function keyPrepareText(p: KeyPreparing | null | undefined): string | null {
+  if (!p) return null;
+  const pct = Math.max(0, Math.min(100, Math.floor((Number.isFinite(p.progress) ? p.progress : 0) * 100)));
+  return p.reason === "mix" ? `Preparing the new mix (key ${signed(p.semitones)})… ${pct}%` : `Preparing key ${signed(p.semitones)}… ${pct}%`;
+}
+
+/** The previous key keeps playing meanwhile; shown next to the key control. */
+export function KeyPrepareNote() {
+  const prep = useApp((s) => s.player?.key_preparing ?? null);
+  const text = keyPrepareText(prep);
+  if (!text) return null;
+  return (
+    <p class="key-prepare" role="status" title="This computer renders the new key ahead so playback never stutters; the previous key plays until it is ready.">
+      {text}
+    </p>
+  );
+}
 
 /** Wheel distance (in pixels) per semitone; trackpads send many small deltas. */
 const WHEEL_STEP = 60;
@@ -75,6 +95,7 @@ export function KeyControl({ compact = false }: { compact?: boolean }) {
           Original key
         </button>
       )}
+      <KeyPrepareNote />
     </div>
   );
 }

@@ -2,7 +2,7 @@
 // Settings: look (skin, bubbles, motion), lyrics (text size, marker position,
 // colours), timing offsets per output device, and information about this computer.
 // Saved by the core into <root>/Settings/settings.json.
-import type { MotionSetting } from "../api/types";
+import type { KeyModeSetting, MotionSetting } from "../api/types";
 import { DEFAULT_APP_SETTINGS } from "../api/defaults";
 import { formatOffset } from "../lib/format";
 import { changeSettings, deviceOffsetKey, setOverlay, useApp } from "../state/app";
@@ -25,6 +25,8 @@ export function Settings() {
   const settings = useApp((s) => s.settings);
   const info = useApp((s) => s.info);
   const devices = useApp((s) => s.devices);
+  const keyMode = useApp((s) => s.player?.key_mode);
+  const keyNote = useApp((s) => s.player?.key_note ?? null);
   if (!settings || !info) return null;
   const ui = settings.ui;
   const offsets = settings.audio.device_offsets_ms;
@@ -70,6 +72,34 @@ export function Settings() {
             Default colours
           </button>
         </div>
+      </Section>
+
+      <Section title="Key change">
+        <Select<KeyModeSetting>
+          label="How the key is changed"
+          value={settings.audio.key_mode ?? "auto"}
+          options={[
+            { value: "auto", label: "Automatic (render ahead on slower computers)" },
+            { value: "realtime", label: "In real time (heard at once)" },
+            { value: "prerender", label: "Render ahead and cache (never stutters)" },
+          ]}
+          onChange={(v) => changeSettings({ audio: { key_mode: v } })}
+        />
+        <p class="hint">
+          Rendering ahead keeps the previous key playing for a few seconds while the new one is prepared, then switches without a click. Automatic measures this computer once and renders ahead when it is too slow to shift in real time.
+          {keyMode ? ` In use now: ${keyMode === "prerender" ? "render ahead" : "real time"}.` : ""}
+        </p>
+        {keyNote && <p class="hint">{keyNote}</p>}
+        <Slider
+          label="Key cache size"
+          value={settings.audio.key_cache_mb ?? 1024}
+          min={256}
+          max={8192}
+          step={256}
+          format={(v) => (v >= 1024 ? `${(v / 1024).toFixed(v % 1024 ? 2 : 0)} GB` : `${v} MB`)}
+          onInput={(v) => changeSettings({ audio: { key_cache_mb: v } }, 300)}
+        />
+        <p class="hint">Rendered keys are kept in the Settings folder (cache/keys) and the oldest are removed beyond this size. About 90 MB per key for a 4-minute song.</p>
       </Section>
 
       <Section title="Timing offsets per output">

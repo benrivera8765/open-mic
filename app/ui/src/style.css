@@ -924,6 +924,14 @@ button.title-strip:hover {
   color: var(--upcoming);
 }
 
+/* Key rendered ahead (WORK_ORDER 4.5): "Preparing key +2... 40%". */
+.key-prepare {
+  margin: 0.3rem 0 0;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted, inherit);
+}
+
 /* ---------- mixer ---------- */
 
 .mixer__group {

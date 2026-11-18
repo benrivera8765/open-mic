@@ -11,17 +11,39 @@
 # report always prints the measured maximum difference per file, in linear
 # units and dBFS, so "matches" is a number, not an opinion.
 # Needs only python3 (no numpy): the WAV reader is inline below.
+#
+# FAILS when either platform's renders are missing (no folder, no .wav, or a
+# SKIPPED.txt left by ci-render.sh): a comparison that compared nothing must not
+# pass (WORK_ORDER section 9, "Same audio on both systems"). The only way to skip
+# is to disable it explicitly: JK_SKIP_RENDER_COMPARE="<reason>".
 
 set -euo pipefail
 win="${1:?usage: ci-compare-renders.sh WINDOWS_DIR MACOS_DIR}"
 mac="${2:?usage: ci-compare-renders.sh WINDOWS_DIR MACOS_DIR}"
 
+if [ -n "${JK_SKIP_RENDER_COMPARE:-}" ]; then
+    echo "::notice::cross-platform render comparison explicitly disabled: $JK_SKIP_RENDER_COMPARE"
+    exit 0
+fi
+missing=0
 for d in "$win" "$mac"; do
-    if [ ! -d "$d" ] || [ -f "$d/SKIPPED.txt" ] || ! ls "$d"/*.wav >/dev/null 2>&1; then
-        echo "::notice::no renders in $d ($(cat "$d/SKIPPED.txt" 2>/dev/null || echo 'nothing there')); skipping the cross-platform comparison"
-        exit 0
+    label="$([ "$d" = "$win" ] && echo Windows || echo macOS)"
+    if [ ! -d "$d" ]; then
+        echo "::error::no $label renders: $d does not exist (did the $label job fail before its render step, or not upload its results?)"
+        missing=1
+    elif [ -f "$d/SKIPPED.txt" ]; then
+        echo "::error::no $label renders: ci-render.sh skipped ($(cat "$d/SKIPPED.txt"))"
+        missing=1
+    elif ! ls "$d"/*.wav >/dev/null 2>&1; then
+        echo "::error::no $label renders: $d holds no .wav files"
+        missing=1
     fi
 done
+if [ "$missing" -ne 0 ]; then
+    echo "::error::the cross-platform comparison compared nothing, so it fails"
+    [ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "### Same audio on Windows and macOS: FAILED (renders missing)" >> "$GITHUB_STEP_SUMMARY"
+    exit 1
+fi
 
 python3 - "$win" "$mac" "${JK_RENDER_TOL:-1e-5}" <<'PY'
 import math, os, struct, sys
@@ -79,5 +101,10 @@ for name in names:
     print(f"{name:40} {len(sa) // max(ca, 1):>10} {worst:>12.3e} {db:>8.1f}  {'FAIL' if bad else 'ok'}")
     failures += bad
 print(f"{len(names)} file(s), {failures} failure(s)")
-sys.exit(1 if failures else 0)
+summary = os.environ.get("GITHUB_STEP_SUMMARY")
+if summary:
+    with open(summary, "a", encoding="utf-8") as f:
+        f.write(f"### Same audio on Windows and macOS: {'FAILED' if failures else 'passed'}\n\n"
+                f"{len(names)} render(s) compared sample by sample, tolerance {tol:g}; {failures} failure(s).\n\n")
+sys.exit(1 if failures or not names else 0)
 PY

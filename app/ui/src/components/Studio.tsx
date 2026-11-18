@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Studio panel (WORKING ORDER 4.1, STUDIO_PROTOCOL): drag-and-drop or pick files,
-// inspect each one so the title and artist can be corrected, choose where the lyrics
+// inspect each one so the title, artist, album and cover picture can be corrected (the
+// cover replaced by a JPEG / PNG or removed: `metadata.cover_path`), choose where the lyrics
 // come from (paste, .lrc, automatic, none, or an online lookup the user asks for),
 // pick the quality preset, then queue it. The queue shows every stage, and a file
 // that fails shows its own error without stopping the others.
 // Where the Studio cannot run, the panel says why in plain words.
 // Class hooks: .studio, .studio__drop, .studio__drop--over, .studio__item,
-// .studio__queue, .studio__job, .studio__job--failed, .studio__job--done,
+// .studio__cover, .studio__cover-img, .studio__queue, .studio__job, .studio__job--failed, .studio__job--done,
 // .studio__stages, .studio__stage, .studio__stage--done, .studio__stage--current.
 import { useEffect, useState } from "preact/hooks";
 import type { InspectResult, LookupResult, StudioJob, StudioLyricsMode, StudioModelsStatus, StudioPreset } from "../api/types";
@@ -103,6 +104,69 @@ function Models() {
   );
 }
 
+const COVER_PREVIEW_PX = 192;
+
+/**
+ * The cover in the form (WORKING ORDER 4.1 step 1): the one read from the file, or the
+ * picture the user chose instead, or none. `choice` undefined = the file's own cover
+ * (nothing is sent), a path = that picture, null = removed (STUDIO_PROTOCOL 7
+ * `metadata.cover_path`).
+ */
+function CoverField({ id, fromFile, choice, onChoice }: { id: string; fromFile: string | null; choice: string | null | undefined; onChoice: (c: string | null | undefined) => void }) {
+  const api = getApiSync();
+  const shown = choice === undefined ? fromFile : choice;
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    setUrl(null);
+    if (!shown || !api.studioCoverPreview) return;
+    let cancelled = false;
+    api
+      .studioCoverPreview(shown, COVER_PREVIEW_PX)
+      .then((r) => !cancelled && setUrl(r.data_url))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [shown]);
+  const pick = async () => {
+    try {
+      const p = await api.pickCoverImage!();
+      if (!p) return;
+      await api.studioCoverPreview?.(p, COVER_PREVIEW_PX); // refuses anything but JPEG / PNG
+      onChoice(p);
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    }
+  };
+  const label = choice === undefined ? (fromFile ? "From the file" : "The file has no cover") : choice === null ? "No cover" : `Your picture: ${choice.split(/[\\/]/).pop()}`;
+  return (
+    <>
+      <span id={id}>Cover</span>
+      <div class="studio__cover row" role="group" aria-labelledby={id}>
+        {shown && url ? (
+          <img class="studio__cover-img" src={url} alt="Cover picture" width={96} height={96} style={{ objectFit: "cover", borderRadius: "var(--radius)" }} />
+        ) : null}
+        <span class="hint">{label}</span>
+        {api.pickCoverImage && (
+          <button type="button" class="button button--small" onClick={() => void pick()}>
+            {shown ? "Replace cover…" : "Choose a cover picture…"}
+          </button>
+        )}
+        {shown && (
+          <button type="button" class="button button--small" onClick={() => onChoice(null)}>
+            Remove cover
+          </button>
+        )}
+        {choice !== undefined && fromFile && (
+          <button type="button" class="button button--small" onClick={() => onChoice(undefined)}>
+            Use the file's cover
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
+
 /** One file waiting to be queued: inspect, correct, choose lyrics and preset, submit. */
 function ImportItem({ path }: { path: string }) {
   const studioOnline = useApp((s) => s.info?.capabilities.studio.available ?? false);
@@ -111,6 +175,7 @@ function ImportItem({ path }: { path: string }) {
   const [title, setTitle] = useState("");
   const [artist, setArtist] = useState("");
   const [album, setAlbum] = useState("");
+  const [cover, setCover] = useState<string | null | undefined>(undefined);
   const [mode, setMode] = useState<StudioLyricsMode>("auto");
   const [text, setText] = useState("");
   const [lrc, setLrc] = useState("");
@@ -161,7 +226,7 @@ function ImportItem({ path }: { path: string }) {
         input: path,
         preset,
         language,
-        metadata: { title: title.trim(), artist: artist.trim(), album: album.trim() || null },
+        metadata: { title: title.trim(), artist: artist.trim(), album: album.trim() || null, ...(cover !== undefined ? { cover_path: cover } : {}) },
         lyrics: {
           mode,
           text: mode === "text" ? text : null,
@@ -225,6 +290,7 @@ function ImportItem({ path }: { path: string }) {
           <input id={id("artist")} value={artist} onInput={(e) => setArtist((e.currentTarget as HTMLInputElement).value)} />
           <label for={id("album")}>Album</label>
           <input id={id("album")} value={album} onInput={(e) => setAlbum((e.currentTarget as HTMLInputElement).value)} />
+          <CoverField id={id("cover")} fromFile={insp.cover_path} choice={cover} onChoice={setCover} />
         </div>
 
         <fieldset class="studio__lyrics">

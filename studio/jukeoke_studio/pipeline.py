@@ -99,9 +99,20 @@ def parse_job(obj) -> JobSpec:
     meta = obj.get("metadata") or {}
     if not isinstance(meta, dict):
         raise BadRequest("metadata must be an object.")
-    for k in ("title", "artist", "album"):
+    for k in ("title", "artist", "album", "cover_path"):
         if meta.get(k) is not None and not isinstance(meta.get(k), str):
             raise BadRequest(f"metadata.{k} must be a string or null.")
+    # metadata.cover_path (protocol 7, added): absent = the file's own cover, null = no
+    # cover, a path = that JPEG / PNG picture instead. Checked here so a wrong pick is
+    # refused at once rather than after minutes of separation.
+    if isinstance(meta.get("cover_path"), str):
+        from .media import is_jpeg_or_png_file
+
+        cp = meta["cover_path"]
+        if not cp or not os.path.isfile(cp):
+            raise BadRequest("The chosen cover picture could not be found.", cp)
+        if not is_jpeg_or_png_file(cp):
+            raise BadRequest("The cover picture must be a JPEG or PNG image.", cp)
     lyr = obj.get("lyrics") or {"mode": "auto"}
     if not isinstance(lyr, dict):
         raise BadRequest("lyrics must be an object.")
@@ -348,18 +359,32 @@ def run_job(spec: JobSpec, ctx: JobContext, hooks_cancel: Hooks, on_progress: Pr
         warnings += dec.warnings
         src_sha = media.sha256_file(spec.input, h.sub(0.7, 0.9))
         h.check()
-        cover, cw = media.cover_for_song(spec.input)
-        if cw:
-            warnings.append(cw)
         info = dec.info
         meta = spec.metadata or {}
+        cover_src = None
+        if "cover_path" in meta and meta["cover_path"] is None:
+            cover, cover_src = None, "removed"  # the user removed the cover
+        elif "cover_path" in meta:
+            try:
+                cover, cover_src = media.user_cover(meta["cover_path"]), "user"
+            except (ValueError, OSError) as e:
+                # Checked at submit, so it changed or vanished while the job waited: one
+                # picture is not worth the whole song. Say so and keep the file's own.
+                warnings.append(f"{e} The song keeps the cover from the file instead.")
+                log.warning("user cover %s refused: %s", meta["cover_path"], e)
+        if cover_src is None:
+            cover, cw = media.cover_for_song(spec.input)
+            if cw:
+                warnings.append(cw)
+            cover_src = "tags" if cover is not None else "none"
         title = (meta.get("title") or "").strip() or info.title or Path(spec.input).stem
         artist = (meta.get("artist") or "").strip() or info.artist or ""
         album = meta.get("album") if "album" in meta else info.album
         if isinstance(album, str):
             album = album.strip() or None
         meta_src = {"title": "user" if (meta.get("title") or "").strip() else ("tags" if info.title else "file name"),
-                    "artist": "user" if (meta.get("artist") or "").strip() else ("tags" if info.artist else "none")}
+                    "artist": "user" if (meta.get("artist") or "").strip() else ("tags" if info.artist else "none"),
+                    "cover": cover_src}
         audio, sr, downmix = dec.audio, dec.sample_rate, dec.downmix
         del dec
         lyr, transcribe_needed = _given_lyrics(spec)

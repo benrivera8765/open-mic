@@ -26,6 +26,11 @@
 //!   garbage, and turns callback/reader/device flags into events (ended, device lost,
 //!   errors).
 //!
+//! **Key cache** (prerender mode, src/keycache.rs): a low-priority renderer thread
+//! fills a disk cache with the pitch path; control (on the house thread) hands the worker
+//! a feed of cached frames (lock-free ring, filled by a feed reader thread) when enough is
+//! rendered ahead, and the worker's graph crossfades to its cached route.
+//!
 //! **Seek** bumps a generation counter: a new stem ring is filled from a sample-accurate
 //! decoder seek starting `prime_len` frames before the target (real audio primes the
 //! pitch shifter), the worker resets the graph and discards the output before the
@@ -38,11 +43,12 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use jk_dsp::{ExtraBlock, GraphConfig, OutputResampler, PitchGraph, StemBlock, Stretcher, CHANNELS};
+use jk_dsp::{ExtraBlock, GraphConfig, OutputResampler, PitchGraph, RouteInfo, StemBlock, Stretcher, CACHE_SLOTS, CHANNELS};
 
 use crate::api::*;
 use crate::output::{self, Capture, DeviceFeed, Marker, MarkerKind, OpenOutput, OutputRequest, StreamInfo};
-use crate::shared::{now_ns, Shared, FILLER_SEG_BITS};
+use crate::keycache::{self, CacheFeed, Entry, EntryKey, KeyCache, KeyMode, KeyPrepare, KeyStatus, Pull, Renderer};
+use crate::shared::{now_ns, Shared, FILLER_SEG_BITS, ROUTE_BYPASS, ROUTE_CACHED, ROUTE_SHIFT};
 use crate::source::{slot_buffers, SlotBuffers, SongInfo, SongSource, SLOT_EXTRA_PITCHED, SLOT_EXTRA_UNPITCHED, SLOT_OTHER};
 
 /// Graph block (song frames).
@@ -68,6 +74,9 @@ pub(crate) struct Segment {
     read_from: u64,
     ring: rtrb::Consumer<f32>,
     eof: Arc<AtomicBool>,
+    /// Prerender mode: cached pitch-path frames from `start` on (the segment then starts
+    /// on the cached route).
+    cache: Option<Box<CacheFeed>>,
 }
 
 /// The output side of the pipeline (one per open device).
@@ -106,6 +115,10 @@ pub(crate) struct WorkerSong {
     pend: [Vec<f32>; CHANNELS],
     ilv: Vec<f32>,
     zeros: Vec<f32>,
+    /// Key cache feeds by graph cache slot, and one waiting to be switched to.
+    feeds: [Option<Box<CacheFeed>>; CACHE_SLOTS],
+    pending_feed: Option<Box<CacheFeed>>,
+    cache_buf: [[Vec<f32>; CHANNELS]; CACHE_SLOTS],
 }
 
 pub(crate) enum WorkerCmd {
@@ -114,6 +127,12 @@ pub(crate) enum WorkerCmd {
     Output(Box<OutputSide>, Option<Box<OutputResampler>>),
     Params(jk_dsp::MixParams),
     Unload,
+    /// Prerender mode: switch to these cached frames once they arrive.
+    CacheFeed(Box<CacheFeed>),
+    /// `true`: real-time key changes; `false`: prerender policy (graph routes on request).
+    KeyPolicy(bool),
+    /// Prerender policy: crossfade to the bypass (key 0).
+    ToBypass,
 }
 
 /// Things the worker must not free itself.
@@ -124,6 +143,7 @@ pub(crate) enum Garbage {
     Output(Box<OutputSide>),
     Resampler(Box<OutputResampler>),
     Stretcher(Stretcher),
+    Feed(Box<CacheFeed>),
 }
 
 enum ReaderCmd {
@@ -321,6 +341,34 @@ impl Worker {
                     }
                     self.pending_params = None;
                 }
+                WorkerCmd::CacheFeed(f) => match self.song.as_mut() {
+                    Some(song) if song.seg.as_ref().is_some_and(|g| g.generation == f.generation) => {
+                        self.shared.key_pending_tag.store(f.tag, Release);
+                        if let Some(old) = song.pending_feed.replace(f) {
+                            let _ = self.garbage.push(Garbage::Feed(old));
+                        }
+                    }
+                    _ => self.trash(Garbage::Feed(f)),
+                },
+                WorkerCmd::KeyPolicy(auto) => {
+                    if let Some(song) = self.song.as_mut() {
+                        song.graph.set_auto_route(auto);
+                        if auto && let Some(p) = song.pending_feed.take() {
+                            let _ = self.garbage.push(Garbage::Feed(p));
+                            self.shared.key_pending_tag.store(0, Release);
+                        }
+                    }
+                }
+                WorkerCmd::ToBypass => {
+                    if let Some(song) = self.song.as_mut() {
+                        song.graph.request_bypass();
+                        if let Some(p) = song.pending_feed.take() {
+                            let _ = self.garbage.push(Garbage::Feed(p));
+                        }
+                        self.shared.key_pending_tag.store(0, Release);
+                        self.shared.key_route.store(ROUTE_BYPASS, Release);
+                    }
+                }
             }
         }
     }
@@ -387,7 +435,24 @@ impl Worker {
             if song.graph.reset_needs_stretcher() {
                 return Produced::NoSpare;
             }
-            song.graph.reset();
+            // Feeds belong to their segment: the old ones go, the new segment's (if any)
+            // starts the graph on its cached route.
+            for k in 0..CACHE_SLOTS {
+                if let Some(f) = song.feeds[k].take() {
+                    let _ = self.garbage.push(Garbage::Feed(f));
+                }
+            }
+            if let Some(p) = song.pending_feed.take() {
+                let _ = self.garbage.push(Garbage::Feed(p));
+            }
+            self.shared.key_pending_tag.store(0, Release);
+            match seg.cache.take() {
+                Some(f) => {
+                    song.graph.reset_cached(0, f.semitones, f.drums_in);
+                    song.feeds[0] = Some(f);
+                }
+                None => song.graph.reset(),
+            }
             song.resampler.reset();
             song.rs_skip = song.resampler.output_delay();
             song.needs_reset = false;
@@ -465,6 +530,43 @@ impl Worker {
                 song.bufs[s][c][frames..BLOCK].iter_mut().for_each(|v| *v = 0.0);
             }
         }
+        // Key cache: this block's cached frames for each slot; a pending switch starts
+        // once its first block is here. Ring reads only (no allocation, no locks).
+        let mut have = [false; CACHE_SLOTS];
+        {
+            let song_in = song.song_in;
+            for k in 0..CACHE_SLOTS {
+                let Some(f) = song.feeds[k].as_mut() else { continue };
+                match keycache::pull(f, song_in, BLOCK, &mut song.cache_buf[k]) {
+                    Pull::Data => have[k] = true,
+                    Pull::NotYet => {}
+                    Pull::Missing => {
+                        if song.graph.cache_slot_in_use(k) {
+                            song.graph.cache_miss(k);
+                            self.shared.cache_misses.fetch_add(1, Relaxed);
+                        }
+                        if let Some(f) = song.feeds[k].take() {
+                            let _ = self.garbage.push(Garbage::Feed(f));
+                        }
+                    }
+                }
+            }
+            let due = song.pending_feed.as_ref().is_some_and(|p| song_in >= p.from);
+            if due && let Some(slot) = song.graph.free_cache_slot() {
+                let got = match song.pending_feed.as_mut() {
+                    Some(p) => keycache::pull(p, song_in, BLOCK, &mut song.cache_buf[slot]) == Pull::Data,
+                    None => false,
+                };
+                if got && let Some(p) = song.pending_feed.take() {
+                    song.graph.request_cached(slot, p.semitones, p.drums_in);
+                    if let Some(old) = song.feeds[slot].replace(p) {
+                        let _ = self.garbage.push(Garbage::Feed(old));
+                    }
+                    have[slot] = true;
+                }
+            }
+        }
+        let tg = now_ns();
         {
             let b = &song.bufs;
             let z = &song.zeros[..];
@@ -477,7 +579,19 @@ impl Worker {
                 unpitched: [slot(SLOT_EXTRA_UNPITCHED, 0), slot(SLOT_EXTRA_UNPITCHED, 1)],
             };
             let ext = if song.extra { Some(&extra) } else { None };
-            song.graph.process_ext(&blk, ext, BLOCK, [&mut song.gl[..], &mut song.gr[..]]);
+            let cb = &song.cache_buf;
+            let cached: [Option<[&[f32]; CHANNELS]>; CACHE_SLOTS] =
+                std::array::from_fn(|k| have[k].then(|| [&cb[k][0][..], &cb[k][1][..]]));
+            song.graph.process_cached(&blk, ext, cached, BLOCK, [&mut song.gl[..], &mut song.gr[..]]);
+        }
+        keycache::slow_down(&self.shared, tg);
+        // Feeds the graph no longer uses (after a crossfade away from them) go.
+        for k in 0..CACHE_SLOTS {
+            if !song.graph.cache_slot_in_use(k)
+                && let Some(f) = song.feeds[k].take()
+            {
+                let _ = self.garbage.push(Garbage::Feed(f));
+            }
         }
         // Graph output frame i is song frame song_in + i - L; keep frames >= start.
         let lat = song.graph.latency() as i64;
@@ -489,6 +603,19 @@ impl Worker {
             }
         }
         song.song_in += BLOCK as u64;
+        {
+            let (cur, to) = song.graph.route();
+            let (kind, tag) = match to.unwrap_or(cur) {
+                RouteInfo::Bypass => (ROUTE_BYPASS, 0),
+                RouteInfo::Shift { .. } => (ROUTE_SHIFT, 0),
+                RouteInfo::Cached { slot, .. } => (ROUTE_CACHED, song.feeds[slot].as_ref().map_or(0, |f| f.tag)),
+            };
+            let s = &self.shared;
+            s.key_route_tag.store(tag, Release);
+            s.key_route.store(kind, Release);
+            s.key_pending_tag.store(song.pending_feed.as_ref().map_or(0, |f| f.tag), Release);
+            s.worker_song_in.store(song.song_in, Release);
+        }
 
         // Resample (or pass through) in BLOCK-frame chunks; interleave for the device.
         let master = self.shared.master.load();
@@ -615,6 +742,8 @@ impl WorkerSong {
 
 struct CtlSong {
     info: SongInfo,
+    /// First frame the current segment's worker input starts at (its block grid).
+    seg_read_from: u64,
     reader_tx: crossbeam_channel::Sender<ReaderCmd>,
     reader: Option<JoinHandle<()>>,
     prime_len: usize,
@@ -636,6 +765,26 @@ struct Control {
     params: MixParams,
     /// Finished reader threads to join.
     zombies: Vec<JoinHandle<()>>,
+    key: KeyCtl,
+}
+
+/// Key mode and cache state (control side, under the control mutex).
+#[derive(Default)]
+struct KeyCtl {
+    /// The mode the app asked for.
+    mode: KeyMode,
+    cache: Option<KeyCache>,
+    /// Why prerender cannot work now (no cache folder, disk error): real time is used.
+    error: Option<String>,
+    song_id: Option<String>,
+    /// The entry for the current key and mix (prerender mode, key not 0).
+    target: Option<Arc<Entry>>,
+    /// The last switch sent: (entry tag, generation, when).
+    sent: Option<(u64, u64, Instant)>,
+    bypass_sent: Option<(u64, Instant)>,
+    status: KeyStatus,
+    /// The graph policy last sent to the worker (true = real time).
+    policy_auto: bool,
 }
 
 pub(crate) struct Core {
@@ -650,10 +799,11 @@ pub(crate) struct Core {
     stop: Arc<AtomicBool>,
     capture: Option<(Capture, bool)>,
     priority: Arc<OnceLock<String>>,
+    renderer: Arc<Renderer>,
 }
 
-/// Counters and timings for tests and benchmarks.
-#[derive(Clone, Debug, Default)]
+/// Counters and timings for tests and benchmarks (also `player_diagnostics` in the app).
+#[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct Diagnostics {
     pub generation: u64,
     pub dac_gen: u64,
@@ -687,6 +837,19 @@ pub struct Diagnostics {
     pub device: Option<String>,
     pub song_rate: u32,
     pub graph_latency_frames: usize,
+    /// Key cache: cached blocks that were missing (must stay 0), the route the graph
+    /// heads for (0 bypass, 1 real-time shift, 2 cached), cells rendered, run seams,
+    /// runs interrupted by a seek or a new key, render speed (x real time), evictions.
+    pub cache_misses: u64,
+    pub key_route: u32,
+    pub key_cells_rendered: u64,
+    pub key_seams: u64,
+    pub key_interrupts: u64,
+    pub key_render_speed: Option<f64>,
+    pub key_evictions: u64,
+    pub key_cache_bytes: u64,
+    /// Fraction of the current key's cache entry rendered (prerender mode, key not 0).
+    pub key_target_progress: Option<f32>,
 }
 
 fn lock(core: &Core) -> MutexGuard<'_, Control> {
@@ -757,6 +920,7 @@ impl Core {
             clipped: s.clipped.load(Relaxed),
             error: if ctl.state == PlaybackState::Error { ctl.error.clone() } else { None },
             position_ns: if s.dac_gen.load(Acquire) == ctl.generation { s.dac_ns.load(Relaxed) } else { 0 },
+            key: ctl.key.status.clone(),
         }
     }
 
@@ -860,8 +1024,206 @@ impl Core {
         self.shared.target_pos.store(frame as f64 / rate);
         self.shared.target_gen.store(generation, Release);
         let _ = song.reader_tx.send(ReaderCmd::Seek { read_from, ring: prod, eof: eof.clone() });
-        let seg = Segment { generation, start: frame, read_from, ring: cons, eof };
+        if let Some(song) = ctl.song.as_mut() {
+            song.seg_read_from = read_from;
+        }
+        // Prerender mode: start on the cached key when it is ready here (the new key,
+        // else the one heard so far); the renderer works from here first.
+        let cache = self.segment_feed(ctl, frame, generation);
+        let seg = Segment { generation, start: frame, read_from, ring: cons, eof, cache };
         self.send_worker(ctl, WorkerCmd::Segment(Box::new(seg)));
+    }
+
+    // ---- key cache (prerender mode) ---------------------------------------------------
+
+    /// The mode in effect: prerender only with a usable cache.
+    fn key_effective(&self, ctl: &Control) -> KeyMode {
+        match ctl.key.mode {
+            KeyMode::Prerender if ctl.key.cache.is_some() && ctl.key.error.is_none() => KeyMode::Prerender,
+            _ => KeyMode::Realtime,
+        }
+    }
+
+    /// Tell the worker's graph which policy to follow (once per change).
+    fn key_apply_policy(&self, ctl: &mut Control) {
+        let auto = self.key_effective(ctl) == KeyMode::Realtime;
+        if auto != ctl.key.policy_auto {
+            ctl.key.policy_auto = auto;
+            ctl.key.sent = None;
+            if ctl.song.is_some() {
+                self.send_worker(ctl, WorkerCmd::KeyPolicy(auto));
+            }
+        }
+    }
+
+    /// The cache entry for the current key and mix (`None` at key 0), created on first use.
+    fn key_target(&self, ctl: &mut Control) -> Option<Arc<Entry>> {
+        let Some(want) = EntryKey::from_params(&ctl.params.to_dsp()) else {
+            ctl.key.target = None;
+            return None;
+        };
+        if let Some(t) = &ctl.key.target
+            && t.key == want
+        {
+            return Some(t.clone());
+        }
+        let song = ctl.song.as_ref()?;
+        let (path, rate, frames) = (song.info.path.clone(), song.info.sample_rate, song.info.frames);
+        let song_id = ctl.key.song_id.clone()?;
+        let heard = self.shared.key_route_tag.load(Acquire);
+        let cache = ctl.key.cache.as_mut()?;
+        match cache.get_or_create(&song_id, &path, rate, frames, want, &[heard]) {
+            Ok(e) => {
+                ctl.key.target = Some(e.clone());
+                ctl.key.sent = None;
+                let from = (self.current_position(ctl) * rate as f64) as u64;
+                self.renderer.set_job(Some(e.clone()), from);
+                Some(e)
+            }
+            Err(detail) => {
+                ctl.key.error = Some(format!(
+                    "The key cache could not be written, so key changes use the real-time path ({detail})."
+                ));
+                None
+            }
+        }
+    }
+
+    /// Is `e` rendered far enough ahead of `from` to be heard from there? Also the
+    /// progress towards that, 0..1.
+    fn entry_ready(&self, e: &Entry, from: u64) -> (bool, f32) {
+        if e.is_complete() {
+            return (true, 1.0);
+        }
+        if from >= e.frames {
+            return (false, e.progress());
+        }
+        let remaining = e.frames - from;
+        let ahead = e.covered_ahead(from);
+        let fast = self.renderer.job_tag() == Some(e.tag) && self.renderer.speed().is_some_and(|s| s >= keycache::READY_MIN_SPEED);
+        let need = if fast { remaining.min((keycache::READY_AHEAD_S * e.rate as f64) as u64) } else { remaining };
+        (ahead >= need, (ahead as f64 / need.max(1) as f64).min(1.0) as f32)
+    }
+
+    /// A feed for a new segment starting at `frame` (prerender mode).
+    fn segment_feed(&self, ctl: &mut Control, frame: u64, generation: u64) -> Option<Box<CacheFeed>> {
+        if self.key_effective(ctl) != KeyMode::Prerender || ctl.song.is_none() {
+            return None;
+        }
+        self.renderer.set_priority(frame);
+        let target = self.key_target(ctl);
+        let heard = (self.shared.key_route.load(Acquire) == ROUTE_CACHED)
+            .then(|| ctl.key.cache.as_ref().and_then(|c| c.find_tag(self.shared.key_route_tag.load(Acquire))))
+            .flatten();
+        for e in [target, heard].into_iter().flatten() {
+            if self.entry_ready(&e, frame).0
+                && let Ok(f) = keycache::spawn_feed(e.clone(), frame, generation, self.stop.clone())
+            {
+                ctl.key.sent = Some((e.tag, generation, Instant::now()));
+                return Some(f);
+            }
+        }
+        None
+    }
+
+    /// Prerender mode, every few ms on the house thread: keep the renderer on the right
+    /// entry, switch the worker to it when enough is ready, report progress.
+    fn key_tick(&self, ctl: &mut Control) {
+        if let Some(c) = ctl.key.cache.as_mut() {
+            c.index_finished();
+        }
+        if ctl.key.target.as_ref().is_some_and(|t| t.has_failed()) && ctl.key.error.is_none() {
+            ctl.key.error = Some("The key cache could not be written, so key changes use the real-time path.".into());
+        }
+        self.key_apply_policy(ctl);
+        let eff = self.key_effective(ctl);
+        let note = if ctl.key.mode == KeyMode::Prerender {
+            ctl.key.error.clone().or_else(|| ctl.key.cache.is_none().then(|| "No key cache folder is set, so key changes use the real-time path.".to_string()))
+        } else {
+            None
+        };
+        if ctl.song.is_none() || eff != KeyMode::Prerender {
+            self.renderer.set_job(None, 0);
+            ctl.key.status = KeyStatus { mode: eff, preparing: None, note };
+            return;
+        }
+        let s = &self.shared;
+        let rate = ctl.song.as_ref().map_or(48_000, |x| x.info.sample_rate) as u64;
+        let route = s.key_route.load(Acquire);
+        let route_tag = s.key_route_tag.load(Acquire);
+        let pending_tag = s.key_pending_tag.load(Acquire);
+        let worker_in = s.worker_song_in.load(Acquire);
+        let playing = ctl.state == PlaybackState::Playing && s.want_play.load(Acquire);
+        let pos_s = self.current_position(ctl);
+        let pos_frame = (pos_s * rate as f64) as u64;
+        let mut preparing = None;
+        match self.key_target(ctl) {
+            None => {
+                self.renderer.set_job(None, 0);
+                if route != ROUTE_BYPASS {
+                    let fresh = ctl.key.bypass_sent.is_none_or(|(g, t)| g != ctl.generation || t.elapsed() > Duration::from_millis(300));
+                    if fresh {
+                        ctl.key.bypass_sent = Some((ctl.generation, Instant::now()));
+                        if playing {
+                            self.send_worker(ctl, WorkerCmd::ToBypass);
+                        } else {
+                            // Paused: re-render what is buffered (as set_params does).
+                            self.start_segment(ctl, pos_s);
+                            ctl.key.bypass_sent = Some((ctl.generation, Instant::now()));
+                        }
+                    }
+                }
+            }
+            Some(t) => {
+                let heading = (route == ROUTE_CACHED && route_tag == t.tag) || pending_tag == t.tag;
+                if heading {
+                    // Heard (or being switched to): finish the rest of the song quietly.
+                    self.renderer.set_job((!t.is_complete()).then(|| t.clone()), worker_in);
+                } else {
+                    // Ended: play() restarts at 0, so the key is prepared from there, and
+                    // once it is ready there nothing is left to show (the switch happens
+                    // when play starts the new segment). Without this the status said
+                    // "Preparing key ... 100%" until the next play.
+                    let ended = ctl.state == PlaybackState::Ended;
+                    self.renderer.set_job(Some(t.clone()), if ended { 0 } else { worker_in.max(pos_frame) });
+                    let grid = ctl.song.as_ref().map_or(0, |x| x.seg_read_from);
+                    let from = if playing {
+                        // The next worker block at least 0.1 s ahead of the worker.
+                        let want = worker_in + rate / 10;
+                        grid + (want.saturating_sub(grid)).div_ceil(BLOCK as u64) * BLOCK as u64
+                    } else if ended {
+                        0
+                    } else {
+                        pos_frame
+                    };
+                    let (ready, progress) = self.entry_ready(&t, from);
+                    let heard_key = s.audible_semitones.load(Relaxed);
+                    if !(ended && ready) {
+                        preparing = Some(KeyPrepare {
+                            semitones: t.key.semitones,
+                            reason: if heard_key == t.key.semitones { "mix".into() } else { "key".into() },
+                            progress,
+                        });
+                    }
+                    let again = ctl.key.sent.is_none_or(|(tag, g, at)| tag != t.tag || g != ctl.generation || at.elapsed() > Duration::from_secs(1));
+                    if ready && again && from < t.frames && !ended {
+                        if playing {
+                            match keycache::spawn_feed(t.clone(), from, ctl.generation, self.stop.clone()) {
+                                Ok(f) => {
+                                    ctl.key.sent = Some((t.tag, ctl.generation, Instant::now()));
+                                    self.send_worker(ctl, WorkerCmd::CacheFeed(f));
+                                }
+                                Err(e) => ctl.key.error = Some(format!("The key cache could not be read ({e}).")),
+                            }
+                        } else {
+                            // Paused: restart the buffered audio on the cached key.
+                            self.start_segment(ctl, pos_s);
+                        }
+                    }
+                }
+            }
+        }
+        ctl.key.status = KeyStatus { mode: eff, preparing, note };
     }
 
     fn unload_locked(&self, ctl: &mut Control) {
@@ -877,6 +1239,13 @@ impl Core {
             }
         }
         self.spare_rate.store(0, Release);
+        self.renderer.set_job(None, 0);
+        ctl.key.target = None;
+        ctl.key.sent = None;
+        ctl.key.song_id = None;
+        if let Some(c) = ctl.key.cache.as_mut() {
+            c.clear_song();
+        }
         ctl.state = PlaybackState::Empty;
         ctl.error = None;
     }
@@ -925,6 +1294,7 @@ impl Core {
             self.emit_state(&ctl);
         }
         ctl.zombies.retain(|h| !h.is_finished());
+        self.key_tick(&mut ctl);
     }
 }
 
@@ -956,6 +1326,7 @@ pub struct EngineInner {
     events_rx: crossbeam_channel::Receiver<EngineEvent>,
     worker: Option<JoinHandle<()>>,
     house: Option<JoinHandle<()>>,
+    render: Option<JoinHandle<()>>,
 }
 
 impl EngineInner {
@@ -979,6 +1350,8 @@ impl EngineInner {
         let (ev_tx, ev_rx) = crossbeam_channel::bounded(256);
         let stop = Arc::new(AtomicBool::new(false));
         let priority = Arc::new(OnceLock::new());
+        let renderer = Renderer::new(shared.clone());
+        let render_thread = renderer.spawn().map_err(EngineError::internal)?;
         let worker = Worker {
             shared: shared.clone(),
             cmd_rx,
@@ -1013,6 +1386,7 @@ impl EngineInner {
                 error: None,
                 params: MixParams::default(),
                 zombies: Vec::new(),
+                key: KeyCtl { policy_auto: true, ..Default::default() },
             }),
             events: ev_tx,
             spare_rate: AtomicU32::new(0),
@@ -1021,6 +1395,7 @@ impl EngineInner {
             stop: stop.clone(),
             capture,
             priority,
+            renderer: renderer.clone(),
         });
         {
             // A missing device is not an error here: playback reports it.
@@ -1036,7 +1411,7 @@ impl EngineInner {
                 .spawn(move || house_thread(core, garbage_rx, spare_tx))
                 .map_err(EngineError::internal)?
         };
-        Ok(EngineInner { core, events_rx: ev_rx, worker: Some(worker), house: Some(house) })
+        Ok(EngineInner { core, events_rx: ev_rx, worker: Some(worker), house: Some(house), render: Some(render_thread) })
     }
 
     pub fn set_device(&self, id: Option<&str>, exclusive: bool) -> Result<(), EngineError> {
@@ -1130,7 +1505,13 @@ impl EngineInner {
         let mut gcfg = GraphConfig::new(rate);
         gcfg.max_block = BLOCK;
         gcfg.inline_stretchers = false;
-        let graph = PitchGraph::new(gcfg, dsp).map_err(EngineError::internal)?;
+        let mut graph = PitchGraph::new(gcfg, dsp).map_err(EngineError::internal)?;
+        // Prerender mode: the graph never starts a real-time shifter by itself. A cache
+        // error of the previous song is forgotten (the stick may have room again).
+        ctl.key.error = None;
+        let auto = core.key_effective(&ctl) == KeyMode::Realtime;
+        graph.set_auto_route(auto);
+        ctl.key.policy_auto = auto;
         let resampler = OutputResampler::new(rate, dev_rate, BLOCK).map_err(EngineError::internal)?;
         let mut slots: Vec<usize> = info.active_slots();
         if slots.is_empty() {
@@ -1164,6 +1545,9 @@ impl EngineInner {
             // and 8 device channels (a later device switch can raise the rate).
             ilv: vec![0.0; (max_out.max(8 * BLOCK) + 64) * 8],
             zeros: vec![0.0; BLOCK],
+            feeds: [None, None],
+            pending_feed: None,
+            cache_buf: std::array::from_fn(|_| [vec![0.0; BLOCK], vec![0.0; BLOCK]]),
         };
         core.send_worker(&mut ctl, WorkerCmd::Song(Box::new(wsong)));
         let (reader_tx, reader_rx) = crossbeam_channel::unbounded();
@@ -1176,8 +1560,9 @@ impl EngineInner {
                 .spawn(move || reader_thread(src, slots, reader_rx, shared, err))
                 .map_err(EngineError::internal)?
         };
-        ctl.song = Some(CtlSong { info: info.clone(), reader_tx, reader: Some(reader), prime_len, graph_latency, width });
+        ctl.song = Some(CtlSong { info: info.clone(), seg_read_from: 0, reader_tx, reader: Some(reader), prime_len, graph_latency, width });
         ctl.params = params;
+        ctl.key.song_id = keycache::song_identity(path).ok();
         core.key_hint.store(params.semitones, Relaxed);
         core.spare_rate.store(rate, Release);
         ctl.state = PlaybackState::Paused;
@@ -1354,11 +1739,72 @@ impl EngineInner {
             }),
             song_rate: ctl.song.as_ref().map_or(0, |x| x.info.sample_rate),
             graph_latency_frames: ctl.song.as_ref().map_or(0, |x| x.graph_latency),
+            cache_misses: s.cache_misses.load(Relaxed),
+            key_route: s.key_route.load(Acquire),
+            key_cells_rendered: core.renderer.cells.load(Relaxed),
+            key_seams: core.renderer.seams.load(Relaxed),
+            key_interrupts: core.renderer.interrupts.load(Relaxed),
+            key_render_speed: core.renderer.speed(),
+            key_evictions: ctl.key.cache.as_ref().map_or(0, |c| c.evictions),
+            key_cache_bytes: ctl.key.cache.as_ref().map_or(0, |c| c.store.total_bytes()),
+            key_target_progress: ctl.key.target.as_ref().map(|t| t.progress()),
         }
     }
 
     pub fn debug_simulate_device_loss(&self) {
         self.core.shared.simulate_device_loss.store(true, Release);
+    }
+
+    pub fn set_key_mode(&self, mode: KeyMode) {
+        let core = &self.core;
+        let mut ctl = lock(core);
+        ctl.key.mode = mode;
+        if mode == KeyMode::Realtime {
+            ctl.key.error = None;
+        }
+        core.key_apply_policy(&mut ctl);
+        core.key_tick(&mut ctl);
+    }
+
+    pub fn set_key_cache(&self, dir: Option<&Path>, cap_bytes: u64) -> Result<(), EngineError> {
+        let core = &self.core;
+        let mut ctl = lock(core);
+        let result = match dir {
+            None => {
+                if let Some(mut c) = ctl.key.cache.take() {
+                    c.clear_song();
+                }
+                Ok(())
+            }
+            Some(d) => match ctl.key.cache.as_mut() {
+                Some(c) if c.store.dir == d => {
+                    c.store.cap = cap_bytes;
+                    Ok(())
+                }
+                _ => match keycache::CacheStore::open(d, cap_bytes) {
+                    Ok(store) => {
+                        if let Some(mut c) = ctl.key.cache.replace(KeyCache::new(store)) {
+                            c.clear_song();
+                        }
+                        Ok(())
+                    }
+                    Err(e) => {
+                        ctl.key.cache = None;
+                        Err(EngineError::new("write_failed", "The key cache folder could not be created.", format!("{}: {e}", d.display())))
+                    }
+                },
+            },
+        };
+        ctl.key.error = None;
+        ctl.key.target = None;
+        ctl.key.sent = None;
+        core.key_apply_policy(&mut ctl);
+        result
+    }
+
+    pub fn debug_set_slowdown(&self, factor: f64) {
+        let f = if factor.is_finite() { (factor * 100.0).round().clamp(0.0, 1e6) as u32 } else { 100 };
+        self.core.shared.debug_slowdown_x100.store(f, Release);
     }
 }
 
@@ -1377,6 +1823,10 @@ impl Drop for EngineInner {
             let _ = h.join();
         }
         if let Some(h) = self.house.take() {
+            let _ = h.join();
+        }
+        self.core.renderer.shutdown();
+        if let Some(h) = self.render.take() {
             let _ = h.join();
         }
     }

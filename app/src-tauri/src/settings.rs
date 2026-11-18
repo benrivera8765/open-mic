@@ -41,6 +41,20 @@ pub enum LibrarySort {
     Key,
 }
 
+/// How key changes are made (WORK_ORDER 4.5; docs/APP_API.md section 5).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyModeSetting {
+    /// Measure Rubber Band on this computer once (per sample rate) and render ahead
+    /// when it runs below 3x real time.
+    #[default]
+    Auto,
+    /// Always shift in real time (the normal path).
+    Realtime,
+    /// Always render ahead and cache.
+    Prerender,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Colors {
     pub sung: String,
@@ -76,6 +90,13 @@ pub struct AudioSettings {
     pub master_volume: f64,
     /// Bluetooth and other output latency, per device id, in milliseconds.
     pub device_offsets_ms: BTreeMap<String, f64>,
+    /// Key change: real time, render ahead and cache, or chosen per computer.
+    pub key_mode: KeyModeSetting,
+    /// Size cap of the key cache (`<root>/Settings/cache/keys`), in MB.
+    pub key_cache_mb: f64,
+    /// Rubber Band real-time factor measured by "auto", per computer and sample rate
+    /// (`"<computer>@<rate>"`; the computer part is a hash, see src/keymode.rs).
+    pub key_benchmarks: BTreeMap<String, f64>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -117,6 +138,9 @@ impl Default for AppSettings {
                 exclusive: false,
                 master_volume: 1.0,
                 device_offsets_ms: BTreeMap::new(),
+                key_mode: KeyModeSetting::Auto,
+                key_cache_mb: 1024.0,
+                key_benchmarks: BTreeMap::new(),
                 extra: Map::new(),
             },
             extra: Map::new(),
@@ -144,6 +168,14 @@ impl AppSettings {
         }
         if a.device_id.as_deref().is_some_and(str::is_empty) {
             a.device_id = None;
+        }
+        a.key_cache_mb = finite_or(a.key_cache_mb, 1024.0).clamp(64.0, 65536.0);
+        a.key_benchmarks.retain(|k, v| !k.is_empty() && k.len() <= 64 && v.is_finite() && *v > 0.0);
+        while a.key_benchmarks.len() > 32 {
+            let first = a.key_benchmarks.keys().next().cloned();
+            if let Some(k) = first {
+                a.key_benchmarks.remove(&k);
+            }
         }
     }
 
@@ -204,7 +236,9 @@ fn typed_ok(path: &str, v: &Value) -> bool {
     match path {
         "ui.motion" => serde_json::from_value::<Motion>(v.clone()).is_ok(),
         "ui.library_sort" => serde_json::from_value::<LibrarySort>(v.clone()).is_ok(),
+        "audio.key_mode" => serde_json::from_value::<KeyModeSetting>(v.clone()).is_ok(),
         _ if path.starts_with("audio.device_offsets_ms.") => v.is_number(),
+        _ if path.starts_with("audio.key_benchmarks.") => v.is_number(),
         _ => true,
     }
 }
@@ -408,6 +442,23 @@ mod tests {
             assert!(v["ui"].get(k).is_some(), "ui.{k} missing");
         }
         assert!(v["audio"].get("exclusive").is_some());
+        assert_eq!(v["audio"]["key_mode"], json!("auto"));
+        assert_eq!(v["audio"]["key_cache_mb"], json!(1024.0));
+        assert_eq!(v["audio"]["key_benchmarks"], json!({}));
+    }
+
+    #[test]
+    fn key_mode_settings_are_checked_and_clamped() {
+        let text = r#"{"audio": {"key_mode": "turbo", "key_cache_mb": 1,
+                                 "key_benchmarks": {"pc@48000": 9.5, "bad": "x", "neg@44100": -1}}}"#;
+        let (s, warnings) = AppSettings::from_json_lenient(text);
+        assert_eq!(s.audio.key_mode, KeyModeSetting::Auto, "unknown mode falls back alone");
+        assert_eq!(s.audio.key_cache_mb, 64.0);
+        assert_eq!(s.audio.key_benchmarks.len(), 1);
+        assert_eq!(s.audio.key_benchmarks["pc@48000"], 9.5);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        let (s, _) = AppSettings::from_json_lenient(r#"{"audio": {"key_mode": "prerender"}}"#);
+        assert_eq!(s.audio.key_mode, KeyModeSetting::Prerender);
     }
 
     #[test]

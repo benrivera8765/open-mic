@@ -12,6 +12,7 @@ Research was done on 2026-11-17; every fact has a source at the bottom (S1, S2, 
 | `jk-recorder` cross-platform core (WAV/RF64 writer, meter, timeline) | Tested on Windows: 22 unit tests + 1 example test + 1 doc-test pass; float WAV, 6-channel WAVE_FORMAT_EXTENSIBLE and RF64 files read back bit-exact by an independent reader (libsndfile 1.2.2). |
 | `.github/workflows/ci.yml`, `release.yml` | Pass `actionlint` 1.7.12 (with shellcheck). **Never run**: no GitHub login (DECISIONS D-09). |
 | `scripts/build-mac.sh`, `scripts/check-macos-minos.sh`, `scripts/ci-*.sh` | Pass `shellcheck` 0.11.0. `check-macos-minos.sh` was exercised on Windows against mocked `vtool`/`otool`/`lipo` output. **Not run on a Mac.** |
+| `scripts/check-macos-availability.sh` + `.py` (imported APIs newer than 13.0, section 11), `scripts/check-macos-paths.sh` (no home path in the build) | 2026-11-18: unit tests on Windows (`scripts/tests/test_check_macos_availability.py`, 20 tests, hand-written header snippets and fake `nm`/`otool`/`dyld_info` output) and the shell harness (`scripts/tests/test-ci-scripts.sh`, fake SDK and fake tools); the header parser also ran on the 574 real Apple `usr/include` headers that Zig bundles. **Never run on a real macOS SDK, a real Jukeoke.app, or a Mac.** |
 
 ## 1. Which macOS runner CI uses (and why)
 
@@ -204,8 +205,14 @@ new one. Toggle Jukeoke off and on in the same list if recording fails after an 
   refuses to run outside GitHub Actions) and runs again. The job summary says which
   case happened, or that the runner could not grant it (then the real test is the
   MacBook self-check, as WORK_ORDER section 8 allows).
-- Runner VMs may have no audio output device; then the probe reports "no audio" or
-  "tone missing" as a warning, not a failure.
+- **Only "permission not granted" is tolerated** (a warning in the log and the job
+  summary, after the TCC.db approval was tried). Every other result fails the step: an
+  error or crash, no audio arriving, a sample count that does not match elapsed time,
+  or the tone not coming back. Runner VMs may have no audio output device, so CI first
+  runs `scripts/ci-mac-audio-device.sh`, which installs the BlackHole 2ch virtual device
+  (Homebrew cask, GPL-3.0) only if Core Audio lists no output device, and refuses to run
+  outside GitHub Actions.
+- The exFAT step treats the self-check's Recorder item the same way (section 9).
 - None of this has run yet (no GitHub login).
 
 ## 6. App Translocation (quarantined apps run from a random read-only folder)
@@ -276,14 +283,32 @@ on the stick from Windows is not quarantined and opens with a plain double-click
 - CI builds an exFAT disk image (`hdiutil create -fs ExFAT -layout MBRSPUD`), lays it
   out like the stick (`Mac/Jukeoke.app`, `Library/`, `Recordings/`, `Settings/`),
   copies the app with `ditto`, re-verifies the signature and the minimum-macOS check
-  **on the stick copy**, and launches it from there twice: the executable directly
-  (exit code) and via `open` (like a double-click). Crash reports and the unified log
-  are collected (`scripts/ci-exfat-launch.sh`).
-- **Self-check contract with the app:** CI passes `JK_SELFCHECK_ARGS` (default
-  `--smoke-test`, the app's current unattended test mode) and expects the report in
-  `<stick>/Settings/` (default `smoke-test.json`, override `JK_SELFCHECK_REPORT`), exit
-  code 0 pass / 1 check failed / 2 UI never reported. When the full WORK_ORDER 4.10
-  self-check (`--self-check`?) exists, set `JK_SELFCHECK_ARGS` in `ci.yml`.
+  **on the stick copy**, approves Screen Recording for the stick copy in the runner's
+  TCC database (section 5), and launches it from there three times
+  (`scripts/ci-exfat-launch.sh`):
+  1. the **real self-check**, `--selfcheck --silent` (the flag is `--selfcheck`; `--silent`
+     plays digital silence instead of the -60 dBFS tone), as the executable directly,
+     which gives the exit code;
+  2. the same self-check through `open` (like a double-click);
+  3. the UI smoke test, `--smoke-test` (the web view renders; `smoke-test.json`).
+
+  Crash reports and the unified log are collected. Each self-check report
+  (`<stick>/Settings/selfcheck-<time>.txt`) is kept and judged by
+  `scripts/ci-selfcheck-verdict.sh`: all eight items must be `[ OK ]`, the report must
+  agree with the exit code, and a missing report, a missing item, a crash or a timeout
+  fails the step.
+- **The one tolerated failure:** if the only failed item is the Recorder's Screen
+  Recording permission (its detail starts "Screen Recording permission:"), the runner
+  could not grant the permission. The step then passes with a warning, and the job
+  summary says in bold that the recorder capture was not tested; the real test is the
+  self-check on the owner's MacBook.
+- **The step fails if the app bundle is missing.** The build step is supposed to
+  produce `dist/Mac/<name>.app`; there is no "skip while the app does not exist" any
+  more. A deliberate skip needs `JK_SKIP_EXFAT="<reason>"` (not set in `ci.yml`).
+- Environment: `JK_SELFCHECK_ARGS` (default `--selfcheck --silent`), `JK_SMOKE_ARGS`
+  (default `--smoke-test`), `JK_SELFCHECK_TIMEOUT` (default 240 s), `JK_EXFAT_GRANT=0`.
+- None of this has run yet (no GitHub login). The failure paths are covered by
+  `scripts/tests/test-ci-scripts.sh` with fake inputs.
 
 ## 10. Building on the MacBook without GitHub
 
@@ -297,12 +322,63 @@ It checks for Apple's Command Line Tools (opens Apple's installer and stops if t
 are missing; run it again afterwards), installs Rust (rustup, into `~/.cargo`) and
 Node 24 LTS (nodejs.org, checksum verified, into `~/.local/share/jukeoke-build-tools`)
 for the user only if missing, builds for Apple Silicon with minimum macOS 13.0, signs
-ad hoc, checks every binary's minimum macOS, and copies the result to
-`dist/Mac/Jukeoke.app` and `dist/Mac/Tools/sck_probe`. It never uses `sudo` and never
-edits shell profiles. Node 24 needs macOS 13.5 or newer (S30), which 13.6.9 meets.
-Options: `--no-install` (never install, just explain), `--skip-app`.
+ad hoc, checks every binary (minimum macOS, no API newer than 13.0, no path of this
+Mac: section 11), and copies the result to `dist/Mac/Jukeoke.app` and
+`dist/Mac/Tools/sck_probe`. It never uses `sudo` and never edits shell profiles. Node 24
+needs macOS 13.5 or newer (S30), which 13.6.9 meets.
+Options: `--no-install` (never install, just explain), `--skip-app`. If a check in
+step 7 stops the build and you are sure it is a false alarm, `JK_ALLOW_NEWER_API=1` or
+`JK_ALLOW_BUILD_PATHS=1` turns it into a warning (then please bring the log back).
 
-## 11. Sources
+## 11. Imported APIs newer than macOS 13.0, and build-machine paths
+
+**Trap 14 / D-37.** A binary built on macOS 15 can link a function, constant or class
+that macOS 13 does not have. If the reference is strong, dyld refuses to start the app
+on the MacBook ("Symbol not found"), although it runs on the CI runner. cpal 0.17 did
+exactly that with the macOS 14.2 process-tap API (D-37). `check-macos-minos.sh` cannot
+see it, because it only reads each binary's declared minimum.
+
+`scripts/check-macos-availability.sh` (with `scripts/check-macos-availability.py`):
+
+1. parses every header of the SDK's frameworks and `usr/include` for C functions,
+   constants, Objective-C classes and selectors, and records when each was introduced
+   (`API_AVAILABLE(macos(..))`, `__API_AVAILABLE`, `API_DEPRECATED(.., macos(..))`,
+   `__OSX_AVAILABLE_STARTING(__MAC_..)`, `NS_AVAILABLE[_MAC]`, `NS_CLASS_AVAILABLE`,
+   `CF_AVAILABLE`, `*_AVAILABLE_STARTING`, `availability(macos, introduced=..)`,
+   `API_AVAILABLE_BEGIN/END` regions). It refuses to continue if it finds fewer than 200
+   declarations newer than 13.0, or misses the canaries `AudioHardwareCreateProcessTap`
+   (14.2) and `SCContentSharingPicker` (14.0), so a broken parser cannot pass;
+2. reads every Mach-O in the bundle: `nm -m -u` (undefined symbols with the weak flag;
+   `dyld_info -imports` as a fallback), `otool -v -s __DATA __objc_selrefs` and
+   `__TEXT __cstring`;
+3. **fails** on a strong import of a symbol or an Objective-C class
+   (`_OBJC_CLASS_$_X`, `_OBJC_METACLASS_$_X`) introduced after 13.0, and lists for review
+   weak imports, selectors that every SDK declaration marks newer, and class or selector
+   names found as strings (objc2 looks classes up by name, and panics if one is missing).
+   Each REVIEW line must sit behind a runtime check (`available!(macos = 14.x)`).
+
+CI runs it as its own step after the build, on `dist/Mac`, and uploads the evidence
+(`ci-out/availability/`: the parsed SDK database, the raw `nm`/`otool` output per
+binary, the report). `build-mac.sh` runs it on the MacBook (step 7b).
+
+**It has never run on a real SDK or a real app.** It was unit-tested on Windows with
+hand-written header snippets and fake tool output, and the header parser ran on the 574
+real Apple `usr/include` headers that Zig 0.17.1 bundles (`lib/libc/include/any-darwin-any`) (1,103 annotated declarations,
+73 newer than 13.0, for example `malloc_type_malloc` 14.0 and
+`os_unfair_lock_lock_with_flags` 15.0). Framework headers (ScreenCaptureKit, CoreAudio,
+AppKit, WebKit) have only been seen as snippets. Known limits: `#if` branches are all
+read (a superset); functions whose names are all capitals with underscores are taken
+for macros; selectors are names only.
+
+**Build-machine paths.** `build-mac.sh` remaps the home folder, the checkout, the target
+folder and CARGO_HOME with `--remap-path-prefix` (in `CARGO_ENCODED_RUSTFLAGS`, which
+the Tauri CLI's cargo run inherits), builds with `JK_DIST_BUILD=1` and
+`CARGO_PROFILE_RELEASE_STRIP=debuginfo`, and then `scripts/check-macos-paths.sh` fails
+the build if the home folder or the checkout path appears anywhere in the bundle or in
+`sck_probe` (any case, UTF-8 or UTF-16). The Windows build has the same check
+(`app/scripts/build-windows.sh`). Never run on a Mac.
+
+## 12. Sources
 
 - S1 GitHub changelog, "GitHub Actions: macOS 14 runner image retirement", 2026-10-01: https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement/
 - S2 actions/runner-images README (image table): https://github.com/actions/runner-images

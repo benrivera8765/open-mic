@@ -531,6 +531,32 @@ fn check_key_change(core: &Core, tone_path: &Path, tmp: &Path) -> Item {
             if length_ok && pitch_ok { "" } else { " - WRONG" }
         ));
     }
+    // Real-time key change on this computer (WORK_ORDER 4.5): Rubber Band's speed and
+    // what "auto" picks from it. Informational (render-ahead never stutters); the
+    // measurement is kept for "auto" like the one made in the background.
+    let rate = jk_format::SongFile::open(tone_path).map(|s| s.manifest().sample_rate).unwrap_or(48_000);
+    match jk_engine::benchmark_realtime_factor(rate) {
+        Ok(f) => {
+            let how = match jk_engine::choose_key_mode(Some(f)) {
+                jk_engine::KeyMode::Realtime => "in real time",
+                jk_engine::KeyMode::Prerender => "by rendering ahead and caching",
+            };
+            parts.push(format!(
+                "Rubber Band runs {f:.1}x real time at {rate} Hz here, so \"auto\" changes keys {how} (threshold {:.0}x)",
+                jk_engine::AUTO_MIN_REALTIME_FACTOR
+            ));
+            let key = crate::keymode::bench_key(&crate::keymode::machine_id(), rate);
+            let a = core
+                .settings
+                .update(|s| {
+                    s.audio.key_benchmarks.insert(key.clone(), (f * 100.0).round() / 100.0);
+                })
+                .audio;
+            let me = crate::keymode::machine_id();
+            core.player.set_key_config(a.key_mode, crate::keymode::factors_for(&me, &a.key_benchmarks));
+        }
+        Err(e) => parts.push(format!("Rubber Band speed not measured: {e}")),
+    }
     let mut detail = parts.join("; ");
     if !ok {
         detail.push_str(". The key change does not give the right pitch or length on this computer: please bring this report back.");

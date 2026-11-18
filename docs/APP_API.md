@@ -130,6 +130,11 @@ newer roles are played per SONG_FORMAT's forward-compatibility rule.
   `not_loaded`. A change while paused is heard from the first frame after play.
 - `player_set_master(volume: number)` - 0..1, app setting, not saved in the song.
 - `player_state() -> PlayerState`
+- `player_diagnostics() -> Diagnostics | null` (added 2026-11-18, for soak tests and support):
+  the engine's counters and timings, `jk_engine::engine::Diagnostics` serialised as is
+  (`underruns`, `device_starved`, `min_lead_ms` = lowest render-ahead seen while playing,
+  `max_callback_us`, `worker_max_block_ms`, `worker_busy_s`, `inline_constructions`,
+  `cache_misses`...). Field names may change between versions; the UI does not use it.
 
 ```ts
 interface PlayerState {
@@ -142,8 +147,25 @@ interface PlayerState {
   clipped: boolean;          // output went above full scale since the last load / mix / master change (nothing limits it)
   device_starved: number;    // WASAPI device-side starvation events (OS scheduling glitches)
   output_peak_db: number[];  // per channel, last ~0.3 s, master included, dBFS; -120 = silence
+  key_mode: "realtime" | "prerender";   // how key changes are made now (WORKING ORDER 4.5)
+  key_preparing: { semitones: number; reason: "key" | "mix"; progress: number } | null;
+                             // prerender: a key (or, same key, a pitched-stem mix) being rendered
+                             // ahead; the previous key/mix plays until then. progress 0..1
+  key_note: string | null;   // prerender asked for but unavailable (no cache folder, disk error):
+                             // plain words; key changes then use the real-time path
 }
 ```
+
+Key change modes (WORK_ORDER 4.5, ARCHITECTURE section 4 "render ahead and cache"):
+`realtime` shifts in the render worker (heard about 0.3 s after the change).
+`prerender` renders the song's pitch path ahead into `<Settings>/cache/keys`; the
+previous key keeps playing until enough is rendered (5 s ahead with a renderer faster
+than 1.1x real time, otherwise to the end of the song), then the same 40 ms crossfade
+switches. In prerender mode the drum level stays live (unless "shift drums" is on);
+any other level change is rendered like a key (`reason: "mix"`). The UI shows
+"Preparing key +2… 40%" from `key_preparing`. After the song has ended, a new key is
+prepared from the start (where `player_play` restarts) and `key_preparing` clears as
+soon as it is ready there; the switch happens when play starts.
 
 `key_label` is "+2 semitones" / "original key" when the song has no detected key.
 `device.exclusive` is the mode actually open (exclusive may have fallen back to
@@ -162,7 +184,8 @@ Events:
   offsets are applied by the UI:
   `lyric_time = position_s - (song.lyrics_offset_ms + device_offset_ms) / 1000`, where
   `device_offset_ms` is `settings.audio.device_offsets_ms[device_id ?? "default"]`.
-- `playback://state`: a full `PlayerState`.
+- `playback://state`: a full `PlayerState`. Sent on a state or song change, and when
+  `key_mode`, `key_note` or `key_preparing` changes (progress in whole percent).
 - `playback://error`: `{ code, message }` (device lost, file unreadable...).
 
 ## 4. Output devices
@@ -193,7 +216,11 @@ interface AppSettings {
     library_sort: "title" | "artist" | "recent" | "key"; fullscreen_stage: boolean;
   };
   audio: { device_id: string | null; exclusive: boolean; master_volume: number;
-           device_offsets_ms: Record<string, number> };   // Bluetooth latency per device id ("default" = system default)
+           device_offsets_ms: Record<string, number>;     // Bluetooth latency per device id ("default" = system default)
+           key_mode: "auto" | "realtime" | "prerender";   // key change, see section 3
+           key_cache_mb: number;                          // key cache size cap (LRU), MB
+           key_benchmarks: Record<string, number> };      // written by the core: Rubber Band
+                                                          // real-time factor per "<computer>@<rate>"
 }
 ```
 
@@ -201,8 +228,14 @@ Defaults (core and UI agree): `skin` true, `bubbles` true, `motion` "system" (fo
 the OS reduce-motion preference), `lyrics_text_size` 56, `marker_position` 0.33,
 `colors` sung `#ff3d8b`, upcoming `#f6efd9`, marker `#7dffd8`, `library_sort` "title",
 `fullscreen_stage` false; `device_id` null, `exclusive` false, `master_volume` 1.0
-(unity), `device_offsets_ms` {}. Numbers are clamped (`lyrics_text_size` 12..400,
-`marker_position` 0.05..0.95, `master_volume` 0..1, offsets -5000..5000 ms). A value
+(unity), `device_offsets_ms` {}, `key_mode` "auto", `key_cache_mb` 1024,
+`key_benchmarks` {}. Numbers are clamped (`lyrics_text_size` 12..400,
+`marker_position` 0.05..0.95, `master_volume` 0..1, offsets -5000..5000 ms,
+`key_cache_mb` 64..65536; benchmarks must be positive, at most 32 kept). `key_mode`
+"auto" measures Rubber Band once per computer and sample rate (about 0.5 s, in the
+background at start-up for 44.1 and 48 kHz, otherwise at the first song of that rate),
+saves the factor in `key_benchmarks` (the computer part of the key is a hash, not its
+name) and uses `prerender` below 3x real time or while nothing is measured yet. A value
 of the wrong type, or an enum value this version does not know, falls back to its
 default on its own; unknown keys are kept, so a newer app sharing the stick loses
 nothing. Saves are debounced about 300 ms; an unreadable file is kept as
@@ -287,7 +320,9 @@ Event `recorder://level` about 20 times per second while recording: a `RecorderS
   chosen by the app. `lyrics` is `{ mode, text, lrc, source? }` and is passed to the
   Studio unchanged; the UI sets `source` to `"online:<service>"` when the text or LRC came
   from `studio_lyrics_lookup` (STUDIO_PROTOCOL section 7), so the song records where its
-  lyrics came from.
+  lyrics came from. `metadata` is `{ title, artist, album, cover_path? }`, also passed on
+  unchanged: `cover_path` absent keeps the file's own cover, `null` removes it, a path to
+  a JPEG / PNG picture replaces it (STUDIO_PROTOCOL section 7).
 - `studio_cancel(job_id)`
 - `studio_clear_finished()` **(added)** - removes done, failed and cancelled jobs from
   the queue.
@@ -296,6 +331,13 @@ Event `recorder://level` about 20 times per second while recording: a `RecorderS
   `models.download` results (STUDIO_PROTOCOL section 4) without the envelope.
 - `pick_files() -> string[]` (native file dialog: audio and video types) and drag-and-drop
   of files onto the window (Tauri drag-drop event `studio://dropped { paths }`).
+- `pick_cover_image() -> string | null` **(added)** - native file dialog for one JPEG or
+  PNG picture (the Studio form's "Replace cover"); null when cancelled.
+- `studio_cover_preview(path: string, max_px?: number) -> { data_url }` **(added)** - a
+  JPEG or PNG picture file (the inspected `cover_path`, or a picked picture) as a
+  thumbnail `data:` URL, at most `max_px` (default 256, 16..1024) on its longer side;
+  `bad_request` for anything that is not a JPEG or PNG picture (or over 64 MB),
+  `not_found` for a missing file.
 
 ```ts
 interface StudioStatus { available: boolean; reasons: string[]; running: boolean; models_present: boolean;
@@ -347,14 +389,17 @@ reader: the UI uses a field when present and degrades when it is absent.
 | Conventions | Argument names for object parameters: `metadata_save(song_id, metadata)`, `export_backing(song_id, options: { format })`, `studio_lyrics_lookup(query)`, `studio_submit(job)`, `selfcheck_run(user_agent, silent)`. The core also accepts the flat forms noted in each section. |
 | 1 | `AppInfo.identifier`, `mode`, `mode_reason`, `webview_version`, `translocation_help`; `capabilities.studio.checking`; `capabilities.recorder.permission_explanation`, `settings_url`, `backend`. Command `root_choose()`. Internal: `ping`, `smoke_report`. |
 | 3 | `player_set` returns the effective `SongSettings`. `PlayerState.clipped`, `device_starved`, `output_peak_db`. `key_label` uses "→". |
+| 3 | 2026-11-18: `player_diagnostics()` (engine counters for soak tests; not used by the UI). |
+| 3, 5 | Key change render-ahead fallback (WORK_ORDER 4.5): `PlayerState.key_mode`, `key_preparing`, `key_note`; settings `audio.key_mode`, `key_cache_mb`, `key_benchmarks`; `playback://state` also on key-preparation changes. |
 | 4 | `device_set`'s `exclusive` is optional (false); refusal of exclusive mode rejects with `exclusive_unavailable` after opening shared. |
 | 7 | `export_cancel(job_id)`. `export_backing` takes the format as `format` or inside `options`. `export://done` also carries `applied_gain_db` (negative when a Flac24 export was turned down to avoid clipping; 0 otherwise) and `peak` (largest absolute sample of the render before any export gain, linear). |
 | 8 | `recorder_start` returns a `RecorderStatus`; `recorder_request_permission` returns `{ permission }`. |
-| 9 | `StudioStatus.checking`; `StudioJob.stage_progress`, `error_code`; `studio_clear_finished()`; `studio_models_status(preset?)` / `studio_models_download(preset?)`; event `studio://status`. |
+| 9 | `StudioStatus.checking`; `StudioJob.stage_progress`, `error_code`; `studio_clear_finished()`; `studio_models_status(preset?)` / `studio_models_download(preset?)`; event `studio://status`. 2026-11-18: `pick_cover_image()`, `studio_cover_preview(path, max_px?)`, `metadata.cover_path` in `studio_submit`. |
 | 10 | `selfcheck_run`'s `silent`; internal `selfcheck_user_agent`. |
 
 The UI also uses the Tauri window API directly, outside this contract: full screen
 (`setFullscreen`, needs `core:window:allow-set-fullscreen` in
 `app/src-tauri/capabilities/default.json`) and the minimised state (`isMinimized` on
-resize, in `core:default`), which pauses the skin's animation because a web view does
-not always report a minimised window as a hidden page.
+resize, in `core:default`), which pauses the skin's animation and the lyrics ticker's
+frame loop because a web view does not always report a minimised window as a hidden
+page (WebView2 does not).

@@ -71,6 +71,15 @@ pub async fn player_state(state: State<'_, AppState>) -> ApiResult<PlayerState> 
     blocking(move || Ok(core.player.state())).await
 }
 
+/// `player_diagnostics() -> Diagnostics | null`: the engine's counters and timings
+/// (underruns, device_starved, min_lead_ms, max_callback_us, worker_max_block_ms...), for
+/// soak tests and support reports. Null when no engine is running.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn player_diagnostics(state: State<'_, AppState>) -> ApiResult<Option<jk_engine::engine::Diagnostics>> {
+    let core = state.core.clone();
+    blocking(move || Ok(core.player.engine().diagnostics())).await
+}
+
 #[derive(Serialize)]
 pub struct DeviceList {
     pub devices: Vec<DeviceInfo>,

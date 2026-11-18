@@ -8,6 +8,8 @@
 # self-check for the real test").
 #
 #   bash scripts/ci-sck-probe.sh [OUT_DIR]        (default: ci-out/sck)
+#   bash scripts/ci-sck-probe.sh --verdict CODE   (print what CI makes of a probe exit
+#                                                  code and exit with it; for the tests)
 #
 # Steps:
 #   1. Build the probe (crates/jk-recorder/examples/sck_probe.rs) unless
@@ -19,14 +21,52 @@
 #      TCC database (scripts/ci-grant-screen-capture.sh) and run again.
 #   5. Write a summary (also to the GitHub job summary).
 #
-# The job fails only for results that point at a bug in our code: a crash, an
-# internal error with permission granted, or a sample count that does not
-# match elapsed time. Environment limits (no permission possible, no audio
-# device on the VM, tone not heard) are reported as warnings, because the
-# real test is the owner's MacBook (self-check), not a VM.
+# Verdict: the step passes only when the probe captured audio, the sample count
+# matches elapsed time and the test tone came back (exit 0). The ONE exception is
+# "permission not granted" (exit 2) after the TCC.db approval was tried: the runner
+# cannot grant Screen Recording, which is reported as a warning in the log and in
+# the job summary, and the real capture test is the self-check on the owner's
+# MacBook. Everything else fails: an error or crash, no audio arriving (3), a
+# sample count that does not match elapsed time (4), the tone not coming back (5;
+# scripts/ci-mac-audio-device.sh gives the runner an output device first).
+# Skips only when explicitly disabled: JK_SKIP_SCK="<reason>".
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+
+describe() {
+    case "$1" in
+        0) echo "ok: audio captured, sample count matches elapsed time, tone came back" ;;
+        1) echo "error (see log)" ;;
+        2) echo "permission not granted" ;;
+        3) echo "stream started but no audio arrived" ;;
+        4) echo "sample count does not match elapsed time" ;;
+        5) echo "audio captured but the test tone did not come back" ;;
+        *) echo "crashed or killed (exit $1)" ;;
+    esac
+}
+
+# verdict CODE: the CI decision for the final probe exit code (0 pass, 3 warn, 1 fail).
+verdict() {
+    case "$1" in
+        0) echo "PASS: $(describe 0)"; return 0 ;;
+        2) echo "WARN: $(describe 2): the runner could not grant Screen Recording; the real capture test is the self-check on the owner's MacBook"; return 3 ;;
+        *) echo "FAIL: $(describe "$1")"; return 1 ;;
+    esac
+}
+
+if [ "${1:-}" = "--verdict" ]; then
+    verdict "${2:?--verdict needs an exit code}"
+    exit $?
+fi
+if [ -n "${JK_SKIP_SCK:-}" ]; then
+    echo "::notice::ScreenCaptureKit probe explicitly disabled: $JK_SKIP_SCK"
+    exit 0
+fi
+if [ "$(uname -s)" != Darwin ]; then
+    echo "::error::the ScreenCaptureKit probe needs macOS; this is $(uname -s)"
+    exit 1
+fi
 out="${1:-ci-out/sck}"
 mkdir -p "$out"
 summary="$out/SUMMARY.md"
@@ -47,7 +87,10 @@ if [ ! -x "$probe" ]; then
     codesign --force --sign - "$probe"
     echo "::endgroup::"
 fi
-bash scripts/check-macos-minos.sh --require-arm64 "$probe" | tee "$out/minos.txt"
+bash scripts/check-macos-minos.sh --require-arm64 "$probe" > "$out/minos.txt" 2>&1
+minos_code=$?
+cat "$out/minos.txt"
+[ "$minos_code" -eq 0 ] || echo "::error::sck_probe declares a minimum macOS newer than 13.0 (or no arm64 slice)"
 
 {
     echo "== sw_vers"; sw_vers
@@ -67,18 +110,6 @@ run_probe() { # $1 = label; prints exit code
     echo "exit code: $code"
     echo "::endgroup::"
     return "$code"
-}
-
-describe() {
-    case "$1" in
-        0) echo "ok: audio captured, sample count matches elapsed time, tone came back" ;;
-        1) echo "error (see log)" ;;
-        2) echo "permission not granted" ;;
-        3) echo "stream started but no audio arrived" ;;
-        4) echo "sample count does not match elapsed time" ;;
-        5) echo "audio captured but the test tone did not come back (no output device on the VM?)" ;;
-        *) echo "crashed or killed (exit $1)" ;;
-    esac
 }
 
 run_probe initial
@@ -108,7 +139,7 @@ line="$(grep -h '^SCK_PROBE ' "$out/probe-$final_label.log" 2>/dev/null | tail -
         echo "- after approving in TCC.db: exit $final - $(describe "$final")"
     fi
     if [ "$final" -eq 2 ]; then
-        echo "- **The runner could not grant the Screen Recording permission.** The real capture test is the self-check on the owner's MacBook."
+        echo "- **The runner could not grant the Screen Recording permission** (warning, not a failure). The real capture test is the self-check on the owner's MacBook."
     elif [ "$final" -ne 1 ] && [ "$final" -lt 128 ]; then
         echo "- permission: granted by $granted_by"
     fi
@@ -117,8 +148,13 @@ line="$(grep -h '^SCK_PROBE ' "$out/probe-$final_label.log" 2>/dev/null | tail -
 cat "$summary"
 [ -n "${GITHUB_STEP_SUMMARY:-}" ] && cat "$summary" >> "$GITHUB_STEP_SUMMARY"
 
-case "$final" in
+v="$(verdict "$final")"
+vcode=$?
+echo "- verdict: $v" | tee -a "$summary"
+[ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "- verdict: $v" >> "$GITHUB_STEP_SUMMARY"
+if [ "$minos_code" -ne 0 ]; then exit 1; fi
+case "$vcode" in
     0) exit 0 ;;
-    2|3|5) echo "::warning::sck_probe: $(describe "$final") - environment limit, not failing the job"; exit 0 ;;
-    *) echo "::error::sck_probe: $(describe "$final")"; exit 1 ;;
+    3) echo "::warning::sck_probe: $v"; exit 0 ;;
+    *) echo "::error::sck_probe: $v"; exit 1 ;;
 esac

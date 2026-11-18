@@ -106,6 +106,10 @@ export interface Api {
   // Additions the app core implements beyond APP_API v1 (optional here).
   /** macOS translocation: native folder picker for the stick's main folder, then restart. */
   rootChoose?(): Promise<{ ok: boolean; root: string | null; message: string }>;
+  /** Studio form: native dialog for one JPEG / PNG cover picture; null when cancelled. */
+  pickCoverImage?(): Promise<string | null>;
+  /** Studio form: a JPEG / PNG picture file (the inspected cover or a picked one) as a thumbnail. */
+  studioCoverPreview?(path: string, maxPx: number): Promise<CoverResult>;
   /** Tells the core the web engine's user agent (used by `--selfcheck` runs). */
   selfcheckUserAgent?(userAgent: string): Promise<void>;
   /** Stage 0 `--smoke-test` report; the core rejects it when not in that mode. */
@@ -206,6 +210,8 @@ export class TauriApi implements Api {
   studioModelsStatus = () => call<StudioModelsStatus>("studio_models_status");
   studioModelsDownload = () => call<void>("studio_models_download");
   pickFiles = () => call<string[]>("pick_files");
+  pickCoverImage = () => call<string | null>("pick_cover_image");
+  studioCoverPreview = (path: string, max_px: number) => call<CoverResult>("studio_cover_preview", { path, max_px });
   selfcheckRun = (user_agent: string, silent = false) => call<SelfCheckResult>("selfcheck_run", { user_agent, silent });
   rootChoose = () => call<{ ok: boolean; root: string | null; message: string }>("root_choose");
   selfcheckUserAgent = (user_agent: string) => call<void>("selfcheck_user_agent", { user_agent });

@@ -11,7 +11,22 @@
 
 ## What was copied (into `vendor/rubberband/`)
 
-Unmodified files only. Nothing under `vendor/rubberband/` has been edited.
+Unmodified upstream files, with **one exception**: `src/common/BQResampler.cpp` carries a
+small real-time-safety patch (2026-11-18, marked "Jukeoke patch" in the file, with a notice
+of changes at its top as GPL-2.0 section 2a asks):
+
+- `state_for_ratio` fills the state buffer with `assign()` instead of replacing it with a
+  newly constructed vector, so the capacity reserved by the constructor is reused;
+- in `RatioOftenChanging` mode (the one R3 uses in real time) the constructor reserves the
+  phase table for `rational_max + 16` entries instead of twice the sample rate.
+
+Before the patch, the first `process()` of every new stretcher on the render worker
+allocated (568 bytes) and freed (the reserved buffer) through `_aligned_malloc`, and one key
+at 44.1 kHz grew the phase table by 1.5 MB there. Found by `crates/jk-engine/tests/rt_alloc.rs`
+(counting allocator plus CRT import hooks). The output is unchanged: the 18 golden renders
+of `scripts/ci-render.sh` are byte-identical before and after, and the jk-dsp/jk-engine
+bit-identity tests pass. Re-apply it when updating Rubber Band (or drop it if upstream
+stops allocating there; the test will tell).
 
 - `COPYING`, `README.md`, `CHANGELOG`
 - `rubberband/` - the public headers

@@ -6,11 +6,13 @@
 //   - driven by the playback clock (state/app.ts `clock`), never by a timer;
 //   - at most 60 frames per second, even on 120 Hz displays;
 //   - stops completely when nothing moves (paused, no glide in progress) and while
-//     the window is hidden; clock events, seeks, resizes and setting changes restart it.
+//     the window is hidden or minimised (frameloop.ts); clock events, seeks, resizes
+//     and setting changes restart it.
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { Lyrics } from "../api/types";
 import { lineIndexAt, lineText } from "../lib/lyrics";
-import { clock, onClockKick } from "../state/app";
+import { clock, getApiSync, onClockKick } from "../state/app";
+import { FrameLoop, type MinimisedSource } from "./frameloop";
 import { layoutTicker, type Measure, type TickerLayout } from "./layout";
 import { TickerRenderer, type TickerStats, type TickerStyle } from "./renderer";
 import { type TickerVerifyReport, verifyTickerLayout } from "./verify";
@@ -26,8 +28,15 @@ export interface TickerProps {
   colors: { sung: string; upcoming: string; marker: string };
 }
 
-const FRAME_MS = 1000 / 60;
-const MIN_FRAME_MS = FRAME_MS - 2; // 60 fps cap with a little slack for timer jitter
+/** The native window's minimised signal (Tauri), or undefined (browser mock, tests). */
+function windowMinimisedSource(): MinimisedSource | undefined {
+  try {
+    const api = getApiSync();
+    return api.onWindowMinimised ? (cb) => api.onWindowMinimised!(cb) : undefined;
+  } catch {
+    return undefined; // no API yet
+  }
+}
 
 /** Debug/perf hook read by the headless screenshot script (scripts/screenshots.mjs). */
 declare global {
@@ -135,8 +144,21 @@ export function Ticker({ lyrics, offsetS, textSize, marker, colors }: TickerProp
     };
   }, []);
 
-  const loop = useRef({ raf: 0, last: 0 });
-  const kickRef = useRef<() => void>(() => undefined);
+  const loopRef = useRef<FrameLoop | null>(null);
+  if (!loopRef.current) {
+    loopRef.current = new FrameLoop({
+      requestFrame: (cb) => requestAnimationFrame(cb),
+      cancelFrame: (id) => cancelAnimationFrame(id),
+      doc: typeof document === "undefined" ? null : document,
+      onWindowMinimised: windowMinimisedSource(),
+    });
+  }
+  // Follows page visibility and the window's minimised state while mounted.
+  useEffect(() => {
+    const fl = loopRef.current!;
+    fl.attach();
+    return () => fl.detach();
+  }, []);
 
   useEffect(() => {
     const r = rendererRef.current;
@@ -153,18 +175,8 @@ export function Ticker({ lyrics, offsetS, textSize, marker, colors }: TickerProp
       worstLookahead: layout.worstLookahead,
       verify: () => verifyTickerLayout(layout),
     };
-    const st = loop.current;
-    const frame = (now: number) => {
-      st.raf = 0;
-      if (document.hidden) return;
-      if (now - st.last < MIN_FRAME_MS) {
-        st.raf = requestAnimationFrame(frame);
-        return;
-      }
-      // Advance the 60 fps schedule by whole frame periods instead of jumping to `now`:
-      // with `st.last = now` a 75 Hz screen drew every second refresh (37.5 fps) and a
-      // 144 Hz one 48 fps; this keeps 60 fps there too and never more on average.
-      st.last += FRAME_MS * Math.max(1, Math.floor((now - st.last) / FRAME_MS));
+    const fl = loopRef.current!;
+    fl.draw = (now) => {
       const t = clock.position(now) - offsetRef.current;
       r.draw(t);
       // Screen-reader line (changes once per line, not per frame).
@@ -173,31 +185,19 @@ export function Ticker({ lyrics, offsetS, textSize, marker, colors }: TickerProp
         lineRef.current = li;
         setLineIdx(li);
       }
-      if (clock.isAnimating(now)) st.raf = requestAnimationFrame(frame);
+      return clock.isAnimating(now);
     };
-    const kick = () => {
-      if (!st.raf && !document.hidden) st.raf = requestAnimationFrame(frame);
-    };
-    kickRef.current = kick;
-    kick();
-    const off = onClockKick(kick);
-    const onVis = () => {
-      if (document.hidden) {
-        cancelAnimationFrame(st.raf);
-        st.raf = 0;
-      } else kick();
-    };
-    document.addEventListener("visibilitychange", onVis);
+    fl.kick();
+    const off = onClockKick(fl.kick);
     return () => {
       off();
-      document.removeEventListener("visibilitychange", onVis);
-      cancelAnimationFrame(st.raf);
-      st.raf = 0;
+      fl.draw = null;
+      fl.stop();
     };
   }, [layout, style, size.w, size.h, size.dpr, lyrics]);
 
   // Offset changes move the text while paused: draw again.
-  useEffect(() => kickRef.current(), [offsetS]);
+  useEffect(() => loopRef.current?.kick(), [offsetS]);
 
   // Without a canvas, follow the current line with a slow timer instead of the frame loop.
   useEffect(() => {
