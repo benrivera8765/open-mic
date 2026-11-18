@@ -31,6 +31,7 @@
   /* The bundled lyrics face (Atkinson Hyperlegible Next, SIL OFL) for the ticker. */
   --ticker-font: "Atkinson Hyperlegible Next", system-ui, -apple-system, "Segoe UI", sans-serif;
   --ticker-weight: 700;
+  --page-weight: 800;
 }
 
 :root[data-skin="on"] body {

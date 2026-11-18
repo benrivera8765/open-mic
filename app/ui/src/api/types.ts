@@ -224,8 +224,10 @@ export interface Device {
 // ---------------------------------------------------------------------------
 
 export type MotionSetting = "system" | "reduce" | "full";
-/** How the lyrics ticker moves: "word" = smooth, paced by word (default); "letter" = exact, letter by letter. */
+/** How the lyrics move (the wipe or the ticker): "word" = smooth, paced by word (default); "letter" = exact, letter by letter. */
 export type LyricsMotion = "word" | "letter";
+/** How the lyrics are shown (D-218): "page" = static lines with a colour wipe (default); "scroll" = the scrolling ticker. */
+export type LyricsDisplay = "page" | "scroll";
 export type LibrarySort = "title" | "artist" | "recent" | "key";
 
 export interface AppSettings {
@@ -235,10 +237,14 @@ export interface AppSettings {
     motion: MotionSetting;
     /** CSS px at 1440x900, scaled with the window. */
     lyrics_text_size: number;
-    /** 0..1 from the left, default 0.33. */
+    /** 0..1 from the left, default 0.33 (scrolling ticker only). */
     marker_position: number;
-    /** Ticker pace (D-216): "word" (default) or "letter" (the letter-exact motion of D-94/D-95). */
+    /** Pace of the wipe or the ticker (D-216): "word" (default) or "letter" (the letter-exact motion of D-94/D-95). */
     lyrics_motion: LyricsMotion;
+    /** "page" (static lines with a colour wipe, default since D-218) or "scroll" (the ticker). */
+    lyrics_display: LyricsDisplay;
+    /** Page display: preview the next line under the current one (default true). */
+    show_next_line: boolean;
     colors: { sung: string; upcoming: string; marker: string };
     library_sort: LibrarySort;
     fullscreen_stage: boolean;

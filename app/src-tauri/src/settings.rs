@@ -44,6 +44,32 @@ pub enum LyricsMotion {
     Letter,
 }
 
+/// How the lyrics are shown on the Stage (docs/APP_API.md section 5; DECISIONS.md D-218).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LyricsDisplay {
+    /// Static lines with a colour wipe: the current line stands still and the sung
+    /// colour sweeps through it; the next line is previewed underneath. The owner's
+    /// choice of 18 Nov 2026.
+    #[default]
+    Page,
+    /// The scrolling ticker: one line moving under a fixed marker (D-04).
+    Scroll,
+}
+
+/// Lyrics colours of every version before D-218 (hot pink sung, cream upcoming). A
+/// settings file written before `ui.lyrics_display` existed that still holds one of these
+/// exact values never chose it: it gets the new default instead (see `migrate_colors`).
+pub const PREVIOUS_DEFAULT_SUNG: &str = "#ff3d8b";
+pub const PREVIOUS_DEFAULT_UPCOMING: &str = "#f6efd9";
+/// Defaults since D-218: warm gold sung, white upcoming (the owner's reference video).
+pub const DEFAULT_SUNG: &str = "#ffc21a";
+pub const DEFAULT_UPCOMING: &str = "#f4f4f4";
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LibrarySort {
@@ -85,9 +111,15 @@ pub struct UiSettings {
     pub lyrics_text_size: f64,
     /// 0..1 from the left.
     pub marker_position: f64,
-    /// Ticker pace: "word" (default) or "letter".
+    /// Pace of the lyrics (the wipe or the ticker): "word" (default) or "letter".
     #[serde(default)]
     pub lyrics_motion: LyricsMotion,
+    /// "page" (static lines with a colour wipe, default) or "scroll" (the ticker).
+    #[serde(default)]
+    pub lyrics_display: LyricsDisplay,
+    /// Page display: preview the next line under the current one.
+    #[serde(default = "default_true")]
+    pub show_next_line: bool,
     pub colors: Colors,
     pub library_sort: LibrarySort,
     pub fullscreen_stage: bool,
@@ -137,11 +169,14 @@ impl Default for AppSettings {
                 lyrics_text_size: 56.0,
                 marker_position: 0.33,
                 lyrics_motion: LyricsMotion::Word,
+                lyrics_display: LyricsDisplay::Page,
+                show_next_line: true,
                 colors: Colors {
-                    sung: "#ff3d8b".into(),
-                    upcoming: "#f6efd9".into(),
-                    // Mint, not the sung pink: the marker must stand out against
-                    // the pink letters it has just passed (same as the UI default).
+                    sung: DEFAULT_SUNG.into(),
+                    upcoming: DEFAULT_UPCOMING.into(),
+                    // Mint, not the sung colour: the scrolling ticker's marker must
+                    // stand out against the letters it has just passed (same as the UI
+                    // default). The page display has no marker.
                     marker: "#7dffd8".into(),
                     extra: Map::new(),
                 },
@@ -219,8 +254,29 @@ impl AppSettings {
                 AppSettings::default()
             }
         };
+        // A file written before the page display existed (no `ui.lyrics_display`) holds
+        // every colour it ever had, chosen or not: every earlier version wrote the whole
+        // settings object on its first save.
+        if file.get("ui").and_then(|u| u.get("lyrics_display")).is_none() {
+            s.migrate_colors();
+        }
         s.sanitize();
         (s, warnings)
+    }
+
+    /// D-218: the sung and upcoming colours of every earlier version (hot pink, cream)
+    /// were the defaults, so a file written before `ui.lyrics_display` existed that still
+    /// holds exactly one of them never chose it; it gets the new default (gold, white).
+    /// A colour the owner did choose is kept. After the next save the file carries
+    /// `ui.lyrics_display`, so this runs once: an old colour chosen again later stays.
+    pub fn migrate_colors(&mut self) {
+        let c = &mut self.ui.colors;
+        if c.sung.trim().eq_ignore_ascii_case(PREVIOUS_DEFAULT_SUNG) {
+            c.sung = DEFAULT_SUNG.into();
+        }
+        if c.upcoming.trim().eq_ignore_ascii_case(PREVIOUS_DEFAULT_UPCOMING) {
+            c.upcoming = DEFAULT_UPCOMING.into();
+        }
     }
 }
 
@@ -253,6 +309,7 @@ fn typed_ok(path: &str, v: &Value) -> bool {
         "ui.motion" => serde_json::from_value::<Motion>(v.clone()).is_ok(),
         "ui.library_sort" => serde_json::from_value::<LibrarySort>(v.clone()).is_ok(),
         "ui.lyrics_motion" => serde_json::from_value::<LyricsMotion>(v.clone()).is_ok(),
+        "ui.lyrics_display" => serde_json::from_value::<LyricsDisplay>(v.clone()).is_ok(),
         "audio.key_mode" => serde_json::from_value::<KeyModeSetting>(v.clone()).is_ok(),
         _ if path.starts_with("audio.device_offsets_ms.") => v.is_number(),
         _ if path.starts_with("audio.key_benchmarks.") => v.is_number(),
@@ -517,6 +574,112 @@ mod tests {
     }
 
     #[test]
+    fn lyrics_display_defaults_to_page_and_unknown_values_reset_alone() {
+        let v = serde_json::to_value(AppSettings::default()).unwrap();
+        assert_eq!(v["ui"]["lyrics_display"], json!("page"));
+        assert_eq!(v["ui"]["show_next_line"], json!(true));
+        assert_eq!(v["ui"]["colors"]["sung"], json!("#ffc21a"));
+        assert_eq!(v["ui"]["colors"]["upcoming"], json!("#f4f4f4"));
+        assert_eq!(v["ui"]["colors"]["marker"], json!("#7dffd8"));
+        // A file from before the setting existed: the new default, no warning.
+        let (s, warnings) = AppSettings::from_json_lenient(r#"{"ui": {"bubbles": false}}"#);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(s.ui.lyrics_display, LyricsDisplay::Page);
+        assert!(s.ui.show_next_line);
+        // The scrolling ticker and a hidden next line are kept.
+        let (s, _) = AppSettings::from_json_lenient(
+            r#"{"ui": {"lyrics_display": "scroll", "show_next_line": false}}"#,
+        );
+        assert_eq!(s.ui.lyrics_display, LyricsDisplay::Scroll);
+        assert!(!s.ui.show_next_line);
+        // A value this version does not know (or of the wrong type) falls back alone.
+        let (s, warnings) = AppSettings::from_json_lenient(
+            r#"{"ui": {"lyrics_display": "karaoke3d", "show_next_line": "no", "bubbles": false}}"#,
+        );
+        assert_eq!(s.ui.lyrics_display, LyricsDisplay::Page);
+        assert!(s.ui.show_next_line);
+        assert!(!s.ui.bubbles);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        // settings_set takes "scroll" and refuses an unknown name without changing anything.
+        let dir = scratch("lyrics-display");
+        let store = SettingsStore::load_with_delay(&dir, Duration::from_millis(50));
+        let s = store
+            .set(&json!({"ui": {"lyrics_display": "scroll", "show_next_line": false}}))
+            .unwrap();
+        assert_eq!(s.ui.lyrics_display, LyricsDisplay::Scroll);
+        assert!(store.set(&json!({"ui": {"lyrics_display": "ticker"}})).is_err());
+        assert_eq!(store.get().ui.lyrics_display, LyricsDisplay::Scroll);
+        assert!(!store.get().ui.show_next_line);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn previous_default_colours_migrate_once_and_chosen_colours_stay() {
+        // The owner's settings.json as every earlier version wrote it (dist/Settings,
+        // 18 Nov 2026): the previous default colours, no lyrics_display, no lyrics_motion.
+        let owner = r##"{"ui": {"skin": true, "bubbles": true, "motion": "system",
+            "lyrics_text_size": 56.0, "marker_position": 0.33,
+            "colors": {"sung": "#ff3d8b", "upcoming": "#f6efd9", "marker": "#7dffd8"},
+            "library_sort": "title", "fullscreen_stage": false},
+            "audio": {"device_id": null, "exclusive": false, "master_volume": 1.0,
+            "device_offsets_ms": {}, "key_mode": "auto", "key_cache_mb": 1024.0,
+            "key_benchmarks": {"windows-x86_64-38c7d06324e5@44100": 9.06,
+                               "windows-x86_64-38c7d06324e5@48000": 8.27}}}"##;
+        let (s, warnings) = AppSettings::from_json_lenient(owner);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(s.ui.colors.sung, DEFAULT_SUNG, "previous default -> new default");
+        assert_eq!(s.ui.colors.upcoming, DEFAULT_UPCOMING);
+        assert_eq!(s.ui.colors.marker, "#7dffd8", "marker default unchanged");
+        assert_eq!(s.ui.lyrics_display, LyricsDisplay::Page);
+        assert_eq!(s.ui.lyrics_motion, LyricsMotion::Word);
+        assert_eq!(s.audio.key_benchmarks.len(), 2, "nothing else lost");
+        assert_eq!(s.audio.key_benchmarks["windows-x86_64-38c7d06324e5@48000"], 8.27);
+        assert_eq!(s.ui.lyrics_text_size, 56.0);
+        // Same check ignoring case (the colour picker writes lower case; a hand edit may not).
+        let (s, _) = AppSettings::from_json_lenient(
+            r##"{"ui": {"colors": {"sung": "#FF3D8B", "upcoming": "#F6EFD9"}}}"##,
+        );
+        assert_eq!((s.ui.colors.sung.as_str(), s.ui.colors.upcoming.as_str()), (DEFAULT_SUNG, DEFAULT_UPCOMING));
+        // A colour the owner chose is kept; only the other one migrates.
+        let (s, _) = AppSettings::from_json_lenient(
+            r##"{"ui": {"colors": {"sung": "#00ff00", "upcoming": "#f6efd9", "marker": "#ffffff"}}}"##,
+        );
+        assert_eq!(s.ui.colors.sung, "#00ff00");
+        assert_eq!(s.ui.colors.upcoming, DEFAULT_UPCOMING);
+        assert_eq!(s.ui.colors.marker, "#ffffff");
+        // Written by this version (it has lyrics_display): the old pink was chosen again
+        // on purpose and stays.
+        let (s, _) = AppSettings::from_json_lenient(
+            r##"{"ui": {"lyrics_display": "scroll", "colors": {"sung": "#ff3d8b", "upcoming": "#f6efd9"}}}"##,
+        );
+        assert_eq!(s.ui.colors.sung, PREVIOUS_DEFAULT_SUNG);
+        assert_eq!(s.ui.colors.upcoming, PREVIOUS_DEFAULT_UPCOMING);
+        // Through the store: the owner's file loads with the new look, the first save
+        // writes lyrics_display and the new colours, and everything else survives.
+        let dir = scratch("colour-migration");
+        std::fs::write(dir.join(FILE_NAME), owner).unwrap();
+        let store = SettingsStore::load_with_delay(&dir, Duration::from_millis(50));
+        assert_eq!(store.get().ui.colors.sung, DEFAULT_SUNG);
+        store.set(&json!({"ui": {"bubbles": false}})).unwrap();
+        store.flush();
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(on_disk["ui"]["lyrics_display"], json!("page"));
+        assert_eq!(on_disk["ui"]["colors"]["sung"], json!(DEFAULT_SUNG));
+        assert_eq!(on_disk["ui"]["bubbles"], json!(false));
+        assert_eq!(on_disk["audio"]["key_benchmarks"]["windows-x86_64-38c7d06324e5@44100"], json!(9.06));
+        // The owner then picks the old pink on purpose: kept after a reload.
+        store.set(&json!({"ui": {"colors": {"sung": "#ff3d8b"}}})).unwrap();
+        drop(store);
+        let again = SettingsStore::load(&dir);
+        assert_eq!(again.get().ui.colors.sung, PREVIOUS_DEFAULT_SUNG);
+        assert_eq!(again.get().ui.colors.upcoming, DEFAULT_UPCOMING);
+        drop(again);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn set_deep_merges_clamps_and_saves_atomically() {
         let dir = scratch("set");
         let store = SettingsStore::load_with_delay(&dir, Duration::from_millis(50));
@@ -525,7 +688,7 @@ mod tests {
                           "audio": {"master_volume": 0.5, "device_offsets_ms": {"bt": 180}}}))
             .unwrap();
         assert_eq!(s.ui.colors.sung, "#123456");
-        assert_eq!(s.ui.colors.upcoming, "#f6efd9", "sibling keys kept");
+        assert_eq!(s.ui.colors.upcoming, DEFAULT_UPCOMING, "sibling keys kept");
         assert_eq!(s.ui.marker_position, 0.95, "clamped");
         assert_eq!(s.audio.device_offsets_ms["bt"], 180.0);
         store.flush();

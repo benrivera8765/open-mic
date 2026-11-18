@@ -61,7 +61,13 @@ const shots = [
   ["stage-1280x800", "?song=0&at=10.4", W1280],
   ["stage-3840x2160", "?song=0&at=10.4", W4K],
   ["stage-1440x900-retina", "?song=0&at=10.4", { ...W1440, dpr: 2 }],
-  ["stage-break-countdown-1440x900", "?song=0&at=37.5", W1440],
+  ["stage-break-countdown-1440x900", "?song=0&at=40", W1440],
+  // The page display (default since D-218): a lead-in bar before a line, a line change.
+  ["stage-lead-in-1440x900", "?song=0&at=79", W1440],
+  ["stage-line-change-1440x900", "?song=0&at=12.5", W1440],
+  // The scrolling ticker (settings.ui.lyrics_display "scroll").
+  ["stage-scroll-1440x900", "?lyricsdisplay=scroll&song=0&at=10.4", W1440],
+  ["stage-scroll-break-countdown-1440x900", "?lyricsdisplay=scroll&song=0&at=37.5", W1440],
   ["stage-intro-countdown-1440x900", "?song=0&at=2", W1440],
   ["stage-accents-1440x900", "?song=1&at=11", W1440],
   ["stage-fullscreen-1440x900", "?song=0&at=10.4&fullscreen=1", W1440],
@@ -114,24 +120,24 @@ for (const [name, query, vp, steps] of shots) {
   await ctx.close();
 }
 
-// --- letter under the marker with real fonts (Edge's text measurement) -------------
+// --- the layout's own check with real fonts (Edge's text measurement), both displays ---
 report.realFontTicker = [];
-for (const vp of [W1280, W1440, W4K]) {
+for (const display of ["page", "scroll"]) for (const vp of [W1280, W1440, W4K]) {
   for (const song of [0, 1, 2]) {
     const ctx = await browser.newContext({ viewport: vp, deviceScaleFactor: 1 });
     const page = await ctx.newPage();
-    await page.goto(base + `?song=${song}&at=1`);
+    await page.goto(base + `?lyricsdisplay=${display}&song=${song}&at=1`);
     await page.waitForFunction(() => window.__jkTicker && window.__jkTicker.glyphs > 0, null, { timeout: 10000 });
     const r = await page.evaluate(() => {
       const v = window.__jkTicker.verify();
       return { ...v, title: document.querySelector(".stage__title")?.textContent };
     });
-    const row = { viewport: `${vp.width}x${vp.height}`, ...r };
+    const row = { display, viewport: `${vp.width}x${vp.height}`, ...r };
     report.realFontTicker.push(row);
     console.log(
-      `real fonts ${row.viewport.padEnd(10)} ${String(row.title).padEnd(30)} sung samples ${row.sungSamples}, wrong letter ${row.wrongLetter}, backwards ${row.backwards}, too fast ${row.tooFast}, lookahead misses ${row.lookaheadMisses}, min lookahead ${row.minLookaheadS.toFixed(2)} s, font ${row.fontPx.toFixed(1)} px (x${row.fontScale.toFixed(2)}), max ${row.maxSpeedEm.toFixed(1)} em/s`,
+      `real fonts ${display.padEnd(6)} ${row.viewport.padEnd(10)} ${String(row.title).padEnd(30)} sung samples ${row.sungSamples}, wrong letter ${row.wrongLetter}, backwards ${row.backwards}, too fast ${row.tooFast}, lookahead misses ${row.lookaheadMisses}, min lookahead ${row.minLookaheadS.toFixed(2)} s, font ${row.fontPx.toFixed(1)} px (x${row.fontScale.toFixed(2)}), max ${row.maxSpeedEm.toFixed(1)} em/s`,
     );
-    if (row.wrongLetter || row.backwards || row.tooFast || row.lookaheadMisses) report.problems.push(`real-font ticker check failed for ${row.title} at ${row.viewport}: ${row.firstProblems.join("; ")}`);
+    if (row.wrongLetter || row.backwards || row.tooFast || row.lookaheadMisses || row.overflowFrames || row.hiddenFrames || row.leadInProblems || row.switchProblems) report.problems.push(`real-font ${display} check failed for ${row.title} at ${row.viewport}: ${row.firstProblems.join("; ")}`);
     await ctx.close();
   }
 }

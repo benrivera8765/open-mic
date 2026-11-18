@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Advance widths of the skin's lyrics face, Atkinson Hyperlegible Next at weight 700 (SIL OFL,
+// Advance widths of the skin's lyrics face, Atkinson Hyperlegible Next at weight 700 (the
+// scrolling ticker) and 800 (the page display, D-218) (SIL OFL,
 // bundled in src/assets/fonts), for tests that need the real app's text widths without a
 // browser. Measured with CanvasRenderingContext2D.measureText at 100 px in headless Microsoft
 // Edge 157.0.4341.60 (the WebView2 engine) from the bundled woff2; advances scale linearly with
 // the font size (26 letters at 33.6 px: 458.42 px measured, 458.56 px scaled). Covers printable
 // ASCII, Latin-1 letters and typographic quotes and dashes; other graphemes fall back to
-// `fallback`. Units: thousandths of an em.
+// `fallback`. Units: thousandths of an em. The 800 table was measured the same way on
+// 18 Nov 2026 (Edge 157.0.0.0 headless; the 700 table re-measured then was unchanged).
 import type { Measure } from "./layout";
 
 const CHARS = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ‘’“”–—…";
@@ -23,10 +25,26 @@ const ADVANCE = [
   269, 479, 479, 501, 832, 780,
 ];
 
-const TABLE = new Map<string, number>([...CHARS].map((c, i) => [c, ADVANCE[i] / 1000]));
+const ADVANCE_800 = [
+  330, 315, 430, 820, 618, 993, 726, 234, 351, 351, 486, 595, 299, 377, 300, 464,
+  664, 456, 593, 611, 628, 617, 638, 549, 627, 560, 300, 299, 577, 611, 577, 577,
+  784, 702, 659, 665, 700, 613, 574, 731, 709, 434, 585, 681, 558, 878, 733, 756,
+  647, 766, 668, 618, 628, 688, 669, 901, 713, 684, 624, 352, 464, 352, 596, 412,
+  310, 561, 613, 523, 612, 576, 389, 610, 585, 326, 266, 587, 347, 899, 585, 590,
+  613, 612, 406, 526, 398, 580, 562, 766, 566, 555, 527, 400, 266, 400, 529, 702,
+  702, 702, 702, 702, 702, 1001, 665, 613, 613, 613, 613, 434, 434, 434, 434, 720,
+  733, 756, 756, 756, 756, 756, 543, 756, 688, 688, 688, 688, 684, 647, 640, 561,
+  561, 561, 561, 561, 561, 883, 523, 576, 576, 576, 576, 326, 326, 326, 340, 599,
+  585, 590, 590, 590, 590, 590, 595, 590, 580, 580, 580, 580, 555, 613, 555, 285,
+  285, 518, 518, 497, 834, 830,
+];
 
-/** Width of a grapheme in the lyrics face; `fallback` for graphemes outside the table. */
-export function lyricsFaceMeasure(fallback: Measure): Measure {
+const table = (adv: number[]) => new Map<string, number>([...CHARS].map((c, i) => [c, adv[i] / 1000]));
+const TABLES = { 700: table(ADVANCE), 800: table(ADVANCE_800) };
+
+/** Width of a grapheme in the lyrics face at weight 700 or 800; `fallback` for graphemes outside the table. */
+export function lyricsFaceMeasure(fallback: Measure, weight: 700 | 800 = 700): Measure {
+  const TABLE = TABLES[weight];
   return (text, fontPx) => {
     let em = 0;
     for (const ch of text) {

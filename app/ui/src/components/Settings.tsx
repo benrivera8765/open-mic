@@ -1,21 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Settings: look (skin, bubbles, motion), lyrics (motion, text size, marker position,
-// colours), timing offsets per output device, and information about this computer.
+// Settings: look (skin, bubbles, motion), lyrics (display, next line, motion, text size,
+// marker position, colours), timing offsets per output device, and information about
+// this computer.
 // Saved by the core into <root>/Settings/settings.json.
-import type { KeyModeSetting, LyricsMotion, MotionSetting } from "../api/types";
+import type { KeyModeSetting, LyricsDisplay, LyricsMotion, MotionSetting } from "../api/types";
 import { DEFAULT_APP_SETTINGS } from "../api/defaults";
 import { formatOffset } from "../lib/format";
 import { changeSettings, deviceOffsetKey, setOverlay, useApp } from "../state/app";
 import { Section, Select, Slider, Toggle, useId } from "./common";
 
-function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+function ColorField({ label, value, onChange, disabled }: { label: string; value: string; onChange: (v: string) => void; disabled?: boolean }) {
   const id = useId("color");
   return (
     <div class="field field--color">
       <label for={id} class="field__label">
         {label}
       </label>
-      <input id={id} type="color" value={value} onInput={(e) => onChange((e.currentTarget as HTMLInputElement).value)} />
+      <input id={id} type="color" value={value} disabled={disabled} onInput={(e) => onChange((e.currentTarget as HTMLInputElement).value)} />
       <code class="field__value">{value}</code>
     </div>
   );
@@ -33,6 +34,8 @@ export function Settings() {
   const currentKey = deviceOffsetKey(settings);
   const deviceName = (key: string) => (key === "default" ? "System default output" : (devices.find((d) => d.id === key)?.name ?? key));
   const offsetKeys = [...new Set([currentKey, ...Object.keys(offsets)])];
+  /** The page display (static lines) has no marker. */
+  const page = (ui.lyrics_display ?? "page") === "page";
 
   return (
     <div class="settings">
@@ -49,10 +52,27 @@ export function Settings() {
           ]}
           onChange={(v) => changeSettings({ ui: { motion: v } })}
         />
-        <p class="hint">The lyrics always move (that is how they show where the song is); reducing motion turns off the decorative animation.</p>
+        <p class="hint">The lyrics always show where the song is (the colour wipe, or the moving ticker); reducing motion turns off the decorative animation.</p>
       </Section>
 
       <Section title="Lyrics">
+        <Select<LyricsDisplay>
+          label="Lyrics display"
+          value={page ? "page" : "scroll"}
+          options={[
+            { value: "page", label: "Static lines with a colour wipe" },
+            { value: "scroll", label: "Scrolling ticker" },
+          ]}
+          onChange={(v) => changeSettings({ ui: { lyrics_display: v } })}
+        />
+        <p class="hint">Static lines: each line stands still and the sung colour sweeps through it word by word; a small bar before a line runs out when it is time to sing. Scrolling ticker: one line of text slides under a fixed marker.</p>
+        <Toggle
+          label="Show the next line"
+          checked={ui.show_next_line ?? true}
+          disabled={!page}
+          onChange={(v) => changeSettings({ ui: { show_next_line: v } })}
+          hint={page ? "Smaller, under the line being sung, so you can read ahead." : "Static lines only (the ticker shows what is coming by itself)."}
+        />
         <Select<LyricsMotion>
           label="Lyrics motion"
           value={ui.lyrics_motion ?? "word"}
@@ -62,22 +82,23 @@ export function Settings() {
           ]}
           onChange={(v) => changeSettings({ ui: { lyrics_motion: v } })}
         />
-        <p class="hint">Smooth: the words glide under the marker without stopping, slower for a held word and faster for quick ones, and each word reaches the marker as it is sung. Exact: every letter is under the marker exactly while it is sung, which makes the text speed up and slow down within words.</p>
+        <p class="hint">For both displays: how the colour wipe moves through a line, or how the ticker moves under the marker. Smooth: it never stops while a line is sung, slower for a held word and faster for quick ones, and each word is reached as it is sung. Exact: every letter is reached exactly while it is sung, which makes it speed up and slow down within words.</p>
         <Slider label="Text size" value={ui.lyrics_text_size} min={28} max={120} step={2} format={(v) => `${v} px`} onInput={(v) => changeSettings({ ui: { lyrics_text_size: v } }, 300)} />
-        <p class="hint">Measured on a 1440 × 900 window and scaled with the window. If a fast passage would not leave at least 2 seconds of upcoming words on screen, the text is made smaller for that song.</p>
+        <p class="hint">Measured on a 1440 × 900 window and scaled with the window. Static lines: a line too long for the screen is made smaller or split over two rows. Ticker: if a fast passage would not leave at least 2 seconds of upcoming words on screen, the text is made smaller for that song.</p>
         <Slider
           label="Marker position (from the left)"
           value={Math.round(ui.marker_position * 100)}
           min={15}
           max={60}
           step={1}
-          format={(v) => `${v} %`}
+          disabled={page}
+          format={(v) => (page ? `${v} % (ticker only)` : `${v} %`)}
           onInput={(v) => changeSettings({ ui: { marker_position: v / 100 } }, 300)}
         />
         <div class="settings__colors">
           <ColorField label="Sung" value={ui.colors.sung} onChange={(v) => changeSettings({ ui: { colors: { sung: v } } }, 300)} />
           <ColorField label="Coming up" value={ui.colors.upcoming} onChange={(v) => changeSettings({ ui: { colors: { upcoming: v } } }, 300)} />
-          <ColorField label="Marker" value={ui.colors.marker} onChange={(v) => changeSettings({ ui: { colors: { marker: v } } }, 300)} />
+          <ColorField label="Marker" value={ui.colors.marker} disabled={page} onChange={(v) => changeSettings({ ui: { colors: { marker: v } } }, 300)} />
           <button type="button" class="button button--small" onClick={() => changeSettings({ ui: { colors: { ...DEFAULT_APP_SETTINGS.ui.colors } } })}>
             Default colours
           </button>
