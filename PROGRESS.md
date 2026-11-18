@@ -56,7 +56,7 @@ Read this first in every session. Then DECISIONS.md, then docs/ARCHITECTURE.md.
 
 ## In flight
 
-- Nothing.
+- Workflow `jukeoke-last-fixes` (wf_de597ec0-2b4): the independent HANDOFF review (commit 519dad5) found that the app cannot download the Clean/Permissive preset weights and that the preset hints contradict the measurements; fixing both, making key-cache progress monotonic, driving never-clicked features in the real app (make-from-recording, re-align, cover path, drag-drop event), rebuilding dist, re-running local CI; then a verifier. After it: apply its HANDOFF changes, commit, delete the hourly cron.
 
 ## Next (needs the owner; see HANDOFF.md section 8)
 
