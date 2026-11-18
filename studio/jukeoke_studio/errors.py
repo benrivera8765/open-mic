@@ -78,6 +78,21 @@ class BadRequest(StudioError):
     code = "bad_request"
 
 
+#: Codes that describe the user's file, choices or computer, not a fault in the Studio:
+#: logged as one WARNING line without a traceback (D-173). Anything else (``internal``,
+#: ``write_failed``, an exception that is not a StudioError) keeps its traceback.
+EXPECTED_CODES = frozenset({
+    "decode_failed", "not_found", "lyrics_missing", "alignment_failed", "models_missing",
+    "model_checksum", "bad_request", "unknown_type", "protocol_mismatch", "lookup_failed",
+    "out_of_memory",
+})
+
+
+def is_expected(err: BaseException) -> bool:
+    """True for a StudioError whose code is in :data:`EXPECTED_CODES`."""
+    return isinstance(err, StudioError) and err.code in EXPECTED_CODES
+
+
 class Hooks:
     """Progress and cooperative cancellation for one job.
 

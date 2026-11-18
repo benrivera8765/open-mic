@@ -136,8 +136,11 @@ jk_recorder::MACOS_SCREEN_RECORDING_SETTINGS_URL;
 ```
 
 `Recorder` is `Send + Sync`; the Objective-C objects live on a private thread. The
-Windows WASAPI loopback backend is a stub (`NotImplemented`) with the contract written
-in `src/platform/windows.rs`; it reuses the same `pipeline` (timeline, meter, writer).
+Windows backend (`src/platform/windows.rs`, WASAPI loopback) is implemented and tested on
+Windows (DECISIONS D-70 to D-76, docs/benchmarks/recorder.md) and shares the same
+`pipeline` (timeline, meter, writer). The app drives either backend through
+`app/src-tauri/src/recorder.rs` (APP_API section 8) and the self-check's three-second
+capture; on macOS that path is type-checked only, like the backend itself.
 
 Self-check tool: `sck_probe` (an example in the crate; `build-mac.sh` puts it in
 `dist/Mac/Tools/sck_probe`):

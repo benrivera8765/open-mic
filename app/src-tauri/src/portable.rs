@@ -64,6 +64,15 @@ pub const WEBVIEW_WINDOWS_DIR: &str = "webview-windows";
 pub const DEV_ENV_VAR: &str = "JK_BUILD";
 /// Sub-folder of `$JK_BUILD` used as the data root in developer mode.
 pub const DEV_DATA_DIR: &str = "dev-data";
+/// This crate's folder in the source tree, for the developer-machine fallbacks (the
+/// dev-mode Studio and the demo song from `tests/fixtures`). The shipped build
+/// (app/scripts/build-windows.sh) sets `JK_DIST_BUILD=1` at compile time, so the exe
+/// carries no build-machine path (it would name the build PC's user folder) and never
+/// looks for files there on someone else's computer.
+pub const SOURCE_DIR: Option<&str> = match option_env!("JK_DIST_BUILD") {
+    Some(_) => None,
+    None => Some(env!("CARGO_MANIFEST_DIR")),
+};
 
 /// How the data folder was chosen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

@@ -100,7 +100,7 @@ done < "$OUT/corrupt/cases.tsv"
 step "7. Committed fixture"
 "${VERIFY[@]}" tests/fixtures/generated/tiny.jksong --strict || fail "tiny.jksong does not verify"
 size=$(wc -c < tests/fixtures/generated/tiny.jksong)
-[ "$size" -lt 600000 ] && echo "  ok    tiny.jksong is $size bytes (< 600000)" || fail "tiny.jksong is $size bytes"
+if [ "$size" -lt 600000 ]; then echo "  ok    tiny.jksong is $size bytes (< 600000)"; else fail "tiny.jksong is $size bytes"; fi
 
 echo
 if [ "$FAILED" -eq 0 ]; then echo "conformance: PASS"; else echo "conformance: FAIL ($FAILED)"; exit 1; fi

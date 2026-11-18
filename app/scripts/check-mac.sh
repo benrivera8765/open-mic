@@ -28,9 +28,10 @@ fi
 rustup target add aarch64-apple-darwin >/dev/null
 
 cross="$repo/app/scripts/macos-cross"
-export JK_TOOLS_PY="$(cygpath -w "$py")"
-export CC_aarch64_apple_darwin="$(cygpath -w "$cross/zig-cc.cmd")"
-export AR_aarch64_apple_darwin="$(cygpath -w "$cross/zig-ar.cmd")"
+JK_TOOLS_PY="$(cygpath -w "$py")"
+CC_aarch64_apple_darwin="$(cygpath -w "$cross/zig-cc.cmd")"
+AR_aarch64_apple_darwin="$(cygpath -w "$cross/zig-ar.cmd")"
+export JK_TOOLS_PY CC_aarch64_apple_darwin AR_aarch64_apple_darwin
 # Keep Zig's cache with the other heavy build files, not in %LOCALAPPDATA%.
 export ZIG_GLOBAL_CACHE_DIR="$JK_BUILD/zig-cache"
 export ZIG_LOCAL_CACHE_DIR="$JK_BUILD/zig-cache"

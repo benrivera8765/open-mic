@@ -1,0 +1,13 @@
+Licence texts that scripts/make-dist.sh copies into dist/Licenses/python/ for Studio
+packages whose wheels ship no licence file (THIRD_PARTY_LICENSES.md, section 4,
+"none in wheel"):
+
+ctranslate2-4.9.0-LICENSE.txt  MIT, verbatim from the upstream repository at the release tag:
+                               https://raw.githubusercontent.com/OpenNMT/CTranslate2/v4.9.0/LICENSE
+Apache-2.0.txt                 the Apache License 2.0 text, verbatim (copied from the
+                               huggingface_hub 2.4.0 wheel's licences folder); used for
+                               flatbuffers (Google) and tokenizers (Hugging Face), whose
+                               metadata declare Apache-2.0
+
+onnxruntime ships its own LICENSE inside the package folder, and jukeoke-studio is this
+project's own code (LICENSE at the repository root).

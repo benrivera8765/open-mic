@@ -35,16 +35,32 @@ const LANGUAGES = [
   { value: "nl", label: "Dutch" },
 ];
 
+/**
+ * The core and the Studio end every reason with "Songs are created on a stronger computer
+ * and can be played anywhere." so each reason stands on its own (Settings, logs). The panel
+ * says it once, in bold, above the list: drop it from the reasons and drop repeats (D-174).
+ */
+const TAGLINE = /\s*Songs are created on a stronger computer and (?:can be )?played anywhere\.?/gi;
+export function reasonsForPanel(reasons: string[]): string[] {
+  const out: string[] = [];
+  for (const r of reasons) {
+    const s = r.replace(TAGLINE, "").trim();
+    if (s && !out.includes(s)) out.push(s);
+  }
+  return out;
+}
+
 function Unavailable({ reasons }: { reasons: string[] }) {
+  const shown = reasonsForPanel(reasons);
   return (
     <Section title="Studio" class="studio studio--unavailable">
       <p>
         <strong>Songs are created on a stronger computer and can be played anywhere.</strong> The Studio turns an ordinary song into a karaoke song; it needs a Windows computer with an NVIDIA
         graphics card. Everything else (playing, changing the key, fixing lyrics timing, recording) works here.
       </p>
-      {reasons.length > 0 && (
+      {shown.length > 0 && (
         <ul class="studio__reasons">
-          {reasons.map((r) => (
+          {shown.map((r) => (
             <li key={r}>{r}</li>
           ))}
         </ul>

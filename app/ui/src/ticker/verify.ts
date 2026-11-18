@@ -29,6 +29,10 @@ export interface TickerVerifyReport {
   minLookaheadS: number;
   fontPx: number;
   fontScale: number;
+  /** Smallest line scale (dense lines drawn smaller, layout.ts point 4b). */
+  minLineScale: number;
+  /** Lines drawn smaller than fontPx. */
+  denseLines: number;
   firstProblems: string[];
 }
 
@@ -56,6 +60,8 @@ export function verifyTickerLayout(layout: TickerLayout, opts: { dt?: number; lo
     minLookaheadS: Infinity,
     fontPx: layout.fontPx,
     fontScale: layout.fontScale,
+    minLineScale: layout.minLineScale,
+    denseLines: layout.denseLines,
     firstProblems: [],
   };
   if (timed.length === 0) return r;

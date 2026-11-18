@@ -315,11 +315,9 @@ fn find_demo_song(app: &AppHandle) -> Option<PathBuf> {
         .resource_dir()
         .ok()
         .map(|d| d.join("resources").join("demo-song.jksong"));
-    let source_tree = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/generated/demo-song.jksong");
-    bundled
-        .into_iter()
-        .chain(std::iter::once(source_tree))
-        .find(|p| p.is_file())
+    let source_tree = crate::portable::SOURCE_DIR
+        .map(|d| Path::new(d).join("../../tests/fixtures/generated/demo-song.jksong"));
+    bundled.into_iter().chain(source_tree).find(|p| p.is_file())
 }
 
 /// Creates the main window. The web view profile goes where `DataLayout` says:

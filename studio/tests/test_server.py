@@ -450,3 +450,223 @@ def test_safe_file_names():
     assert safe_file_stem("") == "Song"
     assert song_stem("", "Solo") == "Solo"
     assert safe_file_stem("Café") == "Café"  # NFC
+
+
+# ------------------------------------------------------------- final fixes (D-168..D-173)
+
+import time  # noqa: E402
+
+def test_portable_mode_caps_the_cuda_jit_cache_on_the_stick(tmp_path):
+    code = ("import json, os\n"
+            "from jukeoke_studio import env\n"
+            "before = os.environ.get('CUDA_CACHE_MAXSIZE')\n"
+            "env.setup(None)\n"
+            "dev = os.environ.get('CUDA_CACHE_MAXSIZE')\n"
+            f"env.setup({str(tmp_path / 'S')!r})\n"
+            "print(json.dumps([before, dev, os.environ.get('CUDA_CACHE_MAXSIZE'), os.environ.get('CUDA_CACHE_PATH')]))\n")
+    clean = {k: v for k, v in os.environ.items() if not k.startswith("JUKEOKE_") and k != "CUDA_CACHE_MAXSIZE"}
+    r = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, check=True, env=clean)
+    before, dev, portable, path = json.loads(r.stdout)
+    assert before is None and dev is None  # a developer run leaves the driver's setting alone
+    assert portable == "268435456"
+    assert Path(path) == Path(os.path.abspath(tmp_path / "S")) / "Settings" / "cache" / "cuda"
+
+
+def _setup_paths(root: str, temp: str | None = None) -> dict:
+    code = ("import json, os, sys, tempfile\n"
+            "from jukeoke_studio import env\n"
+            f"e = env.setup({root!r})\n"
+            + (f"env.set_temp_dir({temp!r})\n" if temp else "")
+            + "print(json.dumps({'root': str(e.root), 'models': str(e.models_dir), 'tmp': tempfile.gettempdir(),"
+            " 'hf': os.environ['HF_HUB_CACHE'], 'cuda': os.environ['CUDA_CACHE_PATH']}))\n")
+    r = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, check=True,
+                       env={k: v for k, v in os.environ.items() if not k.startswith("JUKEOKE_")})
+    return json.loads(r.stdout)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions are a Windows feature")
+def test_paths_through_a_junction_are_kept_as_given(tmp_path):
+    """Path.resolve() would turn the junction into its target; the Studio must report
+    and write the paths the app gave it (subst / mapped drives work the same way)."""
+    real = tmp_path / "real"
+    (real / "Library").mkdir(parents=True)
+    link = tmp_path / "link"
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(real)], check=True, capture_output=True)
+    assert Path(link).resolve() != Path(os.path.abspath(link))  # the trap this guards against
+    d = _setup_paths(str(link / "x" / ".."), temp=str(link / "Settings" / "tmp" / "other"))
+    assert d["root"] == str(link)
+    assert d["models"] == str(link / "Models") and d["hf"] == str(link / "Models" / "hf")
+    assert d["cuda"] == str(link / "Settings" / "cache" / "cuda")
+    assert d["tmp"] == str(link / "Settings" / "tmp" / "other")
+
+
+def _free_drive_letter() -> str | None:
+    import string
+
+    used = {p[0].upper() for p in os.listdrives()} if hasattr(os, "listdrives") else set()
+    for c in reversed(string.ascii_uppercase[12:]):  # M..Z, from Z down
+        if c not in used and not os.path.exists(f"{c}:\\"):
+            return c
+    return None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="subst is a Windows command")
+def test_paths_on_a_subst_drive_keep_the_drive_letter(tmp_path):
+    letter = _free_drive_letter()
+    if letter is None:
+        pytest.skip("no free drive letter for subst")
+    stick = tmp_path / "stick"
+    (stick / "Library").mkdir(parents=True)
+    r = subprocess.run(["subst", f"{letter}:", str(stick)], capture_output=True, text=True)
+    if r.returncode != 0:
+        pytest.skip(f"subst failed: {r.stdout}{r.stderr}")
+    try:
+        root = f"{letter}:\\"
+        d = _setup_paths(root)
+        assert d["root"].upper().startswith(f"{letter}:"), d
+        for k in ("models", "hf", "cuda", "tmp"):
+            assert d[k].upper().startswith(f"{letter}:"), (k, d[k])
+    finally:
+        subprocess.run(["subst", f"{letter}:", "/D"], capture_output=True)
+
+
+def test_expected_user_errors_are_one_warning_line_without_traceback(studio, root, tmp_path):
+    studio.hello()
+    bad = tmp_path / "broken.mp3"
+    bad.write_bytes(b"ID3" + os.urandom(5000))
+    submit(studio, "bad", bad, root / "Library", metadata={"title": "x", "artist": "y"})
+    assert studio.job_end("bad")["error"]["code"] == "decode_failed"
+    assert studio.request({"type": "inspect", "input": str(bad)})["error"]["code"] == "decode_failed"
+    assert studio.request({"type": "inspect", "input": str(tmp_path / "gone.wav")})["error"]["code"] == "not_found"
+    dup = studio.request({"type": "job.submit", "job": {"job_id": "bad", "input": str(bad),
+                                                        "output_dir": str(root / "Library")}})
+    assert dup["error"]["code"] == "bad_request"
+    studio.request({"type": "job.list"})  # every log line above is written by now
+    time.sleep(0.3)
+    log = "".join(studio.stderr)
+    assert "Traceback" not in log, log
+    assert "WARNING jukeoke_studio.server: job bad failed (decode_failed)" in log
+    lines = [ln for ln in log.splitlines() if "failed (" in ln]
+    assert len(lines) == 4 and all(" WARNING " in ln for ln in lines), lines
+    assert any("(not_found)" in ln for ln in lines) and any("(bad_request)" in ln for ln in lines)
+
+
+def test_unexpected_errors_keep_their_traceback(studio, root, tmp_path):
+    studio.hello()
+    r = studio.request({"type": "realign", "song": str(tmp_path / "nope.jksong"),
+                        "lyrics": {"mode": "text", "text": "la"}})
+    assert r["error"]["code"] == "not_found"
+    # An internal failure: the library folder is a file, so the song cannot be written.
+    blocker = tmp_path / "not-a-folder"
+    blocker.write_bytes(b"x")
+    submit(studio, "w", MF.make("wav16", tmp_path, seconds=2.0), blocker, metadata={"title": "t", "artist": "a"},
+           lyrics={"mode": "none"})
+    f = studio.job_end("w")
+    assert f["type"] == "job.failed" and f["error"]["code"] not in ("decode_failed", "not_found")
+    time.sleep(0.3)
+    log = "".join(studio.stderr)
+    assert f"ERROR jukeoke_studio.server: job w failed ({f['error']['code']})" in log
+    assert "Traceback" in log
+
+
+SLOW_TOTAL = 200 * 1024 * 1024
+
+
+@pytest.fixture
+def slow_server():
+    import http.server
+    import threading
+
+    class Slow(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Length", str(SLOW_TOTAL))
+            self.end_headers()
+            try:
+                for _ in range(SLOW_TOTAL // 262144):
+                    if self.server.stop.is_set():
+                        break
+                    self.wfile.write(b"\0" * 262144)
+                    time.sleep(0.02)
+            except OSError:
+                pass
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    srv.daemon_threads = True
+    srv.stop = threading.Event()
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}/slow.ckpt"
+    srv.stop.set()
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_shutdown_during_models_download_leaves_no_part_file(root, tmp_path, slow_server):
+    """The app sends `shutdown` (or closes the pipe) while a model is downloading: the
+    Studio stops the download, deletes `<file>.part` and exits promptly (D-170)."""
+    models = root / "Models"
+    code = ("import runpy, sys\n"
+            "from jukeoke_studio import presets\n"
+            "from jukeoke_studio.modelzoo import registry\n"
+            "from jukeoke_studio.modelzoo.registry import ModelSpec, WeightFile\n"
+            f"wf = WeightFile({slow_server!r}, 'slow.ckpt', '0' * 64, {SLOW_TOTAL})\n"
+            "registry.MODELS['slow_model'] = ModelSpec(id='slow_model', title='t', arch='bs_roformer', role='vocals',"
+            " files=(wf,), outputs=('vocals',), licence='MIT', commercial='yes', source='https://example.invalid',"
+            " author='test')\n"
+            "presets.PRESETS['full'] = {'vocals': 'slow_model'}\n"
+            f"sys.argv = ['jukeoke_studio', 'serve', '--root', {str(root)!r}, '--models-dir', {str(models)!r}]\n"
+            "runpy.run_module('jukeoke_studio', run_name='__main__', alter_sys=True)\n")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("JUKEOKE_")}
+    env["JUKEOKE_STUDIO_FAKE_HW"] = "ok"
+    for how in ("shutdown", "close"):
+        p = subprocess.Popen([sys.executable, "-I", "-c", code], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, env=env, cwd=str(tmp_path))
+        try:
+            def send(msg):
+                p.stdin.write((json.dumps(msg) + "\n").encode())
+                p.stdin.flush()
+
+            def read_until(pred, timeout=30):
+                import threading
+
+                found = []
+
+                def rd():
+                    for raw in p.stdout:
+                        m = json.loads(raw)
+                        if pred(m):
+                            found.append(m)
+                            return
+
+                t = threading.Thread(target=rd, daemon=True)
+                t.start()
+                t.join(timeout)
+                return found[0] if found else None
+
+            send({"type": "hello", "id": "h", "protocol": 1})
+            assert read_until(lambda m: m.get("id") == "h")["type"] == "hello.ok"
+            send({"type": "models.download", "id": "d", "preset": "full"})
+            prog = read_until(lambda m: m.get("type") == "models.progress", 30)
+            assert prog is not None and prog["name"] == "slow.ckpt"
+            assert "slow.ckpt.part" in os.listdir(models)
+            t0 = time.monotonic()
+            if how == "shutdown":
+                send({"type": "shutdown", "id": "s"})
+                assert read_until(lambda m: m.get("id") == "s", 15)["type"] == "shutdown.ok"
+            else:
+                p.stdin.close()
+            p.wait(15)
+            took = time.monotonic() - t0
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait(10)
+        err = p.stderr.read().decode("utf-8", "replace")
+        print(f"{how}: the Studio exited {took:.2f} s after the request")
+        assert p.returncode == 0, err
+        assert took < 8, took
+        assert not [n for n in os.listdir(models) if n.endswith(".part")], (how, os.listdir(models))
+        assert "Traceback" not in err, err

@@ -119,7 +119,10 @@ impl StudioConfig {
                     // models in its hf/ folder): use them instead of an empty
                     // dev-data/Models, so a dev run never downloads gigabytes again.
                     let jk_build = std::env::var_os(crate::portable::DEV_ENV_VAR).map(PathBuf::from);
-                    let repo_studio = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../studio");
+                    let Some(source_dir) = crate::portable::SOURCE_DIR else {
+                        return Err(missing_runtime());
+                    };
+                    let repo_studio = Path::new(source_dir).join("../../studio");
                     if let Some(cache) = jk_build.as_ref().map(|b| b.join("models-cache")).filter(|d| d.is_dir()) {
                         models_dir = cache;
                     }

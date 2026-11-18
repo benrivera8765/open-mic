@@ -28,6 +28,8 @@ import hashlib
 import io
 import logging
 import os
+import secrets
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -442,9 +444,20 @@ def extract_cover(path: str | os.PathLike, out_dir: str | os.PathLike) -> str | 
     ext = "png" if _image_kind(data) == "png" else "jpg"
     p = out_dir / f"cover-{hashlib.sha256(data).hexdigest()[:16]}.{ext}"
     if not p.exists():
-        tmp = p.with_name(p.name + f".tmp-{os.getpid()}")
-        tmp.write_bytes(data)
-        os.replace(tmp, p)
+        # Inspects run on their own threads, so several can write the same cover (tracks
+        # of one album) at once: each writes its own temporary file (process, thread and
+        # a random part, like the app's D-81 names). The final name comes from the
+        # content, so whichever rename lands, the file is the same (D-171).
+        tmp = p.with_name(f"{p.name}.tmp-{os.getpid()}-{threading.get_ident()}-{secrets.token_hex(4)}")
+        try:
+            tmp.write_bytes(data)
+            os.replace(tmp, p)
+        except OSError:
+            # Windows refuses to replace a file another thread or the app has open; the
+            # cover is then already there.
+            tmp.unlink(missing_ok=True)
+            if not p.is_file():
+                raise
     return str(p)
 
 

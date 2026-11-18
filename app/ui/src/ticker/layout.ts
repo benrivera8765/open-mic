@@ -27,9 +27,15 @@
 //
 // 4. Lookahead. Text sung within the next LOOKAHEAD seconds must already be fully on
 //    screen right of the marker. Breaks satisfy that by construction (LEAD > LOOKAHEAD);
-//    for very dense singing the font is scaled down (to no less than MIN_FONT_SCALE)
-//    until it holds.
+//    for dense singing the font is scaled down in two steps:
+//      a. the whole song, to no less than MIN_FONT_SCALE, so a song keeps one text size
+//         where that is enough;
+//      b. then only the lines that still do not fit, each on its own, to no less than
+//         MIN_LINE_SCALE. Every grapheme of a line has that line's size; all lines share
+//         one baseline. A rap verse gets smaller text while the rest of the song keeps
+//         its size (D-167).
 //
+
 // Pure TypeScript with an injected `measure` function: the tests use fixed per-character
 // widths, the renderer uses CanvasRenderingContext2D.measureText.
 import type { Lyrics } from "../api/types";
@@ -49,13 +55,20 @@ export interface TickerParams {
   lookahead?: number;
   /** Seconds a line is visible before it is sung after a break. */
   lead?: number;
-  /** Smallest font scale the lookahead rule may apply. */
+  /** Smallest font scale the lookahead rule may apply to the whole song. */
   minFontScale?: number;
+  /** Smallest font scale the lookahead rule may apply to a single dense line. */
+  minLineScale?: number;
 }
 
 export const LOOKAHEAD_S = 2;
 export const LEAD_S = 3;
 export const MIN_FONT_SCALE = 0.6;
+/**
+ * Floor for single dense lines: 0.45 x 56 px = 25.2 px at 1440x900 and 22.4 px at
+ * 1280x800 with the default text size (D-167).
+ */
+export const MIN_LINE_SCALE = 0.45;
 /** Breaks at least this long show a countdown. */
 export const COUNTDOWN_MIN_GAP_S = 4;
 
@@ -65,6 +78,8 @@ export interface PlacedGlyph {
   /** Glyph box on the strip (advance width), CSS px at the effective font size. */
   x: number;
   w: number;
+  /** Font size this grapheme is measured and drawn at (its line's size), CSS px. */
+  px: number;
   start: number;
   end: number;
   line: number;
@@ -83,6 +98,10 @@ export interface PlacedLine {
   x1: number;
   first: number;
   last: number;
+  /** Font size of this line, CSS px (the layout's fontPx unless the line is dense). */
+  px: number;
+  /** Width of a word space in this line. */
+  space: number;
 }
 
 /** A rest before a line (or the intro): when to show a countdown. */
@@ -99,9 +118,13 @@ export interface TickerLayout {
   width: number;
   marker: number;
   markerX: number;
-  /** Effective font size after the lookahead rule. */
+  /** Effective font size of the song after the lookahead rule (dense lines may be smaller). */
   fontPx: number;
   fontScale: number;
+  /** Smallest scale of any line (equals fontScale unless some lines were made smaller). */
+  minLineScale: number;
+  /** Number of lines drawn smaller than fontPx. */
+  denseLines: number;
   spaceWidth: number;
   glyphs: PlacedGlyph[];
   /** Indices of the timed graphemes, in order. */
@@ -177,23 +200,38 @@ export function shareSeparator(sep: number, d0: number, w1: number, d1: number, 
   return [a1, a2];
 }
 
-function placeOnce(lyrics: Lyrics, p: Required<TickerParams>, fontPx: number, measure: Measure): Omit<TickerLayout, "worstLookahead" | "fontScale"> {
+type Placed = Omit<TickerLayout, "worstLookahead" | "fontScale" | "minLineScale" | "denseLines">;
+
+/**
+ * Places the lyrics at font size `fontPx`; `factor[line]` (<= 1) makes single lines
+ * smaller (null: every line at `fontPx`). Line indices are those of `lyrics.lines`
+ * after `withoutEmptyLines`, which equal the indices of the placed lines.
+ */
+function placeOnce(lyrics: Lyrics, p: Required<TickerParams>, fontPx: number, measure: Measure, factor: ArrayLike<number> | null = null): Placed {
   const flat = flatten(lyrics);
-  const cache = new Map<string, number>();
-  const widthOf = (g: string) => {
+  const caches = new Map<number, Map<string, number>>();
+  const widthOf = (g: string, px: number) => {
+    let cache = caches.get(px);
+    if (!cache) {
+      cache = new Map<string, number>();
+      caches.set(px, cache);
+    }
     let w = cache.get(g);
     if (w === undefined) {
-      w = Math.max(0, measure(g, fontPx));
+      w = Math.max(0, measure(g, px));
       cache.set(g, w);
     }
     return w;
   };
-  const space = widthOf(" ") || 0.28 * fontPx;
+  const spaceAt = (px: number) => widthOf(" ", px) || 0.28 * px;
+  const pxOf = (line: number) => (factor ? fontPx * factor[line] : fontPx);
+  const space = spaceAt(fontPx);
   const markerX = p.width * p.marker;
   const leftW = markerX;
   const rightW = p.width - markerX;
   const v = rightW / p.lead; // cruise speed through breaks, px/s
-  const minGap = Math.max(2.5 * space, 0.9 * fontPx);
+  // Smallest gap between two lines: set by the larger of the two.
+  const minGapAt = (px: number) => Math.max(2.5 * spaceAt(px), 0.9 * px);
 
   // --- 1. placement --------------------------------------------------------
   const glyphs: PlacedGlyph[] = [];
@@ -204,25 +242,33 @@ function placeOnce(lyrics: Lyrics, p: Required<TickerParams>, fontPx: number, me
   let prevLineEnd = 0;
   let li = -1;
   let wi = -1;
+  let px = fontPx;
+  let lineSpace = space;
   for (let i = 0; i < flat.length; i++) {
     const f = flat[i];
     if (f.line !== li) {
+      const nextPx = pxOf(f.line);
       if (li >= 0) {
         lines[lines.length - 1].x1 = x;
         const dt = Math.max(0, f.start - prevLineEnd);
-        const plan = breakPlan(dt, true, v, leftW, rightW, minGap, p.lead);
+        // A short gap next to a dense line shrinks with it (the passage is zoomed out
+        // as a whole); long breaks keep their timing (the next line enters LEAD s ahead).
+        const zoom = factor ? Math.min(factor[li], factor[f.line]) : 1;
+        const plan = breakPlan(dt, true, v, leftW, rightW, minGapAt(Math.max(px, nextPx)), p.lead, zoom);
         breakPlans.set(f.line, plan);
         x += plan.reduce((a, s) => a + s.dx, 0);
       }
-      lines.push({ start: f.start, end: f.end, x0: x, x1: x, first: glyphs.length, last: glyphs.length });
+      px = nextPx;
+      lineSpace = spaceAt(px);
+      lines.push({ start: f.start, end: f.end, x0: x, x1: x, first: glyphs.length, last: glyphs.length, px, space: lineSpace });
       li = f.line;
       wi = f.word;
     } else if (f.word !== wi) {
-      x += space;
+      x += lineSpace;
       wi = f.word;
     }
-    const w = widthOf(f.g);
-    glyphs.push({ g: f.g, x, w, start: f.start, end: f.end, line: f.line, word: f.word, L: x, R: x + w, timed: f.end - f.start > EPS_T });
+    const w = widthOf(f.g, px);
+    glyphs.push({ g: f.g, x, w, px, start: f.start, end: f.end, line: f.line, word: f.word, L: x, R: x + w, timed: f.end - f.start > EPS_T });
     x += w;
     const line = lines[lines.length - 1];
     line.end = f.end;
@@ -271,7 +317,7 @@ function placeOnce(lyrics: Lyrics, p: Required<TickerParams>, fontPx: number, me
   const first = glyphs[timed[0]];
   const rests: Rest[] = [];
   // Intro: the first line enters from the right edge during the last LEAD seconds.
-  const intro = breakPlan(Math.max(0, first.start), false, v, leftW, rightW, minGap, p.lead);
+  const intro = breakPlan(Math.max(0, first.start), false, v, leftW, rightW, 0, p.lead);
   {
     const introWidth = intro.reduce((a, s) => a + s.dx, 0);
     let t = first.start - intro.reduce((a, s) => a + s.dt, 0);
@@ -334,15 +380,15 @@ function placeOnce(lyrics: Lyrics, p: Required<TickerParams>, fontPx: number, me
 
 /**
  * Sub-segments (duration, distance) that cross a break of `dt` seconds.
- * Short and medium breaks: one segment at the cruise speed v (but at least `minGap`
- * wide between lines). Long breaks: exit (the previous line leaves to the left),
+ * Short and medium breaks: one segment at the cruise speed v, times `zoom` (the
+ * smaller line factor of a dense passage), but at least `minGap` wide between lines. Long breaks: exit (the previous line leaves to the left),
  * rest, enter (the next line comes in from the right edge over `lead` seconds).
  */
-function breakPlan(dt: number, hasPrev: boolean, v: number, leftW: number, rightW: number, minGap: number, lead: number): { dt: number; dx: number }[] {
+function breakPlan(dt: number, hasPrev: boolean, v: number, leftW: number, rightW: number, minGap: number, lead: number, zoom = 1): { dt: number; dx: number }[] {
   const exitW = hasPrev ? leftW : 0;
   const full = exitW + rightW;
   if (v * dt <= full) {
-    const width = hasPrev ? Math.max(minGap, v * dt) : v * dt;
+    const width = hasPrev ? Math.max(minGap, v * dt * zoom) : v * dt;
     return [{ dt, dx: width }];
   }
   const exitDt = exitW / v;
@@ -375,6 +421,44 @@ export function lookaheadReport(l: TickerLayout, lookahead: number): { worst: nu
 }
 
 /**
+ * Per line: the factor (<= 1) by which that line's text would have to shrink so that
+ * every grapheme is fully visible `lookahead` seconds before it is sung, with the
+ * needed width at most `target` x the width right of the marker. A grapheme that does
+ * not fit (needs more than `trigger` x that width) asks every line between the one
+ * under the marker and its own line to shrink by the same factor. The short gaps
+ * between those lines shrink with them; only a gap or intro before the first of them
+ * is left out of that factor.
+ */
+function lineShrink(l: Placed, lookahead: number, trigger: number, target: number): Float64Array {
+  const rightW = l.width - l.markerX;
+  const lines = l.lines;
+  const want = new Float64Array(lines.length).fill(1);
+  /** First line whose text ends right of strip position x. */
+  const lineFrom = (x: number) => {
+    let lo = 0;
+    let hi = lines.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (lines[mid].x1 <= x) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+  for (const g of l.glyphs) {
+    const xa = l.motion.at(g.start - lookahead);
+    const xb = g.x + g.w;
+    const need = xb - xa;
+    if (need <= trigger * rightW) continue;
+    const a = Math.min(lineFrom(xa), g.line);
+    const fixed = Math.max(0, lines[a].x0 - xa);
+    const text = need - fixed;
+    const f = text > 0 ? Math.max(0, (target * rightW - fixed) / text) : 1;
+    for (let k = a; k <= g.line; k++) want[k] = Math.min(want[k], f);
+  }
+  return want;
+}
+
+/**
  * Lines without a single grapheme (`"words": []`, which SONG_FORMAT section 5 does not
  * forbid) take no room and no time on the strip. They are dropped before layout so
  * that line indices inside the layout (PlacedGlyph.line, `lines`, Rest.nextLine)
@@ -388,7 +472,8 @@ function withoutEmptyLines(lyrics: Lyrics): Lyrics {
 
 /**
  * Lays out the lyrics for a lane `width` px wide. Applies the lookahead rule by
- * scaling the font down when needed (never below `minFontScale`).
+ * scaling the whole song's font down when needed (never below `minFontScale`), then
+ * single lines that still do not fit (never below `minLineScale`).
  * Line indices in the result count only lines that have at least one grapheme.
  */
 export function layoutTicker(lyricsIn: Lyrics, params: TickerParams, measure: Measure): TickerLayout {
@@ -397,18 +482,47 @@ export function layoutTicker(lyricsIn: Lyrics, params: TickerParams, measure: Me
     lookahead: LOOKAHEAD_S,
     lead: LEAD_S,
     minFontScale: MIN_FONT_SCALE,
+    minLineScale: MIN_LINE_SCALE,
     ...params,
     marker: Math.min(0.9, Math.max(0.05, params.marker)),
   };
+  const asLayout = (pl: Placed, fontScale: number): TickerLayout => ({ ...pl, fontScale, minLineScale: fontScale, denseLines: 0, worstLookahead: 0 });
+  // a. The whole song.
   let scale = 1;
   let placed = placeOnce(lyrics, p, p.fontPx, measure);
-  let report = lookaheadReport({ ...placed, fontScale: 1, worstLookahead: 0 }, p.lookahead);
+  let report = lookaheadReport(asLayout(placed, 1), p.lookahead);
   for (let iter = 0; iter < 6 && report.ratio > 0.98 && scale > p.minFontScale; iter++) {
     scale = Math.max(p.minFontScale, (scale * 0.97) / report.ratio);
     placed = placeOnce(lyrics, p, p.fontPx * scale, measure);
-    report = lookaheadReport({ ...placed, fontScale: scale, worstLookahead: 0 }, p.lookahead);
+    report = lookaheadReport(asLayout(placed, scale), p.lookahead);
   }
-  return { ...placed, fontScale: scale, worstLookahead: report.worst };
+  // b. Single dense lines. The factor is relative to the song's size; shrinking one
+  // line can move where the marker is 2 s earlier, so repeat until nothing changes.
+  const floor = Math.min(1, p.minLineScale / scale);
+  let minFactor = 1;
+  let dense = 0;
+  if (report.ratio > 0.98 && floor < 1) {
+    const factor = new Float64Array(placed.lines.length).fill(1);
+    for (let iter = 0; iter < 16; iter++) {
+      const want = lineShrink(placed, p.lookahead, 0.995, 0.97);
+      let changed = false;
+      for (let k = 0; k < factor.length; k++) {
+        const f = Math.max(floor, factor[k] * want[k]);
+        if (f < factor[k] - 1e-6) {
+          factor[k] = f;
+          changed = true;
+        }
+      }
+      if (!changed) break;
+      placed = placeOnce(lyrics, p, p.fontPx * scale, measure, factor);
+    }
+    for (const f of factor) {
+      minFactor = Math.min(minFactor, f);
+      if (f < 1) dense++;
+    }
+    report = lookaheadReport(asLayout(placed, scale), p.lookahead);
+  }
+  return { ...placed, fontScale: scale, minLineScale: scale * minFactor, denseLines: dense, worstLookahead: report.worst };
 }
 
 /** Index of the grapheme whose cell contains strip position `x` (binary search), or -1. */

@@ -18,17 +18,29 @@ name or contacts the network (``env.py`` also sets ``HF_HUB_OFFLINE=1``).
 Downloads happen only through :func:`ensure` with ``allow_download=True`` (the
 protocol's ``models.download``): ``<file>.part`` while hashing, SHA-256 and size check,
 then an atomic rename (``download._download``).
+
+Before anything is loaded, :func:`ensure` checks every file's SHA-256 against this
+registry (:func:`verify`, D-172): once per process, and not at all for a file the
+models folder's ``manifest.json`` says was hashed on this same drive with the same size
+and modification time (``download.trusted`` explains the trade-off). A file with the
+wrong hash fails with ``model_checksum``, is recorded as ``bad`` and from then on counts
+as missing, so the Studio screen's download replaces it.
 """
 
 from __future__ import annotations
 
+import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from ..errors import ModelsMissing
-from .download import Progress, _download, default_models_dir
+from ..errors import ModelChecksum, ModelsMissing
+from .download import (Progress, _download, _load_manifest, _record, _save_manifest, default_models_dir,
+                       recorded_bad, sha256_of, trusted)
 from .registry import WeightFile
+
+log = logging.getLogger("jukeoke_studio.hfmodels")
 
 HF = "https://huggingface.co"
 
@@ -162,14 +174,23 @@ def snapshot_dir(m: HfModel, models_dir: str | Path | None = None) -> Path:
     return hf_dir(models_dir) / f"models--{m.repo.replace('/', '--')}" / "snapshots" / m.revision
 
 
+def manifest_key(m: HfModel, f: HfFile) -> str:
+    """The file's entry in ``<models_dir>/manifest.json`` (its path below the models folder)."""
+    return f"hf/models--{m.repo.replace('/', '--')}/snapshots/{m.revision}/{f.name}"
+
+
 def missing(m: HfModel, models_dir: str | Path | None = None) -> list[HfFile]:
-    """Files not on disk with the expected size (no hashing: fast, for ``models.status``)."""
-    d = snapshot_dir(m, models_dir)
+    """Files not on disk with the expected size, or recorded as failing their hash check
+    (no hashing: fast, for ``models.status``)."""
+    md = Path(models_dir or default_models_dir())
+    d = snapshot_dir(m, md)
+    manifest = _load_manifest(md)
     out = []
     for f in m.files:
         p = d / f.name
         try:
-            ok = p.is_file() and p.stat().st_size == f.size
+            st = p.stat() if p.is_file() else None
+            ok = st is not None and st.st_size == f.size and not recorded_bad(manifest.get(manifest_key(m, f)), st)
         except OSError:
             ok = False
         if not ok:
@@ -177,16 +198,72 @@ def missing(m: HfModel, models_dir: str | Path | None = None) -> list[HfFile]:
     return out
 
 
+#: Files hashed (or trusted from the manifest) in this process: path -> (size, mtime, volume).
+_CHECKED: dict[str, tuple[int, int, int]] = {}
+_CHECK_LOCK = threading.Lock()
+
+
+def verify(m: HfModel, models_dir: str | Path | None = None, *, force: bool = False) -> None:
+    """Checks the SHA-256 of every file of ``m`` against the registry before it is loaded.
+
+    Skipped for a file already checked in this process and unchanged since, and for a file
+    the manifest says was hashed on this drive with the same size and modification time
+    (unless ``force``). Raises :class:`ModelChecksum` for a wrong file and records it as
+    ``bad``. One check at a time, so two jobs never hash the same 1.6 GB file together."""
+    md = Path(models_dir or default_models_dir())
+    d = snapshot_dir(m, md)
+    with _CHECK_LOCK:
+        manifest = _load_manifest(md)
+        changed = False
+        try:
+            for f in m.files:
+                p = d / f.name
+                st = p.stat()
+                sig = (st.st_size, st.st_mtime_ns, st.st_dev)
+                if not force and _CHECKED.get(str(p)) == sig:
+                    continue
+                key = manifest_key(m, f)
+                if not force and trusted(manifest.get(key), f.sha256, st):
+                    _CHECKED[str(p)] = sig
+                    continue
+                digest = sha256_of(p)
+                ok = digest == f.sha256
+                _record(manifest, key, st, f.sha256, ok, model=m.key, url=m.url(f), licence=m.licence)
+                changed = True
+                if not ok:
+                    raise ModelChecksum(
+                        "A model file on this drive is damaged or not the expected one. Download the "
+                        "models again from the Studio screen.",
+                        f"{p}: SHA-256 {digest} != {f.sha256} ({m.repo}@{m.revision[:8]})")
+                _CHECKED[str(p)] = sig
+                log.info("verified %s (%d bytes)", key, st.st_size)
+        finally:
+            if changed:
+                try:
+                    _save_manifest(md, manifest)
+                except OSError as e:  # a read-only models folder: checked, just not remembered
+                    log.warning("could not record model hashes in %s: %s", md, e)
+
+
 def ensure(m: HfModel, models_dir: str | Path | None = None, *, allow_download: bool = False,
            progress: Progress | None = None, should_stop: Callable[[], bool] | None = None) -> Path:
-    """The snapshot directory of ``m`` with every file present. Missing files are
-    downloaded only with ``allow_download``; otherwise :class:`ModelsMissing`."""
-    gone = missing(m, models_dir)
+    """The snapshot directory of ``m`` with every file present and verified (:func:`verify`).
+    Missing files are downloaded only with ``allow_download``; otherwise
+    :class:`ModelsMissing`."""
+    md = Path(models_dir or default_models_dir())
+    gone = missing(m, md)
     if gone and not allow_download:
         raise ModelsMissing([m.key], f"{m.repo}@{m.revision[:8]}: missing {[f.name for f in gone]} "
-                                     f"in {snapshot_dir(m, models_dir)}")
-    d = snapshot_dir(m, models_dir)
+                                     f"in {snapshot_dir(m, md)}")
+    d = snapshot_dir(m, md)
     for f in gone:
         wf = WeightFile(m.url(f), f.name, f.sha256, f.size)
         _download(wf, d / f.name, progress, should_stop)
+        # The download hashed it: record that, so verify() does not read it again.
+        with _CHECK_LOCK:
+            manifest = _load_manifest(md)
+            _record(manifest, manifest_key(m, f), (d / f.name).stat(), f.sha256, True,
+                    model=m.key, url=m.url(f), licence=m.licence)
+            _save_manifest(md, manifest)
+    verify(m, md)
     return d

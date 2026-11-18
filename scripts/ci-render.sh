@@ -28,9 +28,9 @@ locked=""
 [ -f Cargo.lock ] && locked="--locked"
 # shellcheck disable=SC2086
 cargo build $locked --release -p jk-cli
-cli="$(find target/release -maxdepth 1 -type f \( -name 'jukeoke-cli' -o -name 'jukeoke-cli.exe' \) | head -n 1)"
+cli="$(find "${CARGO_TARGET_DIR:-target}/release" -maxdepth 1 -type f \( -name 'jukeoke-cli' -o -name 'jukeoke-cli.exe' \) | head -n 1)"
 if [ -z "$cli" ]; then
-    echo "::warning::jk-cli built but target/release/jukeoke-cli was not found; skipping"
+    echo "::warning::jk-cli built but ${CARGO_TARGET_DIR:-target}/release/jukeoke-cli was not found; skipping"
     echo "skipped: no jukeoke-cli binary" > "$out/SKIPPED.txt"
     exit 0
 fi

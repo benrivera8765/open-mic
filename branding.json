@@ -5,10 +5,25 @@
   "song_extension": "jksong",
   "song_magic_note": "The song file magic bytes are NOT renamed with the app; see docs/SONG_FORMAT.md.",
   "tagline": "Karaoke from any song, on a bubbler jukebox.",
+  "also_edit_note": "Files that spell the name (or the bundle id, or the jukeoke-cli tool name) as a literal, so a rename is a manual edit there. Read from this file at build or run time, so NOT listed: the UI page title and badge (vite.config.ts injects the name into app/ui/index.html; AppInfo.name), the Studio's song provenance and its LRCLIB User-Agent when branding.json is beside it. Left out on purpose: comments, docs/, README/CONTRIBUTING/MODELS/THIRD_PARTY files, test fixtures, and internal identifiers that users never see and that need not change with the name (crate jukeoke, Python package jukeoke_studio, JUKEOKE_* environment variables, CSS classes, the .jksong magic). Re-check with: grep -rIl Jukeoke --exclude-dir=node_modules --exclude-dir=target --exclude-dir=docs .",
   "also_edit": [
-    "app/src-tauri/tauri.conf.json  (productName, identifier, mainBinaryName)",
-    "app/src-tauri/Cargo.toml       (package name only if you want the binary renamed)",
-    "app/ui/index.html              (<title>)",
-    "studio/pyproject.toml          (description only)"
+    "app/src-tauri/tauri.conf.json  (productName, mainBinaryName, identifier, bundle publisher; build.rs fails the build if the first three disagree with this file)",
+    "app/src-tauri/Cargo.toml       (package and bin name 'jukeoke' only if the binary should be renamed; description)",
+    "app/src-tauri/src/core.rs, error.rs, lib.rs, startup.rs, recorder.rs, selfcheck.rs, testsong.rs, commands/app.rs  (user-facing messages, the native start-up dialog title, the self-check's test song artist and provenance name)",
+    "app/src-tauri/src/portable.rs  (macOS: the remembered-root folder ~/Library/Application Support/org.jukeoke.app and its 'jukeoke' fallback; keep in step with bundle_id)",
+    "crates/jk-cli/Cargo.toml       ([[bin]] name jukeoke-cli; description)",
+    "crates/jk-cli/src/main.rs      (#[command(name = \"jukeoke-cli\", about = \"Jukeoke ...\")]; a new tool name also needs scripts/ci-render.sh, studio/tests/test_server.py (_cli) and studio/bench/e2e_metrics.py)",
+    "crates/jk-format/src/error.rs  (messages 'not a Jukeoke song file', 'a newer version of Jukeoke')",
+    "crates/jk-recorder/src/lib.rs and src/platform/macos/mod.rs  (Screen Recording permission texts; optionally the Objective-C class names JukeokeRecorder* and the org.jukeoke.recorder.* queue labels)",
+    "studio/jukeoke_studio/lyrics.py  (default_user_agent: fallback name used when branding.json is not beside the Studio, e.g. the packaged runtime)",
+    "studio/jukeoke_studio/server.py  (_app_name fallback) and pipeline.py (JobContext.app_name default)",
+    "studio/jukeoke_studio/jksong.py  (messages 'not a Jukeoke song file', 'a newer version of Jukeoke')",
+    "studio/jukeoke_studio/modelzoo/download.py  (USER_AGENT 'jukeoke-studio/0.1' for model downloads; the 'the one Jukeoke was tested with' detail)",
+    "studio/pyproject.toml          (description; the distribution name jukeoke-studio only if the package is renamed, then also scripts/build-studio-runtime.sh)",
+    "app/ui/src/api/mock.ts         (the browser mock's AppInfo.name, seen in screenshots made with the mock)",
+    "app/ui/package.json            (description)",
+    "scripts/build-mac.sh, app/scripts/portable-smoke-test.sh, app/scripts/check-windows-exe.sh  (Jukeoke.exe / Jukeoke.app paths)",
+    "scripts/gen-third-party.sh     (names of the shipped binaries and the app's licence paragraph in THIRD_PARTY_LICENSES.md)",
+    "scripts/user-dirs-audit.py, app/scripts/portable-smoke-test.sh  (the 'jukeoke' search pattern of the portable-mode audit)"
   ]
 }

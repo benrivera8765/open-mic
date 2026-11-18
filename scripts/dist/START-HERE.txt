@@ -1,0 +1,121 @@
+@NAME@ - start here
+====================
+
+@NAME@ is a karaoke app that looks like a bubbler jukebox. This folder is everything
+for one USB stick: the Windows app, a place for the Mac app, your songs, and the
+Studio that makes new songs on a Windows PC with an NVIDIA graphics card.
+
+Built @DATE@. Size: about @SIZE_GB@ GB on an exFAT stick (@FILES@ files).
+
+
+1. What each folder is
+----------------------
+
+  Windows\      The Windows app. Double-click Windows\@NAME@.exe to start it.
+                Windows\resources\ holds the demo song the self-check uses.
+                Windows\Studio\ is the Studio, the part that turns any song into a
+                karaoke song. It only runs on Windows with an NVIDIA graphics card;
+                on other PCs the app still plays everything and says why the Studio
+                is unavailable.
+  Mac\          The Mac app goes here (Mac\@NAME@.app). It could not be built on the
+                Windows PC: read Mac\README.txt for how to get it.
+  Library\      Your songs (.jksong files). Subfolders are fine. It starts with one
+                demo song ("Twinkle, Twinkle, Little Star", generated, public domain).
+  Recordings\   What the recorder captures (lossless WAV files).
+  Models\       The Studio's model files (about 3.8 GB). Only the Studio uses them;
+                the player never does. They are already here, so the Studio works
+                without downloading anything.
+  Settings\     Empty on a fresh stick. The app keeps its settings, logs and
+                self-check reports here, so nothing is written to the computer.
+  Licenses\     The licence of @NAME@ (GPL-3.0-or-later) and of everything it uses.
+
+  The app also creates Exports\ the first time you export a backing track.
+
+Keep the folders together. They can sit at the top of the stick or together inside
+one folder on it. Nothing depends on the drive letter.
+
+
+2. Putting it on a USB stick
+----------------------------
+
+  a. Use a 32 GB (or larger) stick. Format it as exFAT, so that both Windows and the
+     Mac can read and write it. Formatting erases everything on the stick.
+       - On Windows: open File Explorer, right-click the stick, choose Format...,
+         set File system to exFAT, set Allocation unit size to 32 kilobytes (the
+         default on a 32 GB stick; on a bigger stick the default of 128 kilobytes
+         wastes about 2 GB on the Studio's many small files), tick Quick Format,
+         click Start.
+       - On the Mac: open Disk Utility, select the stick, click Erase, choose
+         Format: ExFAT and Scheme: Master Boot Record, click Erase. Disk Utility
+         does not let you choose the allocation unit size, so format a stick
+         bigger than 32 GB on Windows instead, as above.
+  b. Copy everything inside this folder (the folders above and this file) onto the
+     stick. Copy, do not move, so that you keep this folder as a spare.
+     It is about @FILES@ files, most of them in Windows\Studio, so copying takes
+     a while: roughly 5 to 30 minutes depending on the stick.
+  c. When it is done, eject the stick before you pull it out (Windows: "Safely Remove
+     Hardware"; Mac: the eject button in Finder). exFAT can lose data if a stick is
+     pulled out while something is still being written.
+
+  The same folder also works copied to an internal drive of a PC, which makes the
+  Studio faster. Very deep folder paths can be too long for Windows: a folder such
+  as C:\Users\<you>\Desktop\@NAME@ is fine.
+
+
+3. First launch on Windows
+--------------------------
+
+  Double-click Windows\@NAME@.exe. Nothing needs to be installed on Windows 11.
+
+  The app is not code-signed, so the first time Windows may show "Windows protected
+  your PC". Click "More info", then "Run anyway".
+
+  To make songs, open the Studio screen and drop audio or video files onto it. The
+  first song on a new PC takes longer than the rest, because the graphics driver
+  prepares its code once (it keeps that in Settings\cache, about 200 MB).
+
+
+4. First launch on the Mac (MacBook Air, macOS 13 Ventura or later)
+-------------------------------------------------------------------
+
+  First put the Mac app into the Mac folder (see Mac\README.txt). Then open
+  Mac\@NAME@.app from the stick in Finder.
+
+  - A copy that came onto the stick from the Windows PC opens with a plain
+    double-click.
+  - A copy downloaded from the internet is blocked the first time, because it is not
+    notarised by Apple. Do this once: in Finder, Control-click the app, choose Open,
+    then click Open again. macOS is expected to ask: "macOS cannot verify the
+    developer of "@NAME@". Are you sure you want to open it?" After that it opens
+    normally.
+  - The recorder needs the "Screen Recording" permission. macOS only lets apps hear
+    the computer's sound through its screen-capture service, so that is what it
+    asks for. @NAME@ records sound only and throws the picture away unseen. Allow it
+    in System Settings > Privacy & Security > Screen Recording, then quit and reopen
+    the app.
+
+  The Mac app has never been run on a real Mac yet. Please run the self-check (next
+  section) the first time and bring its report back.
+
+
+5. The self-check, and where its report goes
+--------------------------------------------
+
+  Click "Self-check" at the top right of the app. It starts at once: it plays a very
+  quiet test tone, checks the output device, renders and changes the key of the demo
+  song, and makes a three-second test recording. (Tick "Silent" and click "Run again"
+  to check without any sound.)
+
+  It writes a plain-text report into the Settings folder on the stick:
+
+      Settings\selfcheck-<date and time>.txt
+
+  Logs go to Settings\logs\. If something does not work, bring the stick back to the
+  Windows PC with these files on it; they say what went wrong.
+
+  On Windows the self-check can also run from a command prompt:
+      Windows\@NAME@.exe --selfcheck --silent
+  (exit code 0 means everything passed).
+
+
+More: README.md, HANDOFF.md and docs\ in the project's source folder.

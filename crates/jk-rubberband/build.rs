@@ -56,7 +56,13 @@ fn main() {
         .flag_if_supported("-std=c++14")
         // Determinism across x86-64 and ARM64 (docs/ARCHITECTURE.md section 3).
         .flag("-ffp-contract=off")
-        .flag_if_supported("-fno-fast-math");
+        .flag_if_supported("-fno-fast-math")
+        // No build-machine path in the binary: __FILE__ in Rubber Band's messages would
+        // otherwise carry this folder's absolute path (the build PC's user folder).
+        .flag_if_supported(format!(
+            "-ffile-prefix-map={}=jk-rubberband",
+            manifest_dir.display()
+        ));
 
     // Test-only perturbation build, used once to estimate how far a different
     // compiler/architecture rounding could move the output (docs/benchmarks/dsp.md,

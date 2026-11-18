@@ -127,8 +127,9 @@ def _make(args, env) -> int:
     if args.lyrics_source:
         lyrics["source"] = args.lyrics_source
     meta = {k: v for k, v in (("title", args.title), ("artist", args.artist), ("album", args.album)) if v}
-    spec = parse_job({"job_id": f"make-{int(time.time())}", "input": str(Path(args.input).resolve()),
-                      "output_dir": str(Path(args.out).resolve()), "preset": args.preset,
+    # abspath, not resolve(): a subst / mapped drive letter must stay as given (env.abspath).
+    spec = parse_job({"job_id": f"make-{int(time.time())}", "input": str(studio_env.abspath(args.input)),
+                      "output_dir": str(studio_env.abspath(args.out)), "preset": args.preset,
                       "language": args.language, "metadata": meta, "lyrics": lyrics})
     ctx = JobContext(models_dir=env.models_dir, temp_dir=studio_env.temp_dir(), app_version=None,
                      device=args.device)
