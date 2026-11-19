@@ -68,8 +68,8 @@ Read this first in every session. Then DECISIONS.md, then docs/ARCHITECTURE.md.
 
 ## In flight
 
-- WORK ORDER 2: Practice Mode (`../WORK_ORDER-2-practice-mode.md`, started 2026-11-19). Plan follows its section 8 stages; each stage = one builder (at most two in parallel) then one independent verifier, a commit, and an update here. Usage limit: never more than 2-3 agents at once.
-  - Stage 0 (in progress): baseline local CI (log `$JK_BUILD/wo2-baseline-local-ci.log`); owner's dist/ files backed up to `../jukeoke-build/owner-backup-20261119/` with `SHA256SUMS-dist-owner-files.txt` (387 files); news checked 11:57 (no GitHub login, no self-check report, test-songs empty). Next: risky experiments (guide methods, live tracker, key-in-effect, microphone capture).
+- WORK ORDER 2: Practice Mode (`../WORK_ORDER-2-practice-mode.md`, started 2026-11-19). Plan follows its section 8 stages; each stage = one builder (at most two in parallel) then one independent verifier, a commit, and an update here. Agent cap: the owner raised it to UP TO 5 agents at a time on 2026-11-19 (overrides WO2's 2-3); still one builder then one independent verifier per piece.
+  - Stage 0 (in progress): baseline local CI PASSED 12:22 (ui 446, rust 252, clippy 13 warnings, mac-check 1 warning, studio 230+24, conformance, portable, lint; log `$JK_BUILD/wo2-baseline-local-ci.log`); jk-pitch crate skeleton (commit c7620ee); owner's dist/ files backed up to `../jukeoke-build/owner-backup-20261119/` with `SHA256SUMS-dist-owner-files.txt` (387 files); news checked 11:57 (no GitHub login, no self-check report, test-songs empty). Next: risky experiments (guide methods, live tracker, key-in-effect, microphone capture).
   - Stages 1-7: pending (contracts; guide; listening + scoring; screen; key + octave; Mac; finish).
 
 ## Next (needs the owner; see HANDOFF.md section 8)
