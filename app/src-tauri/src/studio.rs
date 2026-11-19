@@ -20,6 +20,12 @@
 //! `checking: true` (an addition to the contract). When the Studio has been idle for
 //! [`IDLE_SHUTDOWN`] it is stopped to give its memory back; the next request starts
 //! it again.
+//!
+//! (Work Order 2) After the Studio's `job.done` the app runs a last stage of its own,
+//! `guide` (docs/STUDIO_PROTOCOL.md section 12): the job stays `running` while the app's
+//! guide queue (src/guide.rs) builds the new song's melody guide, then becomes `done`
+//! with `guide` set. The Studio may start the next job meanwhile; a Studio crash does not
+//! touch a job in its guide stage; `studio_cancel` on it cancels only the guide.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -35,6 +41,7 @@ use serde_json::{Value, json};
 
 use crate::error::{ApiError, ApiResult};
 use crate::events::{EventSink, emit, names};
+use crate::guide::GuideStatus;
 
 /// Protocol version this app speaks (docs/STUDIO_PROTOCOL.md).
 pub const PROTOCOL: u64 = 1;
@@ -233,7 +240,21 @@ pub struct StudioJob {
     pub error: Option<String>,
     /// Addition: the error code (`studio_crashed`, `decode_failed`, ...).
     pub error_code: Option<String>,
+    /// (added WO2) The app's `guide` stage: the new song's melody guide.
+    pub guide: Option<GuideStatus>,
 }
+
+/// How the Studio hands a finished song to the guide queue (src/guide.rs).
+#[derive(Clone)]
+pub struct GuideHooks {
+    /// `job.done` arrived for `job_id` with the song `song_id`: build its guide.
+    pub on_done: Arc<dyn Fn(&str, &str) + Send + Sync>,
+    /// `studio_cancel` on a job in its guide stage: cancel that song's guide only.
+    pub on_cancel: Arc<dyn Fn(&str) + Send + Sync>,
+}
+
+/// The message of a job in its guide stage.
+pub const GUIDE_STAGE_MESSAGE: &str = "Making the practice data";
 
 /// docs/APP_API.md `studio_status()` (plus `checking`, an addition).
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -273,6 +294,10 @@ struct Job {
     /// The user cancelled it; if the Studio did not know it yet, the dispatcher
     /// cancels it as soon as the Studio has accepted it.
     cancel_requested: bool,
+    /// (WO2) The Studio is done with it; the app builds the song's guide.
+    in_guide: bool,
+    /// The message `job.done` brought (its warnings), shown again when the guide is done.
+    done_message: Option<String>,
 }
 
 struct Proc {
@@ -309,6 +334,7 @@ pub struct Studio {
     /// anything else, so the reader thread is never blocked by it.
     start_lock: Mutex<()>,
     ids: AtomicU64,
+    guide_hooks: Mutex<Option<GuideHooks>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -400,6 +426,7 @@ impl Studio {
             wake: Condvar::new(),
             start_lock: Mutex::new(()),
             ids: AtomicU64::new(0),
+            guide_hooks: Mutex::new(None),
         });
         if s.cfg.is_some() {
             let me = Arc::clone(&s);
@@ -408,6 +435,35 @@ impl Studio {
                 .spawn(move || me.dispatch_loop());
         }
         s
+    }
+
+    /// (WO2) Connects the guide queue: new songs get their guide as a last job stage.
+    pub fn set_guide_hooks(&self, h: GuideHooks) {
+        *lock(&self.guide_hooks) = Some(h);
+    }
+
+    /// (WO2) The guide queue reports the `guide` stage of a job: its status, and when
+    /// `finished`, the job becomes `done` (a failed guide never fails the job).
+    pub fn guide_stage_update(&self, job_id: &str, status: &GuideStatus, finished: bool) {
+        let view = {
+            let mut st = lock(&self.state);
+            let Some(j) = st.jobs.iter_mut().find(|j| j.view.job_id == job_id && j.in_guide) else { return };
+            j.view.guide = Some(status.clone());
+            if finished {
+                j.in_guide = false;
+                j.view.state = "done";
+                j.view.stage = None;
+                j.view.stage_progress = None;
+                j.view.overall = 1.0;
+                j.view.message = j.done_message.clone();
+            } else {
+                let p = status.progress.unwrap_or(0.0).clamp(0.0, 1.0);
+                j.view.stage_progress = Some(p);
+                j.view.overall = (0.95 + 0.05 * p).min(1.0);
+            }
+            j.view.clone()
+        };
+        self.emit_job(&view);
     }
 
     /// Runs the capability probe (blocking; the app calls it on a background thread).
@@ -771,6 +827,8 @@ impl Studio {
     }
 
     fn on_job_event(&self, t: &str, job_id: &str, msg: &Value) {
+        let hooks = lock(&self.guide_hooks).clone();
+        let mut guide_for: Option<String> = None;
         let view = {
             let mut st = lock(&self.state);
             st.last_activity = Instant::now();
@@ -815,6 +873,21 @@ impl Studio {
                     if let Some(r) = msg.get("report") {
                         crate::applog::info(&format!("studio: job {job_id} done: {r}"));
                     }
+                    // (WO2) The last stage is the app's own: the melody guide.
+                    if hooks.is_some()
+                        && let Some(song) = v.output_song_id.clone()
+                    {
+                        let done_message = v.message.take();
+                        v.state = "running";
+                        v.stage = Some("guide".into());
+                        v.overall = 0.95;
+                        v.stage_progress = Some(0.0);
+                        v.message = Some(GUIDE_STAGE_MESSAGE.into());
+                        v.guide = Some(GuideStatus { state: "queued", reason: None, ..GuideStatus::none() });
+                        job.done_message = done_message;
+                        job.in_guide = true;
+                        guide_for = Some(song);
+                    }
                 }
                 "job.failed" => {
                     let code = msg
@@ -836,11 +909,15 @@ impl Studio {
                 }
                 _ => return,
             }
-            v.clone()
+            job.view.clone()
         };
         self.emit_job(&view);
-        if view.state == "done" {
+        if view.state == "done" || guide_for.is_some() {
+            // The new song is listed at once (with its guide `queued`).
             self.sink.emit_value(names::LIBRARY_CHANGED, Value::Null);
+        }
+        if let (Some(song), Some(h)) = (guide_for, hooks) {
+            (h.on_done)(job_id, &song);
         }
     }
 
@@ -860,7 +937,8 @@ impl Studio {
                 st.crashes.push(Instant::now());
                 st.crashes.retain(|t| t.elapsed() < CRASH_WINDOW);
                 for j in st.jobs.iter_mut() {
-                    if j.view.state == "running" {
+                    // A job in its guide stage is the app's now: a crash does not touch it.
+                    if j.view.state == "running" && !j.in_guide {
                         j.view.state = "failed";
                         j.view.error_code = Some("studio_crashed".into());
                         j.view.error = Some(
@@ -991,12 +1069,15 @@ impl Studio {
             output_song_id: None,
             error: None,
             error_code: None,
+            guide: None,
         };
         lock(&self.state).jobs.push(Job {
             view: view.clone(),
             spec,
             sent: false,
             cancel_requested: false,
+            in_guide: false,
+            done_message: None,
         });
         self.emit_job(&view);
         self.wake.notify_all();
@@ -1013,6 +1094,15 @@ impl Studio {
                 .find(|j| j.view.job_id == job_id)
                 .ok_or_else(|| ApiError::new("not_found", "This job is not in the queue."))?;
             if !matches!(job.view.state, "queued" | "running") {
+                return Ok(());
+            }
+            // (WO2) In its guide stage: only the guide is cancelled; the song stays.
+            if job.in_guide {
+                let song = job.view.output_song_id.clone();
+                drop(st);
+                if let (Some(song), Some(h)) = (song, lock(&self.guide_hooks).clone()) {
+                    (h.on_cancel)(&song);
+                }
                 return Ok(());
             }
             job.cancel_requested = true;
@@ -1065,7 +1155,7 @@ impl Studio {
                     let idle_after = self.cfg.as_ref().map_or(IDLE_SHUTDOWN, |c| c.idle_shutdown);
                     let idle = st.proc.is_some()
                         && st.pending.is_empty()
-                        && !st.jobs.iter().any(|j| matches!(j.view.state, "queued" | "running"))
+                        && !st.jobs.iter().any(|j| matches!(j.view.state, "queued" | "running") && !j.in_guide)
                         && st.last_activity.elapsed() >= idle_after;
                     if idle {
                         break false;

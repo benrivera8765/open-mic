@@ -21,14 +21,26 @@
 // Deleting: .library__trash (a card's delete control), .library__views (Songs /
 // Deleted songs), .library__select-bar, .library__strip--ticked, .title-strip--ticked,
 // .deleted, .deleted-song, .confirm (the dialog), .confirm__cancel, .confirm__ok.
+//
+// Practice data (Work Order 2, APP_API 12.3: the melody guide practice mode draws and
+// grades against): each song says whether practice is ready (a badge on the plain card,
+// a note on the skinned strip; .title-strip__badge--practice, data-practice on the row),
+// a song without it offers "Add practice data" (.library__practice-add), and the toolbar
+// offers "Add practice data to all songs" (.library__practice-all) with its progress
+// (.library__practice-progress) and a Stop control (.library__practice-stop). The full
+// practice screen comes later (WO2 Stage 4).
 import type { ComponentChildren } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import type { DeletedSong, LibrarySort, SongSummary } from "../api/types";
+import type { DeletedSong, GuideStatus, LibrarySort, SongSummary } from "../api/types";
 import { formatBytes, formatTime, selectionCode } from "../lib/format";
 import { keyShort, pitchClass, signed } from "../lib/keys";
 import {
+  buildAllGuides,
+  buildGuide,
+  cancelGuides,
   changeSettings,
   deleteSongs,
+  guideNeedsAdding,
   getApiSync,
   loadSong,
   purgeSongs,
@@ -141,6 +153,31 @@ function Cover({ song }: { song: SongSummary }) {
   );
 }
 
+/** What the practice badge says (null: an older core that reports no practice data). */
+export function practiceBadge(g: GuideStatus | undefined): { text: string; kind: "ready" | "not-ready" | "busy"; title: string } | null {
+  if (!g) return null;
+  const graded = g.counts ? ` Graded on ${g.counts.graded} of ${g.counts.notes} notes.` : "";
+  switch (g.state) {
+    case "ready":
+    case "outdated":
+    case "newer":
+      return {
+        text: "Practice ready",
+        kind: "ready",
+        title: `This song has its practice data.${graded}${g.pending_write ? " It is saved into the song when the song stops playing." : ""}`,
+      };
+    case "queued":
+      return { text: "Practice data waiting", kind: "busy", title: "Practice data will be added to this song shortly." };
+    case "building":
+      return { text: `Adding practice data ${Math.round((g.progress ?? 0) * 100)} %`, kind: "busy", title: "Practice data is being added to this song." };
+    case "failed":
+      if (g.in_memory) return { text: "Practice ready (this session)", kind: "ready", title: g.reason ?? "" };
+      return { text: g.error_code === "guide_no_lead" ? "No practice (no lead vocal)" : "Practice not ready", kind: "not-ready", title: g.reason ?? "Practice data could not be added." };
+    default:
+      return { text: "Practice not ready", kind: "not-ready", title: g.reason ?? "Practice data has not been added to this song yet." };
+  }
+}
+
 /** Short notes about a song for the skinned title strip (the plain card shows them as badges). */
 function stripNote(song: SongSummary): string | undefined {
   if (song.error) return song.error;
@@ -149,7 +186,26 @@ function stripNote(song: SongSummary): string | undefined {
   else if (!song.lyrics_checked) notes.push("Lyrics not checked");
   if (song.semitones !== 0) notes.push(`Key ${signed(song.semitones)}`);
   if (song.preset === "clean") notes.push("Clean");
+  const practice = practiceBadge(song.guide);
+  if (practice) notes.push(practice.text);
   return notes.length ? notes.join(" · ") : undefined;
+}
+
+/** "Add practice data" for one song: shown while practice is not ready for it. */
+function AddPracticeButton({ song, skin }: { song: SongSummary; skin: boolean }) {
+  const g = song.guide;
+  if (song.error || !guideNeedsAdding(g)) return null;
+  const retry = g?.state === "failed";
+  const label = `${retry ? "Try again: add" : "Add"} practice data to ${songLabel(song)}`;
+  const title = retry && g?.reason ? `${g.reason}` : "Add practice data to this song (made from its own lead vocal; nothing else in the file changes)";
+  if (skin) {
+    return <PlateButton size="sm" class="library__practice-add" label={retry ? "Practice: retry" : "+ Practice"} ariaLabel={label} title={title} onClick={() => void buildGuide(song.song_id)} />;
+  }
+  return (
+    <button type="button" class="button button--small library__practice-add" aria-label={label} title={title} onClick={() => void buildGuide(song.song_id)}>
+      {retry ? "Try again" : "Add practice data"}
+    </button>
+  );
 }
 
 /** What a card does in Select mode (undefined: not selecting). */
@@ -185,8 +241,9 @@ function SkinCard({ song, code, current, picking, onDelete }: { song: SongSummar
   return (
     <div
       ref={ref}
-      class={`library__strip${current ? " library__strip--current" : ""}${damaged ? " library__strip--damaged" : ""}${picking?.ticked ? " library__strip--ticked" : ""}${picking ? " library__strip--picking" : ""}`}
+      class={`library__strip${current ? " library__strip--current" : ""}${damaged ? " library__strip--damaged" : ""}${picking?.ticked ? " library__strip--ticked" : ""}${picking ? " library__strip--picking" : ""}${!picking && !damaged && guideNeedsAdding(song.guide) ? " library__strip--can-add" : ""}`}
       data-song-id={song.song_id}
+      data-practice={damaged ? undefined : practiceBadge(song.guide)?.kind}
     >
       <TitleStripCard
         title={song.title || "Untitled"}
@@ -201,13 +258,19 @@ function SkinCard({ song, code, current, picking, onDelete }: { song: SongSummar
         checked={picking?.ticked}
         onSelect={() => (picking ? picking.toggle() : void loadSong(song.song_id))}
       />
-      {!picking && <TrashButton song={song} skin onDelete={onDelete} />}
+      {!picking && (
+        <div class="library__strip-actions">
+          <AddPracticeButton song={song} skin />
+          <TrashButton song={song} skin onDelete={onDelete} />
+        </div>
+      )}
     </div>
   );
 }
 
 function Card({ song, code, current, picking, onDelete }: { song: SongSummary; code: string; current: boolean; picking?: Picking; onDelete: () => void }) {
   const damaged = song.error !== null;
+  const practice = damaged ? null : practiceBadge(song.guide);
   const body = (
     <>
       <span class="title-strip__code">
@@ -227,6 +290,11 @@ function Card({ song, code, current, picking, onDelete }: { song: SongSummary; c
             {song.has_lyrics && !song.lyrics_checked && <span class="title-strip__badge title-strip__badge--warn">Lyrics not checked</span>}
             {song.semitones !== 0 && <span class="title-strip__badge">Key {signed(song.semitones)}</span>}
             {song.preset === "clean" && <span class="title-strip__badge">Clean</span>}
+            {practice && (
+              <span class={`title-strip__badge title-strip__badge--practice title-strip__badge--practice-${practice.kind}`} title={practice.title}>
+                {practice.text}
+              </span>
+            )}
           </span>
         )}
       </span>
@@ -268,7 +336,7 @@ function Card({ song, code, current, picking, onDelete }: { song: SongSummary; c
         aria-current={current ? "true" : undefined}
         aria-label={`${song.title} by ${song.artist}, ${formatTime(song.duration_s)}${song.key ? `, ${keyShort(song.key, song.semitones)}` : ""}${
           !song.has_lyrics ? ", no lyrics" : !song.lyrics_checked ? ", lyrics not checked" : ""
-        }. Sing this song.`}
+        }${practice ? `, ${practice.text.toLowerCase()}` : ""}. Sing this song.`}
         onClick={() => void loadSong(song.song_id)}
       >
         {body}
@@ -276,9 +344,14 @@ function Card({ song, code, current, picking, onDelete }: { song: SongSummary; c
     );
   }
   return (
-    <div class="title-strip__row" data-song-id={song.song_id}>
+    <div class="title-strip__row" data-song-id={song.song_id} data-practice={practice?.kind}>
       {card}
-      {!picking && <TrashButton song={song} skin={false} onDelete={onDelete} />}
+      {!picking && (
+        <div class="title-strip__actions">
+          <AddPracticeButton song={song} skin={false} />
+          <TrashButton song={song} skin={false} onDelete={onDelete} />
+        </div>
+      )}
     </div>
   );
 }
@@ -530,6 +603,41 @@ function typingIn(t: EventTarget | null): boolean {
  * (docs/DESIGN.md "Library"); the behaviour (search, sort, Ctrl+F, Enter opens the
  * first match, damaged files listed but not playable, deleting) is the same in both looks.
  */
+/**
+ * "Add practice data to all songs", or its progress with a Stop control while it runs.
+ * Hidden when every song already has practice data (or none can get it).
+ */
+function PracticeAll({ skin, songs }: { skin: boolean; songs: SongSummary[] }) {
+  const batch = useApp((s) => s.guideBatch);
+  const missing = songs.filter((s) => !s.error && guideNeedsAdding(s.guide)).length;
+  if (batch?.running) {
+    const text = `Adding practice data: ${Math.min(batch.done + 1, batch.total)} of ${batch.total}${batch.failed ? ` (${batch.failed} failed)` : ""}`;
+    return (
+      <div class="library__practice" role="group" aria-label="Practice data">
+        <span class="library__practice-progress" aria-live="polite" role="status">
+          {text}
+        </span>
+        {skin ? (
+          <PlateButton size="sm" class="library__practice-stop" label="Stop" title="Stop adding practice data (the songs stay as they are)" onClick={() => void cancelGuides()} />
+        ) : (
+          <button type="button" class="button library__practice-stop" onClick={() => void cancelGuides()}>
+            Stop
+          </button>
+        )}
+      </div>
+    );
+  }
+  if (missing === 0) return null;
+  const title = `Add practice data to ${missing} song${missing === 1 ? "" : "s"} that have none yet (made from each song's own lead vocal; nothing else in the files changes)`;
+  return skin ? (
+    <PlateButton size="sm" class="library__practice-all" label="Add practice data" ariaLabel="Add practice data to all songs" title={title} onClick={() => void buildAllGuides()} />
+  ) : (
+    <button type="button" class="button library__practice-all" title={title} onClick={() => void buildAllGuides()}>
+      Add practice data to all songs
+    </button>
+  );
+}
+
 export function Library({ skin = false }: { skin?: boolean }) {
   const library = useApp((s) => s.library);
   const loading = useApp((s) => s.libraryLoading);
@@ -752,6 +860,7 @@ export function Library({ skin = false }: { skin?: boolean }) {
           {view === "songs" && !picking && (
             <PlateButton size="sm" class="library__rescan" label={loading ? "Reading…" : "Rescan"} title="Read the Library folder again" disabled={loading} onClick={() => void refreshLibrary()} />
           )}
+          {view === "songs" && !picking && <PracticeAll skin songs={songs} />}
           {selectToggle}
           {viewSwitch}
           {space}
@@ -791,6 +900,7 @@ export function Library({ skin = false }: { skin?: boolean }) {
             {loading ? "Reading…" : "Rescan"}
           </button>
         )}
+        {view === "songs" && !picking && <PracticeAll skin={false} songs={songs} />}
         {selectBar}
         {selectToggle}
         {viewSwitch}

@@ -15,7 +15,8 @@
 //!    and slides into the note they lead to, takes the median pitch of each note's steady
 //!    part (fractions of a semitone, never rounded to a key), marks speech-like stretches
 //!    as unpitched, gives every note a confidence, estimates the recording's tuning and
-//!    checks every note's octave on the spectrum by a second, independent method.
+//!    checks every note's octave on the spectrum by a second, independent method, then
+//!    against the melody around it (a note left "ok" inside a run the spectrum flagged).
 //!
 //! [`build`] runs both. Pure functions: no threads, no I/O, so the same code runs on
 //! Windows and macOS and on any computer without the Studio.
@@ -27,13 +28,16 @@ mod octave;
 mod pyin;
 mod resample;
 mod segment;
+pub mod words;
 
 use serde::Serialize;
 
 /// What made a guide: stored with it so a better method can replace old guides later.
 pub const METHOD: &str = "jk-pitch pyin+notes";
 /// Bumped whenever the builder's output can change for the same input.
-pub const VERSION: &str = "0.1.0";
+/// 0.2.0 (WO2 Stage 2): the phrase-context octave check after the spectral one
+/// (`octave::context_check`); notes, pitches and the curve are unchanged from 0.1.0.
+pub const VERSION: &str = "0.2.0";
 
 /// Tunables. [`GuideConfig::default`] is what songs use; the benchmark documents why.
 #[derive(Clone, Debug, Serialize)]
@@ -71,6 +75,22 @@ pub struct GuideConfig {
     pub spoken_phrase_share: f64,
     /// A note whose confidence is below this is "low confidence" (drawn dim, not graded).
     pub low_confidence: f32,
+    /// The tuning offset is used (`tuning.use_cents` in the file) only when its strength
+    /// reaches this; below it the recording has no consistent tuning (rap songs measure
+    /// 0.11-0.16) and readers use A = 440 Hz (SONG_FORMAT 10.1, D-237).
+    pub tuning_min_strength: f64,
+    /// A note flagged by the octave check has its confidence multiplied by this (so it is
+    /// drawn dim and not graded).
+    pub octave_flag_factor: f32,
+    /// Phrase-context octave check after the spectral one (builder 0.2.0): 0 off, 1 the
+    /// run rule (default), 2 the run rule and the isolated-jump rule (octave::context_check).
+    pub octave_context: f64,
+    /// The melody this far either side of a note is its context (s).
+    pub octave_context_s: f64,
+    /// Neighbours this close (s) count as touching for the run rule.
+    pub octave_run_gap_s: f64,
+    /// The isolated-jump rule looks at notes at most this long (s).
+    pub octave_isolated_max_s: f64,
 }
 
 impl GuideConfig {
@@ -87,6 +107,12 @@ impl GuideConfig {
             "voicing_switch_prob" => self.voicing_switch_prob = value,
             "window_s" => self.window_s = value,
             "low_confidence" => self.low_confidence = value as f32,
+            "tuning_min_strength" => self.tuning_min_strength = value,
+            "octave_flag_factor" => self.octave_flag_factor = value as f32,
+            "octave_context" => self.octave_context = value,
+            "octave_context_s" => self.octave_context_s = value,
+            "octave_run_gap_s" => self.octave_run_gap_s = value,
+            "octave_isolated_max_s" => self.octave_isolated_max_s = value,
             _ => return false,
         }
         true
@@ -111,7 +137,20 @@ impl Default for GuideConfig {
             speech_steady_share: 0.25,
             spoken_phrase_share: 0.6,
             low_confidence: 0.5,
+            tuning_min_strength: 0.3,
+            octave_flag_factor: 0.4,
+            octave_context: octave::CONTEXT_RUN,
+            octave_context_s: 2.0,
+            octave_run_gap_s: 0.1,
+            octave_isolated_max_s: 0.5,
         }
+    }
+}
+
+impl GuideConfig {
+    /// The tuning readers use: `cents` when `strength >= tuning_min_strength`, else 0.
+    pub fn use_cents(&self, cents: f64, strength: f64) -> f64 {
+        if strength >= self.tuning_min_strength { cents } else { 0.0 }
     }
 }
 
@@ -238,8 +277,13 @@ pub fn segment(curve: PitchCurve, a: &Analysis, cfg: &GuideConfig) -> Guide {
         n.octave = checker.check(&a.samples, n.start_s + n.glide_in_s, n.end_s, n.midi);
         if matches!(n.octave, OctaveCheck::MaybeHigh | OctaveCheck::MaybeLow) {
             flags += 1;
-            n.confidence *= 0.4;
+            n.confidence *= cfg.octave_flag_factor;
         }
+    }
+    // The second, independent look: the melody around each note (builder 0.2.0).
+    for i in octave::context_check(&mut notes, cfg.octave_context, cfg.octave_context_s, cfg.octave_run_gap_s, cfg.octave_isolated_max_s) {
+        flags += 1;
+        notes[i].confidence *= cfg.octave_flag_factor;
     }
     let (tuning_cents, tuning_strength) = segment::tuning(&notes, cfg);
     Guide {

@@ -184,3 +184,172 @@ mod tests {
         }
     }
 }
+
+// ------------------------------------------------------------------ phrase context
+//
+// The spectral check above looks at one note at a time. A tracker that jumps an octave
+// for a whole stretch (the owner's song at 213.5-215.7 s, docs/benchmarks/practice-guide.md
+// section 5) gets most of that stretch flagged, but a note whose spectrum is less clear
+// can stay "ok" in the middle of the flagged run, at the wrong octave and graded. This
+// second, independent look uses the melody around the note instead of its spectrum.
+
+// Which phrase-context rules run (`GuideConfig::octave_context`): 0 = none.
+/// The run rule only (the default): an unflagged note touching a flagged neighbour.
+pub const CONTEXT_RUN: f64 = 1.0;
+/// The run rule and the isolated-jump rule.
+pub const CONTEXT_RUN_ISOLATED: f64 = 2.0;
+
+/// Duration-weighted median of (midi, weight) pairs.
+fn weighted_median(mut v: Vec<(f64, f64)>) -> Option<f64> {
+    let total: f64 = v.iter().map(|x| x.1).sum();
+    if v.is_empty() || total <= 0.0 {
+        return None;
+    }
+    v.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut acc = 0.0;
+    for (m, w) in &v {
+        acc += w;
+        if acc >= total / 2.0 {
+            return Some(*m);
+        }
+    }
+    v.last().map(|x| x.0)
+}
+
+fn flagged(o: OctaveCheck) -> bool {
+    matches!(o, OctaveCheck::MaybeHigh | OctaveCheck::MaybeLow)
+}
+
+/// The phrase-context octave check. Flags (and returns the indices of) pitched notes that
+/// the spectral check left "ok" although the melody around them says they are an octave
+/// off:
+///
+/// - **run**: the note touches (gap at most `run_gap_s`) a neighbour the spectral check
+///   flagged in one direction, lies within 2.5 semitones of that neighbour, and the
+///   unflagged notes within `context_s` of it (at least two, 0.3 s in all) have a weighted
+///   median 9.5 or more semitones away in the same direction, with the note's other
+///   octave within 3.5 semitones of that median. Repeated until nothing changes, so a run
+///   is flagged from its flagged end inwards.
+/// - **isolated** (`rules >= 2`): a note at most `isolated_max_s` long whose two touching
+///   neighbours are both unflagged and both within 2 semitones of its other octave.
+///
+/// Notes are never moved or changed otherwise; a flagged note is drawn dim and not graded.
+pub fn context_check(notes: &mut [super::Note], rules: f64, context_s: f64, run_gap_s: f64, isolated_max_s: f64) -> Vec<usize> {
+    use super::NoteKind;
+    let mut out = Vec::new();
+    if rules < CONTEXT_RUN {
+        return out;
+    }
+    let pitched: Vec<usize> = (0..notes.len()).filter(|&i| notes[i].kind == NoteKind::Pitched && notes[i].midi > 0.0).collect();
+    let mid = |n: &super::Note| 0.5 * (n.start_s + n.end_s);
+    // The context: unflagged pitched notes near `i` (not `i` itself).
+    let context = |notes: &[super::Note], i: usize| -> Option<f64> {
+        let c = mid(&notes[i]);
+        let v: Vec<(f64, f64)> = pitched
+            .iter()
+            .filter(|&&j| j != i && !flagged(notes[j].octave) && (mid(&notes[j]) - c).abs() <= context_s)
+            .map(|&j| (notes[j].midi, notes[j].end_s - notes[j].start_s))
+            .collect();
+        let dur: f64 = v.iter().map(|x| x.1).sum();
+        if v.len() < 2 || dur < 0.3 { None } else { weighted_median(v) }
+    };
+    let far = |m: f64, r: f64, dir: f64| -> bool { dir * (m - r) >= 9.5 && (m - 12.0 * dir - r).abs() <= 3.5 };
+    loop {
+        let mut changed = false;
+        for (k, &i) in pitched.iter().enumerate() {
+            if notes[i].octave != OctaveCheck::Ok {
+                continue;
+            }
+            // Touching neighbours among the pitched notes.
+            let prev = (k > 0).then(|| pitched[k - 1]).filter(|&j| notes[i].start_s - notes[j].end_s <= run_gap_s);
+            let next = pitched.get(k + 1).copied().filter(|&j| notes[j].start_s - notes[i].end_s <= run_gap_s);
+            let Some(r) = context(notes, i) else { continue };
+            let m = notes[i].midi;
+            let mut verdict = None;
+            for j in [prev, next].into_iter().flatten() {
+                let dir = match notes[j].octave {
+                    OctaveCheck::MaybeHigh => 1.0,
+                    OctaveCheck::MaybeLow => -1.0,
+                    _ => continue,
+                };
+                if (notes[j].midi - m).abs() <= 2.5 && far(m, r, dir) {
+                    verdict = Some(if dir > 0.0 { OctaveCheck::MaybeHigh } else { OctaveCheck::MaybeLow });
+                }
+            }
+            if verdict.is_none()
+                && rules >= CONTEXT_RUN_ISOLATED
+                && notes[i].end_s - notes[i].start_s <= isolated_max_s
+                && let (Some(p), Some(n)) = (prev, next)
+                && !flagged(notes[p].octave)
+                && !flagged(notes[n].octave)
+            {
+                for dir in [1.0, -1.0] {
+                    let other = m - 12.0 * dir;
+                    if (notes[p].midi - other).abs() <= 2.0 && (notes[n].midi - other).abs() <= 2.0 && far(m, r, dir) {
+                        verdict = Some(if dir > 0.0 { OctaveCheck::MaybeHigh } else { OctaveCheck::MaybeLow });
+                    }
+                }
+            }
+            if let Some(v) = verdict {
+                notes[i].octave = v;
+                out.push(i);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::super::{Note, NoteKind};
+    use super::*;
+
+    fn n(a: f64, b: f64, midi: f64, o: OctaveCheck) -> Note {
+        Note { start_s: a, end_s: b, midi, confidence: 0.9, kind: NoteKind::Pitched, octave: o, glide_in_s: 0.0 }
+    }
+
+    /// The owner's song at 212-216 s (builder 0.1.0's notes): the one note left "ok" at
+    /// the head of a flagged run an octave above its context is flagged too.
+    #[test]
+    fn an_unflagged_note_in_a_flagged_run_is_flagged() {
+        use OctaveCheck::*;
+        let mut v = vec![
+            n(211.935, 212.185, 61.96, Ok),
+            n(212.245, 212.835, 64.00, Ok),
+            n(212.885, 213.325, 65.67, Ok),
+            n(213.325, 213.455, 64.48, Ok),
+            n(213.475, 214.225, 76.13, Ok),
+            n(214.225, 214.375, 77.24, MaybeHigh),
+            n(214.375, 215.175, 78.06, MaybeHigh),
+            n(215.175, 215.355, 77.44, MaybeHigh),
+            n(215.355, 215.675, 76.17, MaybeHigh),
+            n(215.695, 215.925, 63.95, Ok),
+            n(216.385, 216.495, 61.39, Ok),
+            n(216.495, 216.805, 62.14, Ok),
+        ];
+        let flagged = context_check(&mut v, CONTEXT_RUN, 2.0, 0.1, 0.5);
+        assert_eq!(flagged, vec![4]);
+        assert_eq!(v[4].octave, MaybeHigh);
+    }
+
+    /// A real octave leap held on its own (no flagged neighbour) is left alone by the run
+    /// rule, and so is a note next to a flagged one at a different pitch.
+    #[test]
+    fn real_leaps_are_left_alone() {
+        use OctaveCheck::*;
+        let mut v = vec![n(0.0, 0.5, 60.0, Ok), n(0.5, 1.0, 62.0, Ok), n(1.0, 2.0, 74.0, Ok), n(2.0, 2.5, 62.0, Ok), n(2.5, 3.0, 60.0, Ok)];
+        assert!(context_check(&mut v, CONTEXT_RUN, 2.0, 0.1, 0.5).is_empty());
+        let mut w = vec![n(0.0, 0.5, 60.0, Ok), n(0.5, 1.0, 62.0, Ok), n(1.0, 1.4, 74.0, Ok), n(1.4, 1.8, 79.0, MaybeHigh), n(1.8, 2.5, 62.0, Ok)];
+        assert!(context_check(&mut w, CONTEXT_RUN, 2.0, 0.1, 0.5).is_empty(), "the flagged neighbour is 5 semitones away");
+        // The isolated rule catches a short single-note jump between two notes at its lower octave.
+        let mut x = vec![n(0.0, 0.5, 61.0, Ok), n(0.5, 0.8, 62.0, Ok), n(0.8, 1.1, 74.1, Ok), n(1.1, 1.6, 62.2, Ok), n(1.6, 2.0, 60.0, Ok)];
+        let x2 = x.clone();
+        assert_eq!(context_check(&mut x, CONTEXT_RUN_ISOLATED, 2.0, 0.1, 0.5), vec![2]);
+        let mut x2 = x2;
+        assert!(context_check(&mut x2, CONTEXT_RUN, 2.0, 0.1, 0.5).is_empty(), "the isolated rule is not in the run-only setting");
+    }
+}

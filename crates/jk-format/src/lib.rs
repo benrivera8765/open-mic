@@ -1,7 +1,8 @@
 //! # jk-format
 //!
-//! Reader and writer for the Jukeoke `.jksong` song file, version 1.0, as specified in
-//! `docs/SONG_FORMAT.md`. No audio-device dependencies; with the default `symphonia`
+//! Reader and writer for the Jukeoke `.jksong` song file, version 1.1, as specified in
+//! `docs/SONG_FORMAT.md` (1.1 adds the melody guide, [`guide`], its raw-copy rewrite,
+//! [`guide_write`], and the practice data in the settings slot, [`practice`]). No audio-device dependencies; with the default `symphonia`
 //! feature, stem chunks can be handed straight to symphonia's FLAC decoder.
 //!
 //! ```text
@@ -33,10 +34,13 @@ pub mod chunk_reader;
 pub mod decode;
 pub mod error;
 pub mod flac;
+pub mod guide;
+pub mod guide_write;
 pub mod header;
 pub mod library;
 pub mod lyrics;
 pub mod manifest;
+pub mod practice;
 pub mod serde_util;
 pub mod slot;
 pub mod song;
@@ -48,10 +52,13 @@ pub mod writer;
 
 pub use chunk_reader::ChunkReader;
 pub use error::{ErrorKind, FormatError, Result};
+pub use guide::{Curve, GuideDoc, GuideFileState, GuideNote};
+pub use guide_write::{GuideChunks, PreparedGuide, RewriteControl, add_guide, prepare_guide_rewrite};
 pub use header::Header;
 pub use library::{is_song_file_name, list_song_files, stale_temp_files};
 pub use lyrics::{Grapheme, Line, Lyrics, Word};
 pub use manifest::{Analysis, KeyInfo, Manifest, StemInfo, StemRole};
+pub use practice::{Practice, PracticeResult};
 pub use slot::{SlotPair, SlotState};
 pub use song::{SlotWrite, SongFile, update_user_state};
 pub use toc::{ChunkEntry, Toc};
@@ -63,11 +70,11 @@ pub use writer::{ChunkData, Rewrite, SongWriter, WrittenSong, rewrite_song};
 pub const MAGIC: [u8; 8] = [0x89, b'J', b'K', b'S', 0x0D, 0x0A, 0x1A, 0x0A];
 /// Highest major version this crate reads (and the one it writes).
 pub const FORMAT_MAJOR: u16 = 1;
-/// Minor version this crate writes. Any minor is read.
-pub const FORMAT_MINOR: u16 = 0;
+/// Minor version this crate writes (1.1: Work Order 2). Any minor is read.
+pub const FORMAT_MINOR: u16 = 1;
 /// `format_version` string written into new manifests.
-pub const FORMAT_VERSION: &str = "1.0";
-/// Defined header bytes in v1.0 (the header block is padded to 4096).
+pub const FORMAT_VERSION: &str = "1.1";
+/// Defined header bytes in v1.x (the header block is padded to 4096).
 pub const HEADER_LENGTH: usize = 128;
 /// Alignment of slots, chunks and the TOC.
 pub const ALIGN: u64 = 4096;

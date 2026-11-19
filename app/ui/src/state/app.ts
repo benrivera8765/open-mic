@@ -11,6 +11,8 @@ import type {
   AppSettingsChanges,
   DeletedList,
   Device,
+  GuideBatchEvent,
+  GuideStatus,
   LibraryList,
   Lyrics,
   MediaPlayers,
@@ -86,6 +88,8 @@ export interface AppState {
   exports: Record<string, ExportJob>;
   /** The sync editor's tap-along owns Space/Enter/Esc while true. */
   tapMode: boolean;
+  /** WO2: "Add practice data to all songs" while it runs (and its last report). */
+  guideBatch: GuideBatchEvent | null;
 }
 
 export const store = new Store<AppState>({
@@ -115,6 +119,7 @@ export const store = new Store<AppState>({
   searchFocus: 0,
   exports: {},
   tapMode: false,
+  guideBatch: null,
 });
 
 export const useApp = <T>(selector: (s: AppState) => T): T => useSelector(store, selector);
@@ -203,6 +208,8 @@ export async function init(theApi: Api): Promise<void> {
   api.on("playback://error", (e) => toast(e.message, "error"));
   api.on("library://changed", () => void refreshLibrary());
   api.on("library://deleted", (d) => store.set({ deleted: d }));
+  api.on("guide://status", ({ song_id, status }) => applyGuideStatus(song_id, status));
+  api.on("guide://batch", (b) => store.set({ guideBatch: b.running ? b : null }));
   api.on("recorder://level", (r) => store.set({ recorder: r }));
   api.on("recorder://session", (sess) => upsertRecordingSession(sess));
   api.on("recorder://preview", ({ path, playing }) =>
@@ -253,6 +260,53 @@ export async function refreshLibrary(): Promise<void> {
   store.set({ libraryLoading: true });
   const lib = await attempt(api.libraryList(), "Could not read the library");
   store.set({ libraryLoading: false, ...(lib ? { library: lib } : {}) });
+}
+
+// ---------------------------------------------------------------------------
+// Practice data (the melody guide; WO2, APP_API 12.3). The core makes it; the Library
+// shows whether a song has it and offers to add it (one song, or every song).
+// ---------------------------------------------------------------------------
+
+/** States in which practice is not ready and adding practice data can help. */
+export function guideNeedsAdding(g: GuideStatus | undefined): boolean {
+  if (!g) return false;
+  if (g.state === "failed") return g.error_code !== "guide_no_lead";
+  return g.state === "none" || g.state === "stale";
+}
+
+/** Practice can start from what the song holds (or from memory). */
+export function guideUsable(g: GuideStatus | undefined): boolean {
+  return !!g && (g.state === "ready" || g.state === "outdated" || g.state === "newer" || g.in_memory);
+}
+
+/** A `guide://status` arrives: patch the song in the library (no rescan) and the loaded one. */
+export function applyGuideStatus(songId: string, status: GuideStatus): void {
+  store.set((s) => {
+    const lib = s.library;
+    const songs = lib?.songs.map((x) => (x.song_id === songId ? { ...x, guide: status } : x));
+    const song = s.song?.summary.song_id === songId ? { ...s.song, summary: { ...s.song.summary, guide: status } } : s.song;
+    return { ...(lib && songs ? { library: { ...lib, songs } } : {}), song };
+  });
+}
+
+/** "Add practice data" for one song (`force`: make it again). */
+export async function buildGuide(songId: string, force = false): Promise<void> {
+  if (!api?.guideBuild) return;
+  const st = await attempt(api.guideBuild(songId, force), "Practice data could not be added");
+  if (st) applyGuideStatus(songId, st);
+}
+
+/** "Add practice data to all songs". */
+export async function buildAllGuides(): Promise<void> {
+  if (!api?.guideBuildAll) return;
+  const r = await attempt(api.guideBuildAll(false), "Practice data could not be added");
+  if (r && r.queued === 0) toast("Every song already has its practice data.");
+}
+
+/** Stops adding practice data (every song still waiting, and the one being made). */
+export async function cancelGuides(): Promise<void> {
+  if (!api?.guideCancel) return;
+  await attempt(api.guideCancel(), "Could not stop");
 }
 
 // ---------------------------------------------------------------------------

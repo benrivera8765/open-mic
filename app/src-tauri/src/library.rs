@@ -41,6 +41,19 @@ pub struct SongSummary {
     pub preset: String,
     /// Non-null: listed but unplayable (damaged, newer version...).
     pub error: Option<String>,
+    /// (added WO2) The melody guide as the file says; the core overlays the live queue
+    /// state (src/guide.rs, `Core::library_list`).
+    pub guide: crate::guide::GuideStatus,
+    /// (added WO2) The best practice result, from the song's slot (SONG_FORMAT 11).
+    pub practice_best: Option<PracticeBest>,
+}
+
+/// `SongSummary.practice_best` (docs/APP_API.md section 2).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PracticeBest {
+    pub overall: Option<f64>,
+    pub grade: Option<String>,
+    pub date: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -206,6 +219,8 @@ impl Library {
                     modified_ms: st.1,
                     preset: String::new(),
                     error: Some(e.user_message()),
+                    guide: crate::guide::GuideStatus::none(),
+                    practice_best: None,
                 }
             }
         }
@@ -305,6 +320,12 @@ pub fn summary_of(song: &jk_format::SongFile, song_id: String, st: (u64, u64)) -
         modified_ms: st.1,
         preset: m.preset.clone().unwrap_or_else(|| "full".into()),
         error: None,
+        guide: crate::guide::GuideStatus::from_file(song),
+        practice_best: state.practice().and_then(|p| p.best).map(|b| PracticeBest {
+            overall: b.overall,
+            grade: b.grade,
+            date: b.date,
+        }),
     }
 }
 

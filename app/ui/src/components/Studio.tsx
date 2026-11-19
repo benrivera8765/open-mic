@@ -14,7 +14,7 @@ import type { InspectResult, LookupResult, StudioJob, StudioLyricsMode, StudioMo
 import { STUDIO_STAGES } from "../api/types";
 import { errorMessage } from "../api/client";
 import { formatBytes, formatRate, formatTime } from "../lib/format";
-import { addToStudio, getApiSync, loadSong, refreshStudio, removeFromStudio, toast, useApp } from "../state/app";
+import { addToStudio, buildGuide, getApiSync, loadSong, refreshStudio, removeFromStudio, toast, useApp } from "../state/app";
 import { Note, Progress, Section, Select } from "./common";
 
 // What each preset does, in the measured terms of docs/benchmarks/separation.md (ccMixter
@@ -43,7 +43,7 @@ export const PRESETS: { value: StudioPreset; label: string; hint: string }[] = [
   },
 ];
 
-const STAGE_LABELS: Record<string, string> = { decode: "Read", separate: "Separate", lyrics: "Lyrics", align: "Align", analyse: "Key & tempo", write: "Save" };
+const STAGE_LABELS: Record<string, string> = { decode: "Read", separate: "Separate", lyrics: "Lyrics", align: "Align", analyse: "Key & tempo", write: "Save", guide: "Practice data" };
 
 const LANGUAGES = [
   { value: "en", label: "English" },
@@ -463,8 +463,13 @@ function ImportItem({ path }: { path: string }) {
   );
 }
 
-function Job({ job }: { job: StudioJob & { stage_progress?: number } }) {
-  const idx = job.stage ? STUDIO_STAGES.indexOf(job.stage as (typeof STUDIO_STAGES)[number]) : job.state === "done" ? STUDIO_STAGES.length : -1;
+/** One job of the queue (exported for tests). */
+export function Job({ job }: { job: StudioJob & { stage_progress?: number } }) {
+  // WO2: an app core that makes practice data adds its own last stage, "guide"
+  // (STUDIO_PROTOCOL 12; the job carries `guide`).
+  const stages: string[] = job.guide !== undefined ? [...STUDIO_STAGES, "guide"] : [...STUDIO_STAGES];
+  const idx = job.stage ? stages.indexOf(job.stage) : job.state === "done" ? stages.length : -1;
+  const guideFailed = job.state === "done" && job.guide?.state === "failed";
   return (
     <li class={`studio__job studio__job--${job.state}`}>
       <p>
@@ -474,7 +479,7 @@ function Job({ job }: { job: StudioJob & { stage_progress?: number } }) {
         </span>
       </p>
       <ol class="studio__stages" aria-label="Stages">
-        {STUDIO_STAGES.map((s, k) => (
+        {stages.map((s, k) => (
           <li key={s} class={`studio__stage${k < idx || job.state === "done" ? " studio__stage--done" : ""}${k === idx && job.state === "running" ? " studio__stage--current" : ""}`}>
             {STAGE_LABELS[s]}
             {k === idx && job.state === "running" && job.stage_progress !== undefined ? ` ${Math.round(job.stage_progress * 100)} %` : ""}
@@ -484,6 +489,11 @@ function Job({ job }: { job: StudioJob & { stage_progress?: number } }) {
       {(job.state === "running" || job.state === "queued") && <Progress value={job.overall} label={`${job.input_name}: overall progress`} />}
       {job.message && job.state === "running" && <p class="hint">{job.message}</p>}
       {job.state === "failed" && job.error && <Note kind="error">{job.error}</Note>}
+      {guideFailed && (
+        <Note kind="warn">
+          The song is ready to sing, but practice data could not be added: {job.guide?.reason ?? "unknown reason"}
+        </Note>
+      )}
       <div class="row">
         {(job.state === "queued" || job.state === "running") && (
           <button type="button" class="button button--small" onClick={() => void getApiSync().studioCancel(job.job_id).catch((e) => toast(errorMessage(e), "error"))}>
@@ -493,6 +503,11 @@ function Job({ job }: { job: StudioJob & { stage_progress?: number } }) {
         {job.state === "done" && job.output_song_id && (
           <button type="button" class="button button--small" onClick={() => void loadSong(job.output_song_id!)}>
             Sing it now
+          </button>
+        )}
+        {guideFailed && job.output_song_id && job.guide?.error_code !== "guide_no_lead" && (
+          <button type="button" class="button button--small studio__guide-retry" onClick={() => void buildGuide(job.output_song_id!)}>
+            Add practice data again
           </button>
         )}
       </div>

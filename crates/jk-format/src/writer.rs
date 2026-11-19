@@ -311,6 +311,11 @@ fn random_u64() -> u64 {
     h.finish()
 }
 
+/// [`sync_parent_dir`] for the guide rewrite (crate::guide_write).
+pub(crate) fn sync_parent_dir_pub(path: &Path) {
+    sync_parent_dir(path)
+}
+
 /// After a rename, flush the directory entry on Unix (so the rename itself survives a
 /// power cut). Windows has no portable equivalent; NTFS/exFAT metadata is flushed by
 /// the file system.

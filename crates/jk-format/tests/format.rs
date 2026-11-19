@@ -152,7 +152,7 @@ fn round_trip_everything() {
 
     let song = SongFile::open(&p).unwrap();
     assert_eq!(song.header().major, 1);
-    assert_eq!(song.header().minor, 0);
+    assert_eq!(song.header().minor, FORMAT_MINOR, "1.1 writers write minor 1");
     assert_eq!(song.header().slot_size, DEFAULT_SLOT_SIZE);
     assert_eq!(song.manifest(), &test_manifest());
     assert_eq!(song.manifest().extra["x_future_manifest_key"], json!({"nested": [1, 2, 3]}));
@@ -374,7 +374,7 @@ fn newer_major_is_refused_newer_minor_opens() {
     b[8..10].copy_from_slice(&2u16.to_le_bytes());
     fix_header_crc(&mut b);
     let e = open_bytes(&d, "v2.jksong", &b).unwrap_err();
-    assert!(matches!(e, FormatError::NewerVersion { major: 2, minor: 0 }), "{e}");
+    assert!(matches!(e, FormatError::NewerVersion { major: 2, minor: FORMAT_MINOR }), "{e}");
     assert!(e.user_message().contains("newer version"));
 
     // 1.7: higher minor, non-zero reserved header bytes, unknown TOC keys, an unknown
