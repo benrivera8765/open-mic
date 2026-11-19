@@ -1,0 +1,23 @@
+[package]
+name = "jk-pitch"
+description = "Practice mode for Jukeoke: streaming pitch tracker, melody-guide builder and scorer. No threads, no I/O; identical on Windows and macOS."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Shared by every module. Each workstream adds its own dependencies below its own
+# heading, re-reading this file right before editing (two workstreams edit it).
+realfft = "3.5"
+libm = "0.2.16"
+serde = { version = "1", features = ["derive"] }
+
+# --- tracker ---
+
+# --- guide ---
+
+# --- score ---
+
+[dev-dependencies]
