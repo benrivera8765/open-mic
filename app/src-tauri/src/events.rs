@@ -33,6 +33,12 @@ pub mod names {
     /// availability or running state changes (the capability probe finishes in the
     /// background after start-up).
     pub const STUDIO_STATUS: &str = "studio://status";
+    /// (added WO2, APP_API 12.3) `{ song_id, status: GuideStatus }` on every change of a
+    /// song's melody guide (progress at most 5 times a second).
+    pub const GUIDE_STATUS: &str = "guide://status";
+    /// (added WO2) `{ total, done, failed, current, running }` while a
+    /// `guide_build_all` batch runs, and once when it ends.
+    pub const GUIDE_BATCH: &str = "guide://batch";
 }
 
 /// Somewhere events go.

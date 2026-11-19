@@ -1834,6 +1834,8 @@ dependencies = [
  "jk-dsp",
  "jk-engine",
  "jk-format",
+ "jk-guide",
+ "jk-pitch",
  "jk-rubberband",
  "serde_json",
  "windows 0.62.2",
@@ -1881,9 +1883,21 @@ dependencies = [
  "md-5",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "symphonia-bundle-flac",
  "symphonia-core",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "jk-guide"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "jk-format",
+ "jk-pitch",
+ "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -2013,6 +2027,8 @@ dependencies = [
  "jk-dsp",
  "jk-engine",
  "jk-format",
+ "jk-guide",
+ "jk-pitch",
  "jk-recorder",
  "libc",
  "notify",
@@ -2021,6 +2037,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

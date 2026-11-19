@@ -258,19 +258,47 @@
   padding-right: clamp(10px, 1vw, 38px);
 }
 
-.library--skin .library__trash {
+/* The strip's own plates (Add practice data, the bin), on its right end. */
+.library--skin .library__strip-actions {
   justify-self: end;
   margin-right: clamp(8px, 0.8vw, 30px);
   position: relative;
   z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: clamp(4px, 0.4vw, 15px);
+}
+
+.library--skin .library__trash,
+.library--skin .library__practice-add {
   opacity: 0;
   transition: opacity 120ms;
 }
 
 .library--skin .library__strip:hover .library__trash,
 .library--skin .library__strip:focus-within .library__trash,
-.library--skin .library__strip--current .library__trash {
+.library--skin .library__strip--current .library__trash,
+.library--skin .library__strip:hover .library__practice-add,
+.library--skin .library__strip:focus-within .library__practice-add,
+.library--skin .library__strip--current .library__practice-add {
   opacity: 1;
+}
+
+/* Room on the strip for the practice plate too, when it has one. */
+.library--skin .library__strip--can-add .jk-strip {
+  padding-right: calc(clamp(10px, 1vw, 38px) + clamp(10px, 1.35vh, 29px) * 10);
+}
+
+.library--skin .library__practice {
+  display: flex;
+  align-items: center;
+  gap: clamp(4px, 0.4vw, 15px);
+}
+
+.library--skin .library__practice-progress {
+  color: var(--jk-cream, #f6efd9);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* Under the pointer the bin's glass lights red: this plate deletes. */

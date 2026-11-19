@@ -157,7 +157,7 @@ def test_seektable_replaces_existing_one():
 def test_round_trip(song_path: Path):
     s = jksong.Song(song_path)
     m = s.manifest
-    assert m["format"] == "jksong" and m["format_version"] == "1.0"
+    assert m["format"] == "jksong" and m["format_version"] == "1.1"
     assert m["duration_frames"] == SR and m["sample_rate"] == SR and m["channels"] == 2
     assert m["x_manifest"] == {"a": 1}
     assert [x["role"] for x in m["stems"]] == ["lead_vocal", "backing_vocals", "drums", "other"]

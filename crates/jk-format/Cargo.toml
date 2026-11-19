@@ -1,6 +1,6 @@
 [package]
 name = "jk-format"
-description = "Reader and writer for the Jukeoke .jksong song file (docs/SONG_FORMAT.md v1.0): header, TOC, settings slots, lyrics, stem byte ranges"
+description = "Reader and writer for the Jukeoke .jksong song file (docs/SONG_FORMAT.md v1.1): header, TOC, settings slots, lyrics, stem byte ranges, melody guide, practice data"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -27,6 +27,9 @@ serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 crc32fast = "1.5.5"
 flate2 = "1.1.11"
 unicode-segmentation = "1.13.3"
+# SHA-256 of the lead vocal chunk in the guide's provenance (SONG_FORMAT 10.2) and
+# `verify --deep`; the version jk-dsp already uses.
+sha2 = "0.11"
 symphonia-core = { version = "0.6.1", optional = true }
 symphonia-bundle-flac = { version = "0.6.1", optional = true }
 

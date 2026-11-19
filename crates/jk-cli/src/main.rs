@@ -3,9 +3,15 @@
 //!
 //! Song files (`.jksong`):
 //! * `info <song>`: manifest, stems, lyrics and saved settings.
-//! * `verify <song>`: SONG_FORMAT section 9 checklist (jk_format::verify_file: every CRC,
-//!   every stem fully decoded with MD5 and seek checks) plus a decode through the
-//!   engine's own stem reader. Exit status 1 on any error.
+//! * `verify <song> [--strict] [--deep]`: SONG_FORMAT section 9 checklist
+//!   (jk_format::verify_file: every CRC, every stem fully decoded with MD5 and seek
+//!   checks, the 1.1 guide checks; `--deep` also compares the guide's source SHA-256 with
+//!   the lead vocal's bytes) plus a decode through the engine's own stem reader. Exit
+//!   status 1 on any error.
+//! * `guide add SONG... [--force] [--json]` (alias `guide build`): Work Order 2, adds the
+//!   melody guide from the song's own lead vocal and lyrics by the raw-copy rewrite of
+//!   SONG_FORMAT 7.1 (STUDIO_PROTOCOL 12.3). `guide show SONG [--json]` (alias
+//!   `guide info`): status, counts, tuning and provenance, never the lyrics.
 //! * `render <song> --out f.wav|f.flac [--semitones N ...]`: offline render with the
 //!   song's saved settings, overridden by the options given.
 //! * `export <song> --format flac24|wav32f [--out f]`: "Export backing track" with the
@@ -53,6 +59,14 @@ enum Cmd {
         /// Warnings fail too.
         #[arg(long)]
         strict: bool,
+        /// Also compare the melody guide's source SHA-256 with the lead vocal's bytes.
+        #[arg(long)]
+        deep: bool,
+    },
+    /// Melody guide (Work Order 2): add one to songs, or show a song's.
+    Guide {
+        #[command(subcommand)]
+        cmd: GuideCmd,
     },
     /// Offline render (same graph as playback) to a 32-bit float WAV or 24-bit FLAC.
     Render {
@@ -162,6 +176,31 @@ enum Cmd {
         /// Play the whole mix with the guide vocal instead of the lead vocal alone.
         #[arg(long)]
         full_mix: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum GuideCmd {
+    /// Add a guide to each song that has none, or a stale or outdated one (STUDIO_PROTOCOL
+    /// 12.3). Exit 0 when every song has a current guide afterwards, 1 when one failed,
+    /// 2 on a usage error.
+    #[command(visible_alias = "build")]
+    Add {
+        #[arg(required = true)]
+        songs: Vec<PathBuf>,
+        /// Rebuild a current guide too (never one from a newer version).
+        #[arg(long)]
+        force: bool,
+        /// One JSON line per song: {"song","ok","state","error_code","message","notes","seconds"}.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Status, counts, tuning and provenance of a song's guide (never the lyrics).
+    #[command(visible_alias = "info")]
+    Show {
+        song: PathBuf,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -288,7 +327,9 @@ fn main() {
     let cli = Cli::parse();
     let r = match cli.cmd {
         Cmd::Info { song } => cmd_info(&song),
-        Cmd::Verify { song, strict } => cmd_verify(&song, strict),
+        Cmd::Verify { song, strict, deep } => cmd_verify(&song, strict, deep),
+        Cmd::Guide { cmd: GuideCmd::Add { songs, force, json } } => cmd_guide_add(&songs, force, json),
+        Cmd::Guide { cmd: GuideCmd::Show { song, json } } => cmd_guide_show(&song, json),
         Cmd::Render { song, out, format, mix } => cmd_render(&song, &out, format.as_deref(), &mix),
         Cmd::Export { song, format, out } => cmd_export(&song, &format, out),
         Cmd::Play(a) => {
@@ -327,6 +368,130 @@ fn saved_params(song: &Path) -> Res<MixParams> {
 
 fn db(x: f64) -> String {
     if x <= 0.0 { "-inf dB".into() } else { format!("{:.2} dB", 20.0 * x.log10()) }
+}
+
+// ---------------------------------------------------------------------------------------
+// guide (Work Order 2, STUDIO_PROTOCOL 12.3)
+
+/// `guide add`: one line per song (`--json`: the JSON of STUDIO_PROTOCOL 12.3).
+fn cmd_guide_add(songs: &[PathBuf], force: bool, json: bool) -> Res<()> {
+    let cfg = jk_pitch::guide::GuideConfig::default();
+    let app = jk_guide::app_stamp("jukeoke-cli", env!("CARGO_PKG_VERSION"));
+    let mut failed = 0usize;
+    for song in songs {
+        let r = jk_guide::add_to_song(song, &cfg, &app, force);
+        let (ok, state, code, message, notes, seconds) = match &r {
+            Ok(o) => match &o.built {
+                Some(b) => (true, "ready".to_string(), None, "added".to_string(), Some(b.doc.notes.len()), o.total_seconds),
+                None => {
+                    // Nothing to do: report the state found (ready, or newer: kept).
+                    let n = jk_format::SongFile::open(song)
+                        .ok()
+                        .and_then(|s| jk_guide::file_state(&s).1)
+                        .map(|d| d.notes.len());
+                    let msg = match &o.before {
+                        jk_format::GuideFileState::Newer => "kept (made by a newer version)",
+                        _ => "already current",
+                    };
+                    (true, jk_guide::state_name(&o.before).to_string(), None, msg.to_string(), n, o.total_seconds)
+                }
+            },
+            Err(e) => (false, "failed".to_string(), Some(e.code), e.message.clone(), None, 0.0),
+        };
+        if !ok {
+            failed += 1;
+        }
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "song": song.display().to_string(), "ok": ok, "state": state, "error_code": code,
+                    "message": message, "notes": notes, "seconds": (seconds * 1000.0).round() / 1000.0,
+                })
+            );
+        } else {
+            match &r {
+                Err(e) => println!("{}: FAILED {} - {}", song.display(), e.code, e.message),
+                Ok(_) => println!(
+                    "{}: {state}, {message}{}, {seconds:.2} s",
+                    song.display(),
+                    notes.map(|n| format!(", {n} notes")).unwrap_or_default()
+                ),
+            }
+            if let Err(e) = &r {
+                eprintln!("  detail: {}", e.detail);
+            }
+        }
+    }
+    if failed > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// `guide show`: never prints lyrics (word references are counted, not shown).
+fn cmd_guide_show(song: &Path, json: bool) -> Res<()> {
+    let f = jk_format::SongFile::open(song)?;
+    let (state, doc) = jk_guide::file_state(&f);
+    let reason = match &state {
+        jk_format::GuideFileState::Stale(r) => Some(r.clone()),
+        _ => None,
+    };
+    let entry = |id: &str| f.chunk(id).map(|c| c.length);
+    let (gb, cb) = (entry(jk_format::guide::GUIDE_CHUNK), entry(jk_format::guide::CURVE_CHUNK));
+    if json {
+        let v = match &doc {
+            Some(d) => serde_json::json!({
+                "song": song.display().to_string(), "state": jk_guide::state_name(&state), "reason": reason,
+                "counts": d.compute_counts(), "spans": d.spans.len(),
+                "notes_with_word": d.notes.iter().filter(|n| n.word.is_some()).count(),
+                "tuning": d.tuning, "range": d.range, "provenance": d.provenance,
+                "guide_bytes": gb, "curve_bytes": cb,
+                "builder": {"method": jk_guide::METHOD, "version": jk_guide::VERSION},
+            }),
+            None => serde_json::json!({
+                "song": song.display().to_string(), "state": jk_guide::state_name(&state), "reason": reason,
+                "builder": {"method": jk_guide::METHOD, "version": jk_guide::VERSION},
+            }),
+        };
+        println!("{v}");
+        return Ok(());
+    }
+    println!("song: {}", song.display());
+    println!("state: {}{}", jk_guide::state_name(&state), reason.map(|r| format!(" ({r})")).unwrap_or_default());
+    println!("this app's builder: {} {}", jk_guide::METHOD, jk_guide::VERSION);
+    let Some(d) = doc else { return Ok(()) };
+    let c = d.compute_counts();
+    let p = &d.provenance;
+    println!(
+        "notes: {} ({} pitched, {} unpitched, {} low confidence, {} octave flags, {} graded); {} spoken spans; {} notes have a word",
+        c.notes,
+        c.pitched,
+        c.unpitched,
+        c.low_confidence,
+        c.octave_flags,
+        c.graded,
+        d.spans.len(),
+        d.notes.iter().filter(|n| n.word.is_some()).count()
+    );
+    if let Some(r) = &d.range {
+        println!("range: MIDI {:.2} .. {:.2}", r.low, r.high);
+    }
+    println!("tuning: {:+.1} cents, strength {:.3}, used {:+.1} cents", d.tuning.cents, d.tuning.strength, d.tuning.use_cents);
+    println!(
+        "made by: {} {} on {} ({}), {} s, {}",
+        p.method,
+        p.version,
+        p.app.as_ref().map(|a| format!("{} {} {} {}", a.name, a.version, a.platform, a.arch)).unwrap_or_default(),
+        p.created_utc.as_deref().unwrap_or("?"),
+        p.seconds.map(|s| format!("{s:.2}")).unwrap_or_else(|| "?".into()),
+        p.source
+            .as_ref()
+            .map(|s| format!("from {} ({} bytes, crc32 {:08x}, sha256 {}...)", s.chunk, s.length, s.crc32, &s.sha256[..s.sha256.len().min(16)]))
+            .unwrap_or_default()
+    );
+    println!("size: guide {} bytes, curve {} bytes", gb.unwrap_or(0), cb.unwrap_or(0));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -383,6 +548,21 @@ fn cmd_info(path: &Path) -> Res<()> {
         "saved settings: semitones {:+}, shift drums {}, guide {}, backing {} x{}, levels {:?}, lyrics offset {} ms",
         s.semitones, s.shift_drums, s.guide_vocal, s.backing_on, s.backing_level, s.levels, s.lyrics_offset_ms
     );
+    match jk_guide::file_state(&song) {
+        (state, Some(doc)) => {
+            let c = doc.compute_counts();
+            println!(
+                "guide: {} ({} {}), {} notes, {} graded, tuning {:+.1} c used",
+                jk_guide::state_name(&state),
+                doc.provenance.method,
+                doc.provenance.version,
+                c.notes,
+                c.graded,
+                doc.tuning.use_cents
+            );
+        }
+        (state, None) => println!("guide: {}", jk_guide::state_name(&state)),
+    }
     println!("chunks:");
     for c in &song.toc().chunks {
         println!("  {:<22} {:<18} offset {:>10} length {:>10}", c.id, c.mime, c.offset, c.length);
@@ -393,9 +573,9 @@ fn cmd_info(path: &Path) -> Res<()> {
     Ok(())
 }
 
-fn cmd_verify(path: &Path, strict: bool) -> Res<()> {
+fn cmd_verify(path: &Path, strict: bool, deep: bool) -> Res<()> {
     let t = Instant::now();
-    let rep = jk_format::verify_file(path, &jk_format::VerifyOptions::default());
+    let rep = jk_format::verify_file(path, &jk_format::VerifyOptions { deep, ..Default::default() });
     println!("file: {}", rep.path.display());
     if let Some((ma, mi)) = rep.version {
         println!("version: {ma}.{mi}");
@@ -425,6 +605,9 @@ fn cmd_verify(path: &Path, strict: bool) -> Res<()> {
     }
     if let Some(g) = rep.lyrics_graphemes {
         println!("lyrics: {g} timed graphemes");
+    }
+    if let Some(g) = &rep.guide {
+        println!("guide: {g}");
     }
     // Decode through the engine's own stem reader (what playback uses).
     let mut errors = rep.errors.clone();

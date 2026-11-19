@@ -15,8 +15,9 @@ use crate::engine::{AudioEngine, ExportFormat, MixParams, Renderer};
 use crate::error::{ApiError, ApiResult};
 use crate::events::{EventSink, emit, names};
 use crate::export::{ExportRequest, ExportStarted, Exports};
+use crate::guide::{BatchQueued, GuideQueue, GuideService, GuideStatus};
 use crate::library::{Library, LibraryList, Watcher};
-use crate::playback::Player;
+use crate::playback::{Player, SongDetail};
 use crate::portable::{DataLayout, DataMode, Paths};
 use crate::recorder::RecorderCtl;
 use crate::settings::{AppSettings, SettingsStore};
@@ -57,6 +58,8 @@ pub struct Core {
     pub exports: Arc<Exports>,
     pub recorder: RecorderCtl,
     pub studio: Arc<Studio>,
+    /// (WO2) The melody guide queue (src/guide.rs).
+    pub guide: Arc<GuideService>,
     pub renderer: Arc<dyn Renderer>,
     pub demo_song: Option<PathBuf>,
     pub webview_env_ignored: Option<String>,
@@ -178,6 +181,38 @@ impl Core {
         ));
         let recorder = RecorderCtl::new(paths.recordings.clone(), &paths.settings, Arc::clone(&o.sink));
         let studio = Studio::new(o.studio, Arc::clone(&o.sink));
+        // (WO2) The guide queue, wired both ways to the Studio: a finished song gets its
+        // guide as the job's last stage (STUDIO_PROTOCOL section 12). Weak references, so
+        // neither keeps the other alive.
+        let guide = GuideService::new(
+            Arc::clone(&library),
+            Arc::clone(&player),
+            Arc::clone(&o.sink),
+            &paths.settings,
+            &o.name,
+            &o.version,
+        );
+        {
+            let (g1, g2) = (Arc::downgrade(&guide), Arc::downgrade(&guide));
+            studio.set_guide_hooks(crate::studio::GuideHooks {
+                on_done: Arc::new(move |job_id: &str, song_id: &str| {
+                    if let Some(g) = g1.upgrade() {
+                        g.enqueue_new_song(song_id, job_id);
+                    }
+                }),
+                on_cancel: Arc::new(move |song_id: &str| {
+                    if let Some(g) = g2.upgrade() {
+                        g.cancel(Some(song_id));
+                    }
+                }),
+            });
+            let st = Arc::downgrade(&studio);
+            guide.set_job_hook(Arc::new(move |job_id: &str, status: &GuideStatus, finished: bool| {
+                if let Some(s) = st.upgrade() {
+                    s.guide_stage_update(job_id, status, finished);
+                }
+            }));
+        }
         Arc::new(Core {
             layout: o.layout,
             paths,
@@ -193,6 +228,7 @@ impl Core {
             exports,
             recorder,
             studio,
+            guide,
             renderer: o.renderer,
             demo_song: o.demo_song,
             webview_env_ignored: o.webview_env_ignored,
@@ -219,6 +255,8 @@ impl Core {
             }
         }));
         self.player.measure_rates(&[44_100, 48_000]);
+        // (WO2) Guides left in the queue by the last session, then new ones.
+        self.guide.start();
         *self.watcher.lock().unwrap_or_else(|e| e.into_inner()) =
             Watcher::start(&self.paths.library, Arc::clone(&self.sink));
         let me = Arc::clone(self);
@@ -243,6 +281,8 @@ impl Core {
     pub fn shutdown(&self) {
         crate::applog::info("shutting down");
         self.player.shutdown();
+        // (WO2) After the song is closed: guides that waited for it to stop are written.
+        self.guide.shutdown();
         self.settings.flush();
         self.recorder.shutdown();
         self.exports.cancel_all();
@@ -346,6 +386,10 @@ impl Core {
     /// `library_list`: the songs, free space, and what Deleted songs still holds.
     pub fn library_list(&self) -> ApiResult<LibraryList> {
         let mut list = self.library.list()?;
+        // (WO2) The guide queue's live state over what each file says.
+        for s in list.songs.iter_mut() {
+            s.guide = self.guide.overlay(&s.song_id, s.guide.clone());
+        }
         let d = self.deleted.list();
         list.deleted_count = d.count;
         list.deleted_bytes = d.total_bytes;
@@ -381,6 +425,11 @@ impl Core {
             }
         }
         let paths: Vec<PathBuf> = targets.iter().map(|(_, p)| p.clone()).collect();
+        // (WO2) A guide being made for a song that moves away is cancelled first.
+        for (id, _) in &targets {
+            self.guide.forget(id);
+        }
+        let _files = self.guide.file_lock.lock().unwrap_or_else(|e| e.into_inner());
         // The files move while no song can be loaded (a `song_load` racing with this
         // waits, then finds the file gone).
         let (unloaded, (deleted, more)) = self.player.release_during(&paths, || {
@@ -437,6 +486,8 @@ impl Core {
         edit: impl Fn(&mut jk_format::UserState) + Clone,
     ) -> ApiResult<()> {
         let path = self.library.resolve(song_id)?;
+        // (WO2) Never during a guide swap of this or any song (src/guide.rs).
+        let _files = self.guide.file_lock.lock().unwrap_or_else(|e| e.into_inner());
         // A pending mix change for this song goes first (both are read-merge-write).
         self.player.saver.flush();
         match jk_format::update_user_state(&path, edit.clone()) {
@@ -538,6 +589,44 @@ impl Core {
         let lyrics = self.studio.realign(&path, text, &anchors)?;
         self.lyrics_save(song_id, lyrics.clone())?;
         Ok(lyrics)
+    }
+
+    // ---------------------------------------------------------------- playback, guides (WO2)
+
+    /// `song_load`: the player's load, with the guide's live state in the summary.
+    pub fn song_load(&self, song_id: &str) -> ApiResult<SongDetail> {
+        let mut d = self.player.load(song_id)?;
+        d.summary.guide = self.guide.overlay(song_id, d.summary.guide.clone());
+        Ok(d)
+    }
+
+    /// `guide_status(song_id)`.
+    pub fn guide_status(&self, song_id: &str) -> ApiResult<GuideStatus> {
+        self.guide.status(song_id)
+    }
+
+    /// `guide_build(song_id, force?)`.
+    pub fn guide_build(&self, song_id: &str, force: bool) -> ApiResult<GuideStatus> {
+        self.guide.build(song_id, force)
+    }
+
+    /// `guide_build_all({ include_outdated })`.
+    pub fn guide_build_all(&self, include_outdated: bool) -> ApiResult<BatchQueued> {
+        self.guide.build_all(include_outdated)
+    }
+
+    /// `guide_cancel(song_id?)`.
+    pub fn guide_cancel(&self, song_id: Option<&str>) -> ApiResult<()> {
+        if let Some(id) = song_id {
+            self.library.resolve(id)?;
+        }
+        self.guide.cancel(song_id);
+        Ok(())
+    }
+
+    /// `guide_queue()`.
+    pub fn guide_queue(&self) -> GuideQueue {
+        self.guide.queue()
     }
 
     // ---------------------------------------------------------------- export

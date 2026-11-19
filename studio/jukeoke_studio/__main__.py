@@ -4,13 +4,16 @@
     python -I -m jukeoke_studio serve [--root R] [--models-dir M] [--temp-dir T]
     python -I -m jukeoke_studio make SONG --out DIR [--lyrics-text F | --lrc F] [--preset P]
                                      [--title T] [--artist A] [--language xx] [--no-lyrics]
+                                     [--guide auto|off|require] [--jukeoke-cli PATH]
     python -I -m jukeoke_studio probe
     python -I -m jukeoke_studio models list
     python -I -m jukeoke_studio models fetch [ID ...] [--verify] [--preset P]
     python -I -m jukeoke_studio separate SONG OUTDIR [--preset full|clean|permissive]
 
 ``serve`` speaks docs/STUDIO_PROTOCOL.md on stdin/stdout. ``make`` runs one song through
-the same pipeline and prints the job report as JSON. ``models fetch`` is the developer
+the same pipeline and prints the job report as JSON; then (Work Order 2, STUDIO_PROTOCOL
+12.3) it adds the melody guide through ``jukeoke-cli guide add`` when that program is
+found, as the app does after ``job.done``. ``models fetch`` is the developer
 way to download weights (the app uses the protocol's ``models.download``).
 ``separate`` writes 32-bit float WAV stems for listening and debugging.
 
@@ -62,6 +65,11 @@ def _parser() -> argparse.ArgumentParser:
     mk.add_argument("--album")
     mk.add_argument("--language", default="en")
     mk.add_argument("--device", default=None)
+    mk.add_argument("--guide", choices=["auto", "off", "require"], default="auto",
+                    help="add the melody guide with jukeoke-cli after writing the song (STUDIO_PROTOCOL 12.3): "
+                         "auto = when jukeoke-cli is found, require = fail with exit code 3 when it is not")
+    mk.add_argument("--jukeoke-cli", default=None, help="path of jukeoke-cli (else $JUKEOKE_CLI, the stick's "
+                                                        "Windows folder, the Studio folder, then PATH)")
     m = sub.add_parser("models", parents=[common], help="list or download models")
     m.add_argument("action", choices=["list", "fetch"])
     m.add_argument("ids", nargs="*")
@@ -109,6 +117,67 @@ def _probe(args, env) -> int:
     return 0
 
 
+def find_jukeoke_cli(explicit: str | None, root: Path | None) -> Path | None:
+    """Where ``make`` looks for ``jukeoke-cli`` (STUDIO_PROTOCOL 12.3): ``--jukeoke-cli``,
+    then ``$JUKEOKE_CLI``, then ``jukeoke-cli.exe`` in the stick's Windows folder (the folder
+    above the Studio runtime, next to Jukeoke.exe), then in the Studio folder itself, then
+    ``jukeoke-cli`` on PATH. Returns None when it is nowhere."""
+    import os
+    import shutil
+
+    names = ("jukeoke-cli.exe", "jukeoke-cli") if os.name == "nt" else ("jukeoke-cli",)
+    if explicit:
+        return Path(explicit) if Path(explicit).is_file() else None
+    if os.environ.get("JUKEOKE_CLI") and Path(os.environ["JUKEOKE_CLI"]).is_file():
+        return Path(os.environ["JUKEOKE_CLI"])
+    folders = []
+    if root is not None:
+        folders += [root / "Windows", root / "Windows" / "Studio"]
+    here = Path(sys.executable).resolve().parent          # <root>/Windows/Studio/python
+    folders += [here.parent.parent, here.parent]
+    for d in folders:
+        for n in names:
+            if (d / n).is_file():
+                return d / n
+    for n in names:
+        w = shutil.which(n)
+        if w:
+            return Path(w)
+    return None
+
+
+def add_guide_with_cli(song: Path, mode: str, explicit: str | None, root: Path | None) -> tuple[dict | None, int]:
+    """Runs ``jukeoke-cli guide add <song> --json`` (STUDIO_PROTOCOL 12.3). Returns (the JSON
+    line it printed, or a note; the exit code ``make`` should use: 0, or 3 when ``require``
+    could not be met). The song file is complete either way."""
+    import subprocess
+
+    if mode == "off":
+        return None, 0
+    cli = find_jukeoke_cli(explicit, root)
+    if cli is None:
+        note = ("jukeoke-cli was not found, so this song has no practice data yet; the app's "
+                "\"Add practice data\" adds it")
+        print(f"note: {note}", file=sys.stderr, flush=True)
+        return {"ok": False, "state": "none", "error_code": "cli_not_found", "message": note}, (3 if mode == "require" else 0)
+    try:
+        r = subprocess.run([str(cli), "guide", "add", str(song), "--json"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=600)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        line = {"ok": False, "state": "failed", "error_code": "guide_internal", "message": str(e)}
+        return line, (3 if mode == "require" else 0)
+    lines = [ln for ln in r.stdout.splitlines() if ln.strip().startswith("{")]
+    try:
+        line = json.loads(lines[-1]) if lines else None
+    except json.JSONDecodeError:
+        line = None
+    if line is None:
+        line = {"ok": False, "state": "failed", "error_code": "guide_internal",
+                "message": (r.stderr or r.stdout).strip()[-500:]}
+    line["cli"] = str(cli)
+    return line, (0 if line.get("ok") or mode != "require" else 3)
+
+
 def _make(args, env) -> int:
     from . import env as studio_env
 
@@ -148,9 +217,13 @@ def _make(args, env) -> int:
         out.write_line(json.dumps({"ok": False, "error": err.to_json()}, ensure_ascii=False))
         logging.getLogger("jukeoke_studio").error("make failed: %s (%s)", err.message, err.detail)
         return 2 if err.code != "cancelled" else 130
-    out.write_line(json.dumps({"ok": True, "output": str(res.output), "report": res.report},
+    guide, code = add_guide_with_cli(Path(res.output), args.guide, args.jukeoke_cli, env.root)
+    report = dict(res.report)
+    if guide is not None:
+        report["guide"] = guide
+    out.write_line(json.dumps({"ok": True, "output": str(res.output), "report": report},
                               ensure_ascii=False, indent=1))
-    return 0
+    return code
 
 
 def _models(args, env) -> int:

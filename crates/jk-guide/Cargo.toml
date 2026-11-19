@@ -1,0 +1,18 @@
+[package]
+name = "jk-guide"
+description = "Builds a song's melody guide from the lead vocal and lyrics stored in its .jksong file (jk-pitch::guide) and adds it by the raw-copy rewrite (jk-format, SONG_FORMAT 7.1). Shared by jukeoke-cli and the app core."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+jk-format = { path = "../jk-format" }
+jk-pitch = { path = "../jk-pitch" }
+serde_json = "1"
+# SHA-256 of the lead vocal chunk for the guide's provenance (the version jk-dsp uses).
+sha2 = "0.11"
+crc32fast = "1.5.5"
+
+[dev-dependencies]

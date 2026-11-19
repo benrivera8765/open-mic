@@ -2,7 +2,8 @@
 
 Work Order 2 sections 4.1, 6 ("Guide builder") and 9 ("Guide accuracy", "Guide on real
 songs"). Measured 2026-11-19 on the build PC (Ryzen 7 9700X, RTX 5070 Ti, Windows 11).
-Stage 7 merges this file into `docs/benchmarks/practice.md`.
+Stage 7 merges this file into `docs/benchmarks/practice.md`. Stage 2 (the guide in the song
+file, adding guides to existing songs, the octave open item) is the last section.
 
 **Decision: the plain Rust builder (`jk-pitch::guide`, pYIN + note segmentation) is used
 alone, everywhere.** At the segmentation's default tuning its note F is equal to or
@@ -413,3 +414,222 @@ $JK_BUILD/practice-guide/venv/Scripts/python.exe -I studio/bench/practice_guide_
 
 vocadito is expected unzipped (Audio, Annotations/Notes) in
 `$JK_BUILD/practice-guide/vocadito`.
+
+## Stage 2: the guide in the song file, every song gets one
+
+Measured 2026-11-19 on the build PC (Ryzen 7 9700X, NVMe SSD, Windows 11), with other
+workstreams' benchmarks running at the same time (timings are therefore upper bounds).
+Evidence in `$JK_BUILD/practice-stage2/` (outside the repository): `measure/results.json`,
+`octave/results.json` and the guides per setting, `conformance.log`, `oldrelease/`,
+`tests/`, `ui-screenshots/`.
+
+### S2.1 What was built
+
+| Piece | Where |
+|---|---|
+| Format 1.1 in Rust: guide and curve types, curve codec, section 9 checks, guide state (none / ready / outdated / stale / newer), word-reference cache rule | `crates/jk-format/src/guide.rs` |
+| The raw-copy rewrite of SONG_FORMAT 7.1 (prepare / finish split for the deferred swap, simulated interruptions, cancel) | `crates/jk-format/src/guide_write.rs` |
+| Practice slot data (types, number-precision rules, best / recent, the size rule `save_practice`) | `crates/jk-format/src/practice.rs` |
+| `verify` additions (guide, curve, stale, `--deep` source SHA-256, slot `practice`) | `crates/jk-format/src/verify.rs` |
+| The same in Python, written independently | `studio/jukeoke_studio/jksong.py` (the "1.1" part) |
+| Word references by the overlap rule (pure) | `crates/jk-pitch/src/guide/words.rs` |
+| Phrase-context octave check (S2.4) | `crates/jk-pitch/src/guide/octave.rs` (`context_check`) |
+| Build from a song file + write (shared by the CLI and the app) | `crates/jk-guide` (new crate) |
+| `jukeoke-cli guide add|build`, `guide show|info`, `verify --deep` | `crates/jk-cli/src/main.rs` |
+| App core: guide queue, `Settings/guide-queue.json`, deferred swap, Studio `guide` stage, commands and events | `app/src-tauri/src/guide.rs`, `studio.rs`, `core.rs`, `commands/guide.rs` |
+| Studio `make --guide auto|off|require [--jukeoke-cli PATH]` | `studio/jukeoke_studio/__main__.py` |
+| Library: "Practice ready / not ready", "Add practice data", "Add practice data to all songs" with progress and Stop (both looks) | `app/ui/src/components/Library.tsx`, `state/app.ts`, `api/*` |
+| Benchmarks | `studio/bench/practice_guide_stage2.py` (S2.3), `studio/bench/practice_guide_octave.py` (S2.4) |
+
+### S2.2 Proof: byte identity, interruptions, both implementations, the previous release
+
+- **Conformance** (`bash tests/conformance/run.sh`, steps 8-10 new, PASS): Python adds a
+  guide by the raw copy and Rust verifies it (`--strict --deep`), recomputes the 20 word
+  references by its own rule (identical) and finds every other chunk and both slot regions
+  with the same SHA-256 at the same offsets; the Rust builder adds a guide (17 notes) and
+  Python does the same checks the other way; Python and Rust compute the same SHA-256
+  fingerprint of the result. Each writer was stopped at 8 points of 7.1 (after the
+  placeholder, after the slots, mid-chunks, before the TOC, before the header, before the
+  second slot copy, before the rename, a temporary file cut to half): both readers found
+  the old file byte for byte, valid, and listed no temporary file.
+- **Rust tests** (`crates/jk-format/tests/guide.rs`, 12): every other chunk and both slots
+  byte-identical after adding and after replacing (the guide keeps its place); an invalid
+  slot is copied raw; 8 interruption points; cancel; a settings save between the
+  temporary file and the swap is kept; a whole-file rewrite of the original meanwhile stops
+  the swap (`ChangedOnDisk`, temporary file deleted); a damaged chunk stops the rewrite;
+  verify finds stale guides (also `--deep`), overlapping notes, a damaged curve, a newer
+  `guide_version`; a 1.0-style rewrite keeps the guide; practice data shrinks by the size
+  rule and never rewrites the file. Python twin: `studio/tests/test_jksong_guide.py` (21).
+- **The previous release** (commit 938742f, built from a `git worktree` under
+  `$JK_BUILD/practice-stage2/old-938742f`): on the demo song with a guide added by the new
+  CLI and a `practice` value saved in its slot (header minor 1, manifest unchanged):
+  - old `jukeoke-cli verify --strict`: PASS, 0 errors, 0 warnings; old `info` lists the two
+    guide chunks among the chunks and nothing else changes;
+  - old `jukeoke-cli render` at keys 0, +2 and -5: WAV files byte-identical to the renders
+    of the same song without a guide;
+  - the old Python slot save (key +2) keeps the `practice` value and both guide chunks; the
+    new `verify --strict --deep` then still passes;
+  - **the old app** (`jukeoke.exe` built from 938742f, driven by `real-app-check.mjs` on
+    the null device, master 0): lists the song, opens it, plays (clock 30.7 events/s, UI
+    clock within 8.5 ms of the engine), the key change reaches the core; afterwards its slot
+    save had kept the `practice` value and the guide (new `verify --strict --deep` PASS).
+- **App core** (`app/src-tauri/tests/guide_queue.rs`, 9, fake engine that holds the loaded
+  file open as the real one does; `tests/real_engine.rs`, 1 new, real engine on the null
+  device): `guide_build` keeps every other chunk and both slots byte-identical; the playing
+  song keeps playing (no unload, guide used from memory, `pending_write`) and is swapped
+  when paused, then loaded again at the same position (real engine: 0 underruns while the
+  guide was built and written beside playback, reloaded within 0.1 s of where it was,
+  plays on); a song loaded but paused is released, swapped and reloaded at once with the
+  settings save made just before kept; a damaged chunk gives `failed` / `guide_damaged`
+  with the guide usable from memory and the song still plays; no lead vocal gives
+  `failed` / `guide_no_lead` and nothing is queued; "Add practice data to all songs" with
+  `guide://batch` (damaged file skipped); the queue survives a restart
+  (`guide-queue.json`, a song that is gone is dropped); cancel; a new song from the (fake)
+  Studio shows the `guide` stage (running, overall 0.95..1.0, "Making the practice data")
+  and ends `done` with `guide.state` ready.
+
+### S2.3 Adding guides to existing songs (`jukeoke-cli guide add`, builder 0.2.0)
+
+Fresh copies (`studio/bench/practice_guide_stage2.py`); the originals' SHA-256 unchanged
+(dist/Library included: `4eb88d78...` before and after). "Build" is the guide's
+`provenance.seconds` (hashing and decoding the lead stem, pYIN, notes, word references);
+"add" is the whole command (build + raw-copy rewrite + checks), fastest / median of 3
+runs (the first adds, two more with `--force`). Build and add are given for two sessions,
+"session 1 / session 2" (fastest of 3 each); other workstreams' benchmarks loaded the PC
+more during session 2 (sizes and counts are from session 2, identical in both).
+
+| Song | Length | File | Build | Add | `guide` | `guide.curve` | File grows | Notes / pitched / unpitched / low conf. / octave flags / graded | Spoken spans | Notes with a word | Tuning (strength) -> used | Byte-identical |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Cortez - Feel (Stripped) | 240.6 s | 111.1 MB | 1.26 / 1.72 s | 1.42 / 2.38 s | 66.0 KiB | 282.0 KiB | 352.2 KiB (0.32 %) | 503 / 462 / 41 / 217 / 22 / 245 | 37 | 427 | -0.7 (0.91) -> -0.7 | all 6 chunks + 2 slots, 3 runs |
+| coruscate - The Homeless Man | 245.7 s | 142.3 MB | 1.04 / 1.52 s | 1.24 / 1.69 s | 95.0 KiB | 288.0 KiB | 384.2 KiB (0.28 %) | 679 / 210 / 469 / 116 / 5 / 94 | 86 | 638 | -18.5 (0.16) -> +0.0 | all 6 chunks + 2 slots, 3 runs |
+| Jason Miller - Crowdpleaser | 192.8 s | 109.7 MB | 0.85 / 1.58 s | 1.01 / 1.70 s | 82.8 KiB | 226.0 KiB | 312.2 KiB (0.29 %) | 593 / 165 / 428 / 83 / 0 / 82 | 61 | 572 | +27.8 (0.10) -> +0.0 | all 6 chunks + 2 slots, 3 runs |
+| owner's song | 240.8 s | 140.4 MB | 1.37 / 1.95 s | 1.56 / 2.44 s | 58.1 KiB | 282.2 KiB | 344.2 KiB (0.25 %) | 435 / 397 / 38 / 65 / 13 / 332 | 35 | 401 | -2.1 (0.79) -> -2.1 | all 6 chunks + 2 slots, 3 runs |
+| demo-song | 40.0 s | 2.4 MB | 0.17 / 0.18 s | 0.20 / 0.21 s | 6.3 KiB | 46.9 KiB | 56.2 KiB (2.37 %) | 42 / 42 / 0 / 0 / 0 / 42 | 0 | 42 | +0.0 (1.00) -> +0.0 | all 7 chunks + 2 slots, 3 runs |
+
+Every song: `jukeoke-cli verify --strict --deep` PASS, 0 warnings, after the third run; every
+other chunk (manifest, stems, lyrics, cover, unknown) and both slot regions byte-identical,
+at the same offsets, after each of the 3 runs.
+
+On a USB stick the rewrite is one more copy of the file (110-142 MB): at 20-40 MB/s write
+speed that is 3-7 s (not measured: no stick was attached; WO2 trap 10). The build itself
+reads the lead stem only (20-40 MB). The temporary file needs that much free space.
+
+### S2.4 The Stage 0 open item: octave errors on the owner's song
+
+Stage 0 left one note graded at the wrong octave with high confidence in the owner's song:
+213.47-214.22 s at MIDI 76.1 ("ok", confidence 0.99), at the head of a run (214.22-215.68 s,
+MIDI 76-78) that the spectral check flagged `maybe_high`, while the melody around it sits
+at MIDI 62-66 (and SwiftF0, FCPE and CREPE all draw 64-66 there).
+
+**Change (builder 0.2.0): a phrase-context check after the spectral one**
+(`octave::context_check`, the "run" rule): an unflagged pitched note that touches (gap at
+most 0.1 s) a neighbour the spectral check flagged in one direction, lies within 2.5
+semitones of it, and whose context (the unflagged pitched notes within 2 s, at least two
+and 0.3 s of them, duration-weighted median) is 9.5 or more semitones away in that
+direction with the note's other octave within 3.5 semitones of it, is flagged too
+(confidence x 0.4, so dim and not graded). Repeated until nothing changes. A second rule
+("isolated": a short note whose two touching neighbours both sit at its other octave) was
+measured and **not** enabled (`octave_context=2` turns it on): it changed nothing on the
+evaluation sets and flagged 2 more notes on Feel (Stripped) and 1 more on the owner's song
+whose right octave is unknown.
+
+Before / after on the Stage 0 benchmark subset (`studio/bench/practice_guide_octave.py`;
+"before" = `--set octave_context=0`, i.e. builder 0.1.0's flags):
+
+| Set | Note F before / after | Octave errors | flagged before / after | still graded before / after | correct notes flagged before / after |
+|---|---|---|---|---|---|
+| Synthetic singer alone (365 notes) | 0.975 / 0.975 | 1 | 1 / 1 | 0 / 0 | 0 / 0 (of 364) |
+| Synthetic singer, separated | 0.873 / 0.873 | 3 | 2 / 2 | 1 / 1 | 0 / 0 (of 333) |
+| vocadito (2237 notes) | 0.578 / 0.578 | 13 | 10 / 10 | 2 / 2 | 10 / 10 (of 1693) |
+
+Nothing moved on the synthetic singer, the separated synthetic singer or vocadito: the
+rule only fires next to a flagged run, which those sets do not have in the shape it looks
+for. On the real songs it adds exactly one flag: the owner's note at 213.475 s. After the
+change every note of the three suspect places of the owner's song is out of the grade:
+46.26 s (MIDI 80.1) has confidence 0.09, 158.61-159.31 s (MIDI 74-76) and 213.48-215.68 s
+(MIDI 76-78) are flagged `maybe_high`. Which octave the singer really used there is still
+not settled (in the note spectra the strongest partial is at the guide's pitch, about
+664 Hz; three neural trackers say an octave lower): it needs a listen. Either way the
+lane draws those bars dim and the grade does not count them, so a wrong octave there can
+cost the singer nothing. CC songs: unchanged (22 / 5 / 0 flags).
+
+### S2.5 The app and the UI
+
+- `SongSummary.guide` (and `SongDetail.summary.guide`) carry `GuideStatus`; the core
+  overlays the queue's live state (queued / building with progress / in memory waiting for
+  the swap / failed with reason) over what the file says. `practice_best` comes from the
+  slot. The library scan reads the guide JSON but not the curve (cached by size and time).
+- Commands `guide_status`, `guide_build`, `guide_build_all`, `guide_cancel`, `guide_queue`;
+  events `guide://status` (progress at most 5 a second) and `guide://batch`.
+- One build at a time on a below-normal-priority thread. A song file another program holds
+  is tried again every 3 s, 20 times, then `guide_in_use`. Leftover temporary files older
+  than an hour next to a song are deleted before its build. Lyrics, metadata and delete
+  take the same song-file lock as the swap.
+- Library, both looks: a "Practice ready" / "Practice not ready" / "Adding practice data
+  n %" badge (plain card) or note (skinned strip, with `data-practice` on the row); "Add
+  practice data" (plain) / "+ Practice" (skin plate, on hover like the bin) on songs
+  without it, "Try again" with the reason after a failure; "Add practice data to all songs"
+  in the toolbar with "Adding practice data: n of N" and Stop. Screenshots:
+  `$JK_BUILD/practice-stage2/ui-screenshots/library-1440x900.png` (skin) and
+  `plain-library-1440x900.png`. Vitest `src/components/library-practice.test.tsx` (12: both
+  looks, and the Studio job's new "Practice data" stage after Save, with the reason and
+  "Add practice data again" when the guide failed; a failed guide never fails the job).
+
+### S2.6 Readings of the contracts (proposed wording; the contracts were not edited)
+
+Where the Stage 1 contracts left a choice or did not fit, the code follows the reading
+below; each wants a line in the contract.
+
+1. **CLI names.** STUDIO_PROTOCOL 12.3 says `guide add` / `guide show`; the Stage 2 brief
+   said `guide build` / `guide info`. Both work (`build` and `info` are visible aliases).
+   Proposed: "`jukeoke-cli guide add SONG... [--force] [--json]` (alias `build`)" and
+   "`guide show SONG [--json]` (alias `info`)".
+2. **`counts.low_confidence`** counts pitched notes only (the example's 397 - 64 = 333
+   graded says so). Proposed in 10.1: "`low_confidence`: pitched notes whose confidence is
+   below `low_confidence`".
+3. **Word rule, zero-length words.** With "at least 50 % of the word's length", a word of
+   length 0 would take every note it touches with an overlap of 0. Proposed in 10.4: "kept
+   only when that overlap is positive and at least 30 % of the note's length or at least 50 %
+   of the word's length".
+4. **Header minor on a rewrite.** 7.1 says "minor 1"; a file from a newer minor keeps its
+   number (`max(original, 1)`), since every byte of that version's data is copied. Proposed:
+   "the final header (`minor` = the larger of the original's and 1, ...)". A file whose
+   header grew (`header_length` above 128) is not rewritten (a 1.1 writer cannot copy it).
+5. **Severity in section 9.** Unknown `kind`, `octave` and span kinds are warnings (readers
+   must accept them by 10.1); counts that disagree with the notes are warnings
+   (informational). `range` is `null` when there are no pitched notes and `words` is `null`
+   for an instrumental (no lyrics). Proposed: say so in 9 and 10.1.
+6. **Spoken spans (builder 0.1.0 and 0.2.0)**: runs of unpitched notes with gaps under
+   0.3 s (the builder's phrase gap). Proposed in 10.1 "Spans": "builder 0.x writes one
+   `spoken` span per run of unpitched notes less than 0.3 s apart".
+7. **7.1 steps 3-4 with a debounced settings save.** A slot save can land between the second
+   slot copy and the final look at the original; the writer then copies the slots again
+   (three tries) instead of giving up. Proposed: "if only the slot regions changed, step 3
+   is repeated (at most three times)". Outside the app (the command line) nothing holds the
+   song's write lock: `jukeoke-cli guide add` must not be run on a stick the app has open.
+8. **A guide built but not written** (read-only stick, full stick, file in use): the status
+   is `failed` with `error_code` and `reason`, and `in_memory: true` (usable this session).
+   Proposed in APP_API 12.3: "`failed` with `in_memory` true: built, could not be saved".
+9. **Builder version.** 0.2.0 adds the phrase-context octave check (S2.4); SONG_FORMAT 10.1
+   says "x 0.4 in builder 0.1.0" and 10.5 describes 0.1.0. Proposed: "x 0.4 in builders
+   0.1.0 and 0.2.0" and, in 10.5, "0.2.0 then flags a note left ok inside a run the spectral
+   check flagged when the melody around it is an octave away". New tunables in
+   `provenance.parameters`: `octave_flag_factor`, `octave_context`, `octave_context_s`,
+   `octave_run_gap_s`, `octave_isolated_max_s`.
+10. **`make` lookup order.** STUDIO_PROTOCOL 12.3 names the folder above the Studio runtime;
+   `make` also looks in the Studio folder itself and in `<--root>/Windows`. Proposed: add
+   "then `jukeoke-cli.exe` in the Studio folder".
+
+### S2.7 Reproduce
+
+```bash
+cd jukeoke && source scripts/devenv.sh
+export CARGO_TARGET_DIR="$JK_BUILD/target-wo2-stage2"
+cargo test -p jk-format -p jk-guide -p jk-cli -p jukeoke && cargo test --release -p jk-pitch
+$JK_BUILD/studio-venv/Scripts/python.exe -m pytest studio/tests/test_jksong.py studio/tests/test_jksong_guide.py
+bash tests/conformance/run.sh
+cargo build --release -p jk-cli -p jk-pitch --example guide_wav
+$JK_BUILD/studio-venv/Scripts/python.exe -I studio/bench/practice_guide_stage2.py
+$JK_BUILD/practice-guide/venv/Scripts/python.exe -I studio/bench/practice_guide_octave.py
+(cd app/ui && npm run build && npm test)
+```

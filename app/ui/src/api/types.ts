@@ -78,6 +78,58 @@ export interface SongSummary {
   preset: string;
   /** Non-null: listed but unplayable (damaged, newer version...). */
   error: string | null;
+  /** (added WO2, APP_API 12.3) The melody guide ("practice data"); absent from an older core. */
+  guide?: GuideStatus;
+  /** (added WO2) The best practice result kept in the song's slot. */
+  practice_best?: { overall: number | null; grade: string | null; date: string } | null;
+}
+
+/**
+ * The melody guide of a song ("practice data" in the UI): docs/APP_API.md 12.3.
+ * none / stale / failed: practice is not ready (Practice adds it on the spot).
+ */
+export type GuideState = "none" | "queued" | "building" | "ready" | "outdated" | "stale" | "newer" | "failed";
+
+export interface GuideCounts {
+  notes: number;
+  pitched: number;
+  unpitched: number;
+  low_confidence: number;
+  octave_flags: number;
+  graded: number;
+}
+
+export interface GuideStatus {
+  state: GuideState;
+  /** Plain words for none / stale / newer / failed. */
+  reason: string | null;
+  /** failed: guide_no_lead | guide_read_failed | guide_damaged | guide_disk_full | guide_read_only | guide_in_use | guide_internal | cancelled */
+  error_code: string | null;
+  /** building: 0..1 */
+  progress: number | null;
+  /** Usable now, but not (yet) in the file. */
+  in_memory: boolean;
+  /** The swap into the file waits until the song stops playing. */
+  pending_write: boolean;
+  method: string | null;
+  version: string | null;
+  created_utc: string | null;
+  counts: GuideCounts | null;
+  tuning_cents: number | null;
+}
+
+/** `guide://batch` ("Add practice data to all songs"). */
+export interface GuideBatchEvent {
+  total: number;
+  done: number;
+  failed: number;
+  current: string | null;
+  running: boolean;
+}
+
+export interface GuideQueue {
+  items: { song_id: string; state: "queued" | "building"; progress: number | null }[];
+  running: boolean;
 }
 
 export interface LibraryList {
@@ -529,6 +581,8 @@ export interface StudioJob {
   message: string | null;
   output_song_id: string | null;
   error: string | null;
+  /** (added WO2) The app's last `guide` stage: the new song's practice data. */
+  guide?: GuideStatus | null;
 }
 
 export interface StudioStatus {
@@ -660,6 +714,10 @@ export interface ApiEvents {
   "studio://dropped": { paths: string[] };
   /** Addition by the app core (not in APP_API v1): a full studio_status() when it changes. */
   "studio://status": StudioStatus;
+  /** (added WO2, APP_API 12.3) A song's practice data changed (progress at most 5/s). */
+  "guide://status": { song_id: string; status: GuideStatus };
+  /** (added WO2) "Add practice data to all songs" progress. */
+  "guide://batch": GuideBatchEvent;
 }
 export type ApiEventName = keyof ApiEvents;
 

@@ -36,7 +36,7 @@ def main(path: Path) -> None:
     exp = json.loads(Path(str(path) + ".expect.json").read_text(encoding="utf-8"))
     s = jksong.Song(path)
     m = s.manifest
-    check((s.header["major"], s.header["minor"]) == (1, 0), "header version 1.0")
+    check((s.header["major"], s.header["minor"]) == (1, 1), "header version 1.1 (Rust writes 1.1 since Work Order 2)")
     check(m["sample_rate"] == exp["sample_rate"] and m["channels"] == exp["channels"]
           and m["duration_frames"] == exp["frames"], "manifest rate / channels / frames")
     check(m["title"] == exp["manifest_title"] and m.get("x_manifest_note") == exp["manifest_extra"]["x_manifest_note"],

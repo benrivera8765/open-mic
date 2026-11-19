@@ -3,7 +3,9 @@
 //! Magic, header CRC, file length, TOC CRC, every chunk CRC and bounds, manifest
 //! schema, every referenced chunk present, every stem a valid FLAC stream with the
 //! declared rate, channels, bit depth and length, lyrics times ordered and within the
-//! song, each word's chars non-empty, slots valid or empty.
+//! song, each word's chars non-empty, slots valid or empty. Version 1.1 adds the guide
+//! checks (`guide`, `guide.curve`, a stale guide, `--deep` source hash) and the slot's
+//! `practice` value.
 //!
 //! Errors are violations of the specification. Warnings are things a conforming file
 //! may contain but that deserve a look (a damaged inactive slot left by an interrupted
@@ -34,11 +36,14 @@ pub struct VerifyOptions {
     pub decode_stems: bool,
     /// Number of random-access seeks per stem compared against the linear decode.
     pub seek_checks: usize,
+    /// 1.1 `--deep`: also compare the guide's `provenance.source.sha256` with the SHA-256
+    /// of the lead vocal chunk's bytes.
+    pub deep: bool,
 }
 
 impl Default for VerifyOptions {
     fn default() -> Self {
-        VerifyOptions { check_chunk_crcs: true, decode_stems: true, seek_checks: 8 }
+        VerifyOptions { check_chunk_crcs: true, decode_stems: true, seek_checks: 8, deep: false }
     }
 }
 
@@ -80,6 +85,9 @@ pub struct VerifyReport {
     pub lyrics_graphemes: Option<usize>,
     /// Description of each slot ("empty", "valid seq 3", "invalid: ...").
     pub slots: Vec<String>,
+    /// 1.1: a one-line description of the melody guide ("none", or its counts and
+    /// provenance), never the lyrics.
+    pub guide: Option<String>,
 }
 
 impl VerifyReport {
@@ -227,6 +235,9 @@ pub fn verify_file(path: impl AsRef<Path>, opts: &VerifyOptions) -> VerifyReport
         }
     }
 
+    // Melody guide (1.1, section 9).
+    check_guide(&song, duration, opts, &mut r);
+
     // Slots.
     for (i, s) in [(0usize, &song.slots().a), (1, &song.slots().b)] {
         let name = if i == 0 { "slot A" } else { "slot B" };
@@ -253,6 +264,12 @@ pub fn verify_file(path: impl AsRef<Path>, opts: &VerifyOptions) -> VerifyReport
                         if let Some(lo) = &st.lyrics_override {
                             check_lyrics(lo, duration, &format!("{name} lyrics_override"), &mut r);
                         }
+                        // 1.1: the practice data, when the active slot holds it.
+                        if active && let Some(p) = st.extra.get(crate::practice::PRACTICE_KEY) {
+                            for e in crate::practice::validate_practice(p) {
+                                r.errors.push(format!("{name} {e}"));
+                            }
+                        }
                     }
                     Err(e) => r.errors.push(format!("{name}: payload is not a JSON object: {e}")),
                 }
@@ -260,6 +277,123 @@ pub fn verify_file(path: impl AsRef<Path>, opts: &VerifyOptions) -> VerifyReport
         }
     }
     r
+}
+
+/// The guide checks of section 9 (1.1). An absent guide is not a warning.
+fn check_guide(song: &SongFile, duration: f64, opts: &VerifyOptions, r: &mut VerifyReport) {
+    use crate::guide::{CURVE_CHUNK, Curve, CurveError, GUIDE_CHUNK, GUIDE_MIME, GUIDE_VERSION, GuideDoc};
+    let Some(entry) = song.chunk(GUIDE_CHUNK) else {
+        if song.chunk(CURVE_CHUNK).is_some() {
+            r.warnings.push("guide.curve present without a guide chunk".into());
+        }
+        r.guide = Some("none".into());
+        return;
+    };
+    if entry.mime != GUIDE_MIME {
+        r.errors.push(format!("guide: chunk type '{}', expected application/json", entry.mime));
+    }
+    let bytes = match song.read_chunk(GUIDE_CHUNK) {
+        Ok(b) => b,
+        Err(e) => {
+            r.errors.push(format!("guide: {e}"));
+            return;
+        }
+    };
+    let v: Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            r.errors.push(format!("guide: not valid JSON: {e}"));
+            return;
+        }
+    };
+    match v.get("guide_version").and_then(Value::as_u64) {
+        Some(g) if g > GUIDE_VERSION as u64 => {
+            r.warnings.push(format!("guide: guide_version {g} was made by a newer version (not checked further)"));
+            r.guide = Some(format!("guide_version {g} (newer)"));
+            return;
+        }
+        Some(1) => {}
+        _ => {
+            r.errors.push("guide: guide_version must be 1".into());
+            return;
+        }
+    }
+    // A word reference of the wrong shape is read as "no word" (a cache entry, section
+    // 10.4); say so, as the Python checker does.
+    if let Some(notes) = v.get("notes").and_then(Value::as_array) {
+        for (i, n) in notes.iter().enumerate() {
+            if n.get("word").is_some_and(crate::guide::malformed_word_ref) {
+                r.warnings.push(format!("guide: note {i}: word reference is not [line, word, word_start] (ignored)"));
+            }
+        }
+    }
+    let doc: GuideDoc = match serde_json::from_value(v) {
+        Ok(d) => d,
+        Err(e) => {
+            r.errors.push(format!("guide: does not follow section 10.1: {e}"));
+            return;
+        }
+    };
+    let f = crate::guide::validate_doc(&doc, duration);
+    r.errors.extend(f.errors);
+    r.warnings.extend(f.warnings);
+    // The curve: an error when it is named but missing or damaged.
+    let mut curve_desc = "no curve".to_string();
+    if let Some(cid) = &doc.curve {
+        match song.chunk(cid) {
+            None => r.errors.push(format!("guide: names the curve '{cid}', which is missing")),
+            Some(c) => match song.read_chunk(cid) {
+                Err(e) => r.errors.push(format!("guide.curve: {e}")),
+                Ok(b) => match Curve::decode(&b) {
+                    Ok(curve) => {
+                        if c.mime != crate::guide::CURVE_MIME {
+                            r.warnings.push(format!("guide.curve: chunk type '{}', expected application/octet-stream", c.mime));
+                        }
+                        let f = crate::guide::validate_curve(&curve, duration);
+                        r.errors.extend(f.errors);
+                        r.warnings.extend(f.warnings);
+                        curve_desc = format!("curve {} frames", curve.frames());
+                    }
+                    Err(CurveError::NewerVersion(v)) => {
+                        r.warnings.push(format!("guide.curve: version {v} is newer (treated as absent)"));
+                    }
+                    Err(e) => r.errors.push(format!("guide.curve: {e}")),
+                },
+            },
+        }
+    }
+    // Stale: the lead vocal changed after the guide was made.
+    if let Some(reason) = crate::guide::stale_reason(song, &doc) {
+        r.warnings.push(format!("guide: stale ({reason})"));
+    }
+    if opts.deep
+        && let (Some(src), Some(lead)) = (&doc.provenance.source, crate::guide::lead_entry(song))
+    {
+        match crate::guide_write::sha256_of_range(song.path(), lead.offset, lead.length) {
+            Ok(h) if h.eq_ignore_ascii_case(&src.sha256) => {}
+            Ok(h) => r.warnings.push(format!(
+                "guide: stale (--deep: the lead vocal's SHA-256 is {h}, the guide was made from {})",
+                if src.sha256.is_empty() { "an unrecorded hash" } else { src.sha256.as_str() }
+            )),
+            Err(e) => r.errors.push(format!("guide: --deep: reading the lead vocal: {e}")),
+        }
+    }
+    let c = doc.compute_counts();
+    r.guide = Some(format!(
+        "{} {}, {} notes ({} pitched, {} unpitched, {} low confidence, {} octave flags, {} graded), {} spans, tuning {:+.1} c (strength {:.2}, used {:+.1} c), {curve_desc}",
+        doc.provenance.method,
+        doc.provenance.version,
+        c.notes,
+        c.pitched,
+        c.unpitched,
+        c.low_confidence,
+        c.octave_flags,
+        c.graded,
+        doc.spans.len(),
+        doc.tuning.cents,
+        doc.tuning.strength,
+        doc.tuning.use_cents
+    ));
 }
 
 fn check_lyrics(l: &Lyrics, duration: f64, where_: &str, r: &mut VerifyReport) {

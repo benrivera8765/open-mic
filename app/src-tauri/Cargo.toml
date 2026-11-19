@@ -49,6 +49,9 @@ jk-format = { path = "../../crates/jk-format" }
 jk-engine = { path = "../../crates/jk-engine" }
 jk-dsp = { path = "../../crates/jk-dsp" }
 jk-recorder = { path = "../../crates/jk-recorder" }
+# Work Order 2: the melody guide (builder + raw-copy rewrite, shared with jukeoke-cli).
+jk-guide = { path = "../../crates/jk-guide" }
+jk-pitch = { path = "../../crates/jk-pitch" }
 
 # Engine events arrive on a crossbeam channel (the engine API); the clock thread
 # selects over it with a timeout.
@@ -88,4 +91,6 @@ objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", features = ["NSBundle", "NSDictionary", "NSString", "NSObject", "NSProcessInfo"] }
 
 [dev-dependencies]
-# Nothing beyond std: tests use temporary folders under std::env::temp_dir().
+# Tests use temporary folders under std::env::temp_dir(). The guide tests compare chunks
+# by SHA-256 (the version jk-dsp and jk-format already use).
+sha2 = "0.11"

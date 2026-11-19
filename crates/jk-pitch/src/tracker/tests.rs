@@ -75,7 +75,8 @@ fn geometry_is_sized_in_time() {
     ] {
         let t = Tracker::new(rate);
         assert_eq!((t.window_len(), t.hop_len()), (win, hop), "{rate} Hz");
-        assert_eq!(t.describe_delay(), (win / 2 + hop) as u64);
+        // Half a window plus the two look-ahead frames.
+        assert_eq!(t.describe_delay(), (win / 2 + 2 * hop) as u64);
     }
 }
 
@@ -497,4 +498,246 @@ fn level_gate() {
     );
     let (_, unvoiced) = errors_in(&track(rate, &soft), rate, 0.2, 0.55, |_| 220.0);
     assert_eq!(unvoiced, 0);
+}
+
+// ---- Hardening on whole notes, rough voices, leaps and the owner's rig (WO2 4.4, 4.10;
+// ---- the Stage 0 verifier's findings in DECISIONS D-238).
+
+/// True when `c` cents is an octave (or more) off: within 100 cents of a non-zero multiple
+/// of 1200, or more than 1100 cents.
+fn is_octave(c: f64) -> bool {
+    let k = (c / 1200.0).round();
+    c.abs() > 1100.0 || (k != 0.0 && (c - 1200.0 * k).abs() < 100.0)
+}
+
+/// Octave jumps between consecutive pitched events (the marker jumping an octave).
+fn octave_jumps(ev: &[PitchEvent]) -> usize {
+    ev.windows(2)
+        .filter(|w| match (w[0].hz, w[1].hz) {
+            (Some(a), Some(b)) => tv::cents(f64::from(b), f64::from(a)).abs() >= 600.0,
+            _ => false,
+        })
+        .count()
+}
+
+/// WO2 4.4 "octave jumps: none on a steady note", over the WHOLE note, onset and release
+/// included (the Stage 0 tracker showed 10 to 14 octave-low events per rate at the onsets
+/// of high "oo" notes): every semitone C2..C6, three vowels, at 16 and 48 kHz. Measured
+/// with the defaults: 3 (16 kHz) and 6 (48 kHz) such events in all, every one at an onset,
+/// none in the held part.
+#[test]
+fn whole_notes_onsets_included() {
+    for rate in [16_000, 48_000] {
+        let (mut off, mut held_off, mut jumps) = (0, 0, 0);
+        for vowel in Vowel::ALL {
+            for note in C2..=C6 {
+                let hz = tv::midi_hz(f64::from(note));
+                let v = Voice {
+                    vowel,
+                    seed: note as u64,
+                    ..Voice::default()
+                };
+                let ev = track(rate, &tv::note(rate, v, hz, 0.2, 0.6, 0.2));
+                for e in &ev {
+                    if let Some(h) = e.hz
+                        && is_octave(tv::cents(f64::from(h), hz))
+                    {
+                        off += 1;
+                        held_off += usize::from(secs(e, rate) > 0.3);
+                    }
+                }
+                jumps += octave_jumps(&ev);
+            }
+        }
+        assert_eq!(held_off, 0, "{rate} Hz: octave errors in held parts");
+        assert!(off <= 12, "{rate} Hz: {off} octave-off events at onsets");
+        // A wrong first frame followed by the right note is one jump; never more jumps than
+        // wrong events.
+        assert!(jumps <= off, "{rate} Hz: {jumps} octave jumps");
+    }
+}
+
+/// A rough voice: `jitter` (relative, uniform) on every cycle's period, `shimmer` on its
+/// amplitude, a slow +-15 cent drift, held 1.2 s after 0.2 s of silence. Returns the
+/// signal and the true pitch as a function of time.
+fn rough_note(
+    rate: u32,
+    vowel: Vowel,
+    note: i32,
+    jitter: f64,
+    shimmer: f64,
+) -> (Vec<f32>, impl Fn(f64) -> f64) {
+    let hz = tv::midi_hz(f64::from(note));
+    let mut rng = tv::Rng::new(note as u64 * 7 + 1);
+    let ncyc = (2.0 * hz) as usize + 4;
+    let jf: Vec<f64> = (0..ncyc)
+        .map(|_| 1.0 + jitter * 1.732 * rng.bipolar())
+        .collect();
+    let sf: Vec<f64> = (0..ncyc)
+        .map(|_| 1.0 + shimmer * 1.732 * rng.bipolar())
+        .collect();
+    let truth = move |t: f64| {
+        let drift = 10.0 * (2.0 * std::f64::consts::PI * 0.7 * t).sin()
+            + 5.0 * (2.0 * std::f64::consts::PI * 1.9 * t + 1.0).sin();
+        hz * 2f64.powf(drift / 1200.0)
+    };
+    let v = Voice {
+        vowel,
+        seed: note as u64,
+        ..Voice::default()
+    };
+    let mut x = tv::sing(rate, 1.6, v, |t| {
+        (0.2..1.4)
+            .contains(&t)
+            .then(|| truth(t) * jf[((t - 0.2) * hz) as usize])
+    });
+    for (i, s) in x.iter_mut().enumerate() {
+        let t = i as f64 / f64::from(rate);
+        if t >= 0.2 {
+            let k = (((t - 0.2) * hz) as usize).min(ncyc - 1);
+            *s = (f64::from(*s) * sf[k]) as f32;
+        }
+    }
+    (x, truth)
+}
+
+/// Ordinary jitter and shimmer (0.5 % / 3 % and 1 % / 6 %) must not cause octave errors
+/// in held notes (the Stage 0 tracker gave 2 to 6 events more than 600 cents off per
+/// rate). Every fourth semitone, three vowels, 16 and 48 kHz.
+#[test]
+fn rough_voices_keep_their_octave() {
+    for rate in [16_000, 48_000] {
+        for (jitter, shimmer) in [(0.005, 0.03), (0.01, 0.06)] {
+            for vowel in Vowel::ALL {
+                for note in (C2..=C6).step_by(4) {
+                    let (x, truth) = rough_note(rate, vowel, note, jitter, shimmer);
+                    let ev = track(rate, &x);
+                    let (errs, _) = errors_in(&ev, rate, 0.3, 1.35, &truth);
+                    let held: Vec<PitchEvent> = ev
+                        .iter()
+                        .copied()
+                        .filter(|e| (0.3..=1.35).contains(&secs(e, rate)))
+                        .collect();
+                    let bad = errs.iter().filter(|c| c.abs() > 600.0).count();
+                    let name = tv::note_name(note);
+                    assert_eq!(
+                        bad, 0,
+                        "{rate} Hz {name} {vowel:?} jitter {jitter}: {bad} events > 600 cents"
+                    );
+                    assert_eq!(octave_jumps(&held), 0, "{rate} Hz {name} {vowel:?}: jumps");
+                }
+            }
+        }
+    }
+}
+
+/// The path search keeps a held note's octave but still follows real leaps: an octave up
+/// and an octave down sung legato (no gap) reach the new note within 100 ms of the change,
+/// from five base notes (C3..A4, so the lowest target is C2), three vowels, 16 and 48 kHz.
+#[test]
+fn octave_leaps_are_followed() {
+    for rate in [16_000, 48_000] {
+        for vowel in Vowel::ALL {
+            for base in [48, 52, 57, 64, 69] {
+                for iv in [12, -12] {
+                    let (a, b) = (
+                        tv::midi_hz(f64::from(base)),
+                        tv::midi_hz(f64::from(base + iv)),
+                    );
+                    let v = Voice {
+                        vowel,
+                        ..Voice::default()
+                    };
+                    let x = tv::sing(rate, 1.4, v, |t| {
+                        if (0.2..0.7).contains(&t) {
+                            Some(a)
+                        } else if (0.7..1.2).contains(&t) {
+                            Some(b)
+                        } else {
+                            None
+                        }
+                    });
+                    let change = (0.7 * f64::from(rate)) as u64;
+                    let first_b = track(rate, &x)
+                        .into_iter()
+                        .find(|e| {
+                            e.ready_at > change
+                                && e.hz
+                                    .is_some_and(|h| tv::cents(f64::from(h), b).abs() <= 50.0)
+                        })
+                        .map(|e| (e.ready_at - change) as f64 / f64::from(rate));
+                    assert!(
+                        first_b.is_some_and(|d| d <= 0.100),
+                        "{rate} Hz {vowel:?} {} -> {}: new note after {first_b:?} s",
+                        tv::note_name(base),
+                        tv::note_name(base + iv)
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// WO2 4.10 / section 9 "the owner's rig": what a podcast mixer and a handheld dynamic
+/// microphone do to the voice must not upset the tracker. A melody (notes E2..G#5, steady,
+/// vibrato, slides) through each effect: the note cores (0.1 s after each onset to 0.05 s
+/// before its end) stay pitched and on the note: at least 90 % pitched and every pitched
+/// core event within 50 cents of the generated pitch; under the longest, wettest reverb
+/// (RT60 1.5 s at -6 dB, whose tail overlaps the next note) at least 75 % and at most 2 %
+/// off (measured: 77.5 % pitched, 5 of 426 events off). At 44.1 kHz, a mixer rate.
+#[test]
+fn mixer_effects_keep_the_note() {
+    use super::rig::{self, Compressor};
+    let rate = 44_100;
+    let f0 = |t: f64| -> Option<f64> {
+        let k = (t / 0.8) as i32;
+        let p = t - f64::from(k) * 0.8;
+        if p >= 0.7 {
+            return None;
+        }
+        let hz = tv::midi_hz(f64::from(40 + (k * 7) % 41));
+        Some(match k % 3 {
+            0 => hz,
+            1 => tv::vibrato_hz(hz, 50.0, 5.5, t, 0.0),
+            _ => hz * 2f64.powf((p / 0.7) * 5.0 / 12.0),
+        })
+    };
+    let dry = tv::sing(rate, 8.0, Voice::default(), f0);
+    let mut noisy = dry.clone();
+    rig::add_noise_floor(&mut noisy, rate, -65.0, 3);
+    let mut handled = rig::proximity(&dry, rate, 12.0);
+    rig::add_handling(&mut handled, rate, 8, 4, 5);
+    // (name, signal, least share pitched, most share off)
+    let cases: Vec<(&str, Vec<f32>, f64, f64)> = vec![
+        ("reverb RT60 0.3 s -6 dB", rig::reverb(&dry, rate, 0.3, -6.0, 1), 0.9, 0.0),
+        ("reverb RT60 1.0 s -8 dB", rig::reverb(&dry, rate, 1.0, -8.0, 2), 0.9, 0.0),
+        ("reverb RT60 1.5 s -6 dB", rig::reverb(&dry, rate, 1.5, -6.0, 3), 0.75, 0.02),
+        ("heavy compression", rig::compress(&noisy, rate, Compressor::HEAVY), 0.9, 0.0),
+        ("bright channel EQ", rig::mixer_eq(&dry, rate, true), 0.9, 0.0),
+        ("warm channel EQ", rig::mixer_eq(&dry, rate, false), 0.9, 0.0),
+        ("proximity, pops and thumps", handled, 0.9, 0.0),
+    ];
+    for (name, x, min_pitched, max_off) in cases {
+        let ev = track(rate, &x);
+        let (mut core, mut pitched, mut wrong) = (0usize, 0usize, 0usize);
+        for e in &ev {
+            let t = secs(e, rate);
+            let p = t - (t / 0.8).floor() * 0.8;
+            if !(0.1..=0.65).contains(&p) {
+                continue;
+            }
+            let Some(truth) = f0(t) else { continue };
+            core += 1;
+            if let Some(h) = e.hz {
+                pitched += 1;
+                wrong += usize::from(tv::cents(f64::from(h), truth).abs() > 50.0);
+            }
+        }
+        let share = pitched as f64 / core as f64;
+        assert!(share >= min_pitched, "{name}: {:.1} % pitched", 100.0 * share);
+        assert!(
+            wrong as f64 <= max_off * pitched as f64,
+            "{name}: {wrong} of {pitched} core events more than 50 cents off"
+        );
+    }
 }

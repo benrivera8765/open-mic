@@ -11,6 +11,9 @@
 
 use std::time::Instant;
 
+#[path = "tracker_set/mod.rs"]
+mod tracker_set;
+
 use jk_pitch::tracker::testvoice::{self as tv, Voice, Vowel};
 use jk_pitch::tracker::{PitchEvent, Tracker, TrackerConfig};
 
@@ -709,6 +712,12 @@ fn main() {
     }
     if let Some(v) = env("JK_MAX_STEP") {
         cfg.max_step_cents = v;
+    }
+    // Any other setting: JK_SET="field=value,field=value".
+    if let Ok(list) = std::env::var("JK_SET") {
+        for kv in list.split(',').filter(|s| !s.is_empty()) {
+            tracker_set::set_field(&mut cfg, kv);
+        }
     }
     println!("Tracker settings: {cfg:?}");
     if want("steady") {

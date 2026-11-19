@@ -20,6 +20,16 @@
 #      unknown chunk and unknown key survived.
 #   6  Damaged copies: Python and Rust must give the same verdict on each.
 #   7  The committed fixture tests/fixtures/generated/tiny.jksong verifies (strict).
+#   8  1.1, Python writes a guide: Python adds a melody guide to a Python file by the
+#      raw-copy rewrite (SONG_FORMAT 7.1); Rust verifies it (strict, --deep), recomputes
+#      the word references by its own rule, and checks every other chunk and both slot
+#      regions by SHA-256 (byte-identical, same offsets).
+#   9  1.1, Rust writes a guide: the real builder (jk-guide) adds one to another copy;
+#      Python runs the section 9 checks, recomputes the word references, and compares
+#      the SHA-256 of every other chunk and both slots.
+#  10  1.1, interruptions: each writer stops its rewrite at every point of section 7.1
+#      on a copy each; both readers find the old file, byte for byte, valid, and list no
+#      temporary file.
 #
 # Environment: JK_PYTHON (python with numpy + soundfile), JK_BUILD (scratch root,
 # default ../jukeoke-build), JK_CONFORMANCE_OUT (default $JK_BUILD/conformance).
@@ -96,6 +106,39 @@ while IFS=$'\t' read -r name tag status; do
         echo "  ok    rust: $name -> ${tag/#-/opens and verifies} (exit $got)"
     fi
 done < "$OUT/corrupt/cases.tsv"
+
+step "8. 1.1: Python adds a guide; Rust checks it (verify --strict --deep, word rule, SHA-256 of the rest)"
+cargo build -q -p jk-guide --example guide_conformance
+GC=(cargo run -q -p jk-guide --example guide_conformance --)
+cp "$OUT/py.jksong" "$OUT/py-guide.jksong"
+"$PY" -I -B tests/conformance/guide_py.py fingerprint "$OUT/py-guide.jksong" "$OUT/py-guide.before.json" || fail "fingerprint"
+"$PY" -I -B tests/conformance/guide_py.py add "$OUT/py-guide.jksong" || fail "Python add_guide"
+"${GC[@]}" check "$OUT/py-guide.jksong" "$OUT/py-guide.before.json" || fail "Rust check of the Python guide"
+"${VERIFY[@]}" "$OUT/py-guide.jksong" --strict > "$OUT/py-guide.verify.log" 2>&1 \
+    && echo "  ok    jksong-verify --strict of the Python guide file" || fail "Rust verify of the Python guide file"
+
+step "9. 1.1: Rust adds a guide (real builder); Python checks it"
+cp "$OUT/py.jksong" "$OUT/rust-guide.jksong"
+"${GC[@]}" fingerprint "$OUT/rust-guide.jksong" "$OUT/rust-guide.before.json" || fail "fingerprint"
+"${GC[@]}" add "$OUT/rust-guide.jksong" || fail "Rust add_guide"
+"$PY" -I -B tests/conformance/guide_py.py check "$OUT/rust-guide.jksong" "$OUT/rust-guide.before.json" \
+    || fail "Python check of the Rust guide"
+"$PY" -I -B tests/conformance/guide_py.py fingerprint "$OUT/rust-guide.jksong" "$OUT/rust-guide.after-py.json"
+"${GC[@]}" fingerprint "$OUT/rust-guide.jksong" "$OUT/rust-guide.after-rust.json"
+if "$PY" -I -B -c "import json,sys; a,b=(json.load(open(f)) for f in sys.argv[1:]); sys.exit(0 if a==b else 1)" \
+    "$OUT/rust-guide.after-py.json" "$OUT/rust-guide.after-rust.json"; then
+    echo "  ok    Python and Rust compute the same SHA-256 fingerprint of the file"
+else
+    fail "the two fingerprints differ"
+fi
+
+step "10. 1.1: interrupted rewrites leave the old file (both writers, both readers)"
+"$PY" -I -B tests/conformance/guide_py.py interrupt "$OUT/py.jksong" "$OUT/int-py" || fail "Python interrupt"
+"${GC[@]}" interrupt "$OUT/py.jksong" "$OUT/int-rust" || fail "Rust interrupt"
+for d in int-py int-rust; do
+    "$PY" -I -B tests/conformance/guide_py.py check-interrupted "$OUT/$d" || fail "Python check of $d"
+    "${GC[@]}" check-interrupted "$OUT/$d" || fail "Rust check of $d"
+done
 
 step "7. Committed fixture"
 "${VERIFY[@]}" tests/fixtures/generated/tiny.jksong --strict || fail "tiny.jksong does not verify"

@@ -23,6 +23,8 @@
 //   ?marker=0              start without the page display's progress needle (settings.ui.show_marker)
 //   ?exportpeak=1.95       peak of the simulated export render (linear; above full scale
 //                          a FLAC export reports the gain it applied, like the real core)
+//   ?practice=none         start with no practice data on any song (WO2: by default two
+//                          demo songs have it and the others not)
 // Handled by the UI (App.tsx `mockStartup`), not here:
 //   ?song=N&at=SECONDS     load playable song N (0-based) at a position, paused
 //   &play=1                ...and start playing
@@ -41,6 +43,8 @@ import type {
   DeletedSong,
   DeleteFailure,
   DeleteResult,
+  GuideQueue,
+  GuideStatus,
   LyricsDisplay,
   LyricsMotion,
   Device,
@@ -133,6 +137,10 @@ export interface MockOptions {
    * `wav32f` is never scaled.
    */
   exportPeak: number;
+  /** WO2: songs start with no practice data at all (default: two demo songs have it). */
+  noPractice: boolean;
+  /** WO2: song ids whose practice data fails to save (the stick is full), for tests. */
+  guideFailIds: string[];
   /** Clock source (ms); injectable for tests. */
   now: () => number;
   /** Timer functions; injectable for tests. */
@@ -155,6 +163,8 @@ const DEFAULT_OPTIONS: MockOptions = {
   showMarker: true,
   latencyMs: 3,
   exportPeak: 0.89,
+  noPractice: false,
+  guideFailIds: [],
   now: () => performance.now(),
   setInterval: (f, ms) => setInterval(f, ms),
   clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
@@ -262,6 +272,27 @@ interface MockSongState {
   settings: SongSettings;
   lyricsOverride: Lyrics | null;
   metadata: MetadataChanges;
+  /** WO2: the song's practice data (melody guide). */
+  guide: GuideStatus;
+}
+
+/** A guide status with no guide (APP_API 12.3). */
+export function noGuide(reason = "Practice data has not been added to this song yet."): GuideStatus {
+  return { state: "none", reason, error_code: null, progress: null, in_memory: false, pending_write: false, method: null, version: null, created_utc: null, counts: null, tuning_cents: null };
+}
+
+/** A ready guide as the real core reports one. */
+export function readyGuide(notes = 120): GuideStatus {
+  return {
+    ...noGuide(),
+    state: "ready",
+    reason: null,
+    method: "jk-pitch pyin+notes",
+    version: "0.1.0",
+    created_utc: "2026-11-19T12:00:00Z",
+    counts: { notes, pitched: notes - 10, unpitched: 10, low_confidence: 12, octave_flags: 2, graded: notes - 24 },
+    tuning_cents: 0,
+  };
 }
 
 export class MockApi implements Api {
@@ -297,6 +328,11 @@ export class MockApi implements Api {
   private deletedSongs: { entry: DeletedSong; song: MockSongState }[] = [];
   /** Bytes freed by "delete for good" (the free space grows by them). */
   private freedBytes = 0;
+  /** WO2 practice data: songs waiting, the one being made, the batch, its timer. */
+  private guideWaiting: string[] = [];
+  private guideRunning: string | null = null;
+  private guideBatchState: { total: number; done: number; failed: number; ids: Set<string> } | null = null;
+  private guideTicker: unknown = null;
 
   constructor(options: Partial<MockOptions> = {}) {
     this.o = { ...DEFAULT_OPTIONS, ...options };
@@ -309,7 +345,14 @@ export class MockApi implements Api {
     this.settings.ui.show_next_line = this.o.showNextLine;
     this.settings.ui.show_marker = this.o.showMarker;
     const lib = this.o.empty ? [] : [...demoLibrary(), ...fillerSongs(this.o.many)];
-    this.songs = lib.map((demo) => ({ demo, settings: { ...demo.settings, levels: { ...demo.settings.levels } }, lyricsOverride: null, metadata: {} }));
+    this.songs = lib.map((demo, i) => ({
+      demo,
+      settings: { ...demo.settings, levels: { ...demo.settings.levels } },
+      lyricsOverride: null,
+      metadata: {},
+      // The first and third demo songs have practice data; the others not yet.
+      guide: !this.o.noPractice && !demo.summary.error && (i === 0 || i === 2) ? readyGuide(100 + i * 20) : noGuide(),
+    }));
     if (this.o.platform === "windows") {
       this.mediaPlayers = MOCK_PLAYERS.slice(0, this.o.players).map((p) => ({ ...p }));
     }
@@ -341,6 +384,7 @@ export class MockApi implements Api {
     if (q.get("marker") === "0") o.showMarker = false;
     const many = Number(q.get("many"));
     if (many > 0) o.many = Math.min(2000, Math.floor(many));
+    if (q.get("practice") === "none") o.noPractice = true;
     const peak = Number(q.get("exportpeak"));
     if (peak > 0 && Number.isFinite(peak)) o.exportPeak = peak;
     return o;
@@ -348,8 +392,8 @@ export class MockApi implements Api {
 
   /** Tests: stop every timer and forget every listener (the next test starts clean). */
   dispose(): void {
-    for (const t of [this.ticker, this.recTicker, this.jobTicker]) if (t !== null) this.o.clearInterval(t);
-    this.ticker = this.recTicker = this.jobTicker = null;
+    for (const t of [this.ticker, this.recTicker, this.jobTicker, this.guideTicker]) if (t !== null) this.o.clearInterval(t);
+    this.ticker = this.recTicker = this.jobTicker = this.guideTicker = null;
     if (this.previewTimer) clearTimeout(this.previewTimer);
     this.previewTimer = null;
     this.handlers.clear();
@@ -443,7 +487,143 @@ export class MockApi implements Api {
       semitones: s.settings.semitones,
       has_lyrics: s.demo.summary.error ? false : lyr !== null,
       lyrics_checked: lyr?.checked ?? false,
+      guide: { ...s.guide },
     };
+  }
+
+  // --- 12.3 practice data (WO2) ------------------------------------------------
+  // Like the core's guide queue: one build at a time, progress events, a batch for
+  // "Add practice data to all songs", cancel. A build takes about a second here.
+
+  private guideEmit(s: MockSongState): void {
+    this.emit("guide://status", { song_id: s.demo.summary.song_id, status: { ...s.guide } });
+  }
+
+  private guideBatchEmit(): void {
+    const b = this.guideBatchState;
+    if (!b) return;
+    const running = this.guideWaiting.some((id) => b.ids.has(id)) || (this.guideRunning !== null && b.ids.has(this.guideRunning));
+    this.emit("guide://batch", { total: b.total, done: b.done, failed: b.failed, current: running ? this.guideRunning : null, running });
+    if (!running) this.guideBatchState = null;
+  }
+
+  private guideTick(): void {
+    if (this.guideRunning === null) {
+      const next = this.guideWaiting.shift();
+      if (next === undefined) {
+        if (this.guideTicker !== null) this.o.clearInterval(this.guideTicker);
+        this.guideTicker = null;
+        return;
+      }
+      this.guideRunning = next;
+      const s = this.find(next);
+      if (s) {
+        s.guide = { ...s.guide, state: "building", progress: 0, reason: null, error_code: null };
+        this.guideEmit(s);
+        this.guideBatchEmit();
+      }
+      return;
+    }
+    const s = this.find(this.guideRunning);
+    if (!s) {
+      this.guideRunning = null;
+      return;
+    }
+    const p = Math.min(1, (s.guide.progress ?? 0) + 0.25);
+    if (p < 1) {
+      s.guide = { ...s.guide, progress: p };
+      this.guideEmit(s);
+      return;
+    }
+    const failed = this.o.guideFailIds.includes(s.demo.summary.song_id);
+    s.guide = failed
+      ? { ...noGuide("Practice data could not be saved: the drive is full. Free 150 MB and press Try again."), state: "failed", error_code: "guide_disk_full", in_memory: true }
+      : readyGuide();
+    const b = this.guideBatchState;
+    if (b && b.ids.has(s.demo.summary.song_id)) {
+      b.done += 1;
+      if (failed) b.failed += 1;
+    }
+    this.guideRunning = null;
+    this.guideEmit(s);
+    this.guideBatchEmit();
+  }
+
+  private guideStart(): void {
+    if (this.guideTicker === null) this.guideTicker = this.o.setInterval(() => this.guideTick(), 120);
+  }
+
+  guideStatus(songId: string): Promise<GuideStatus> {
+    const s = this.find(songId);
+    return s ? this.reply({ ...s.guide }) : this.reject(fail("not_found", "This song is not in the library."));
+  }
+
+  guideBuild(songId: string, force = false): Promise<GuideStatus> {
+    const s = this.find(songId);
+    if (!s) return this.reject(fail("not_found", "This song is not in the library."));
+    if (s.demo.summary.error) return this.reply({ ...noGuide(s.demo.summary.error), state: "failed", error_code: "guide_read_failed" });
+    const busy = this.guideRunning === songId || this.guideWaiting.includes(songId);
+    const wanted = s.guide.state === "ready" || s.guide.state === "newer" ? force && s.guide.state === "ready" : true;
+    if (!busy && wanted) {
+      this.guideWaiting.unshift(songId);
+      s.guide = { ...s.guide, state: "queued", progress: null, reason: null, error_code: null };
+      this.guideEmit(s);
+      this.guideStart();
+    }
+    return this.reply({ ...s.guide });
+  }
+
+  guideBuildAll(includeOutdated = false): Promise<{ queued: number; skipped: number }> {
+    let queued = 0;
+    let skipped = 0;
+    const ids: string[] = [];
+    for (const s of this.songs) {
+      const id = s.demo.summary.song_id;
+      const busy = this.guideRunning === id || this.guideWaiting.includes(id);
+      const st = s.guide.state;
+      const want = !s.demo.summary.error && !busy && (st === "none" || st === "stale" || (st === "failed" && s.guide.error_code !== "guide_no_lead") || (includeOutdated && st === "outdated"));
+      if (!want) {
+        skipped += 1;
+        continue;
+      }
+      queued += 1;
+      ids.push(id);
+      this.guideWaiting.push(id);
+      s.guide = { ...s.guide, state: "queued", progress: null, reason: null, error_code: null };
+      this.guideEmit(s);
+    }
+    if (queued > 0) {
+      const b = (this.guideBatchState ??= { total: 0, done: 0, failed: 0, ids: new Set() });
+      b.total += queued;
+      for (const id of ids) b.ids.add(id);
+      this.guideBatchEmit();
+      this.guideStart();
+    }
+    return this.reply({ queued, skipped });
+  }
+
+  guideCancel(songId?: string): Promise<void> {
+    const hit = (id: string) => songId === undefined || songId === id;
+    const touched = [...this.guideWaiting.filter(hit), ...(this.guideRunning !== null && hit(this.guideRunning) ? [this.guideRunning] : [])];
+    this.guideWaiting = this.guideWaiting.filter((id) => !hit(id));
+    if (this.guideRunning !== null && hit(this.guideRunning)) this.guideRunning = null;
+    for (const id of touched) {
+      const s = this.find(id);
+      if (!s) continue;
+      s.guide = { ...noGuide("Cancelled."), state: "failed", error_code: "cancelled" };
+      this.guideEmit(s);
+      const b = this.guideBatchState;
+      if (b && b.ids.delete(id)) b.total = Math.max(0, b.total - 1);
+    }
+    this.guideBatchEmit();
+    return this.reply(undefined);
+  }
+
+  guideQueue(): Promise<GuideQueue> {
+    const items: GuideQueue["items"] = [];
+    if (this.guideRunning !== null) items.push({ song_id: this.guideRunning, state: "building", progress: this.find(this.guideRunning)?.guide.progress ?? null });
+    for (const id of this.guideWaiting) items.push({ song_id: id, state: "queued", progress: null });
+    return this.reply({ items, running: this.guideRunning !== null });
   }
 
   libraryList() {

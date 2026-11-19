@@ -26,6 +26,8 @@ import type {
   DeleteResult,
   Device,
   ExportFormat,
+  GuideQueue,
+  GuideStatus,
   InspectResult,
   LibraryList,
   MediaPlayers,
@@ -146,6 +148,15 @@ export interface Api {
   selfcheckUserAgent?(userAgent: string): Promise<void>;
   /** Stage 0 `--smoke-test` report; the core rejects it when not in that mode. */
   sendSmokeReport?(report: unknown): Promise<void>;
+  // 12.3 Practice data (the melody guide; added WO2). Optional so older fakes still type-check.
+  guideStatus?(songId: string): Promise<GuideStatus>;
+  /** Queues a build and returns at once; progress comes as `guide://status`. */
+  guideBuild?(songId: string, force?: boolean): Promise<GuideStatus>;
+  /** "Add practice data to all songs". */
+  guideBuildAll?(includeOutdated?: boolean): Promise<{ queued: number; skipped: number }>;
+  /** One song's build, or every one (no id). */
+  guideCancel?(songId?: string): Promise<void>;
+  guideQueue?(): Promise<GuideQueue>;
 
   /** Subscribe to a core event. */
   on<E extends ApiEventName>(event: E, handler: (payload: ApiEvents[E]) => void): Unsubscribe;
@@ -260,6 +271,12 @@ export class TauriApi implements Api {
   studioCoverPreview = (path: string, max_px: number) => call<CoverResult>("studio_cover_preview", { path, max_px });
   selfcheckRun = (user_agent: string, silent = false) => call<SelfCheckResult>("selfcheck_run", { user_agent, silent });
   rootChoose = () => call<{ ok: boolean; root: string | null; message: string }>("root_choose");
+  guideStatus = (song_id: string) => call<GuideStatus>("guide_status", { song_id });
+  guideBuild = (song_id: string, force = false) => call<GuideStatus>("guide_build", { song_id, force });
+  guideBuildAll = (include_outdated = false) =>
+    call<{ queued: number; skipped: number }>("guide_build_all", { options: { include_outdated } });
+  guideCancel = (song_id?: string) => call<void>("guide_cancel", song_id === undefined ? {} : { song_id });
+  guideQueue = () => call<GuideQueue>("guide_queue");
   selfcheckUserAgent = (user_agent: string) => call<void>("selfcheck_user_agent", { user_agent });
 
   on<E extends ApiEventName>(event: E, handler: (payload: ApiEvents[E]) => void): Unsubscribe {

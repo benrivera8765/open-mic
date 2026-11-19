@@ -172,3 +172,43 @@ fn deleting_the_playing_song_releases_every_file_handle_first() {
     drop(core);
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// Work Order 2 (APP_API 12.3): a guide built for the song that is playing in the real
+/// engine never interrupts it: the guide is used from memory and the swap waits; once
+/// paused, the song is released (every handle closed, as for a delete), the guide is
+/// swapped in, and the song is loaded again at the same position and plays on.
+#[test]
+fn a_guide_for_the_playing_song_waits_for_a_pause_then_swaps() {
+    let (root, core, _sink) = core_on_null_device("real-guide");
+    std::fs::copy(tiny_song(), root.join("Library/Tiny.jksong")).unwrap();
+    core.player.start_clock();
+    core.guide.start();
+    let id = "Tiny.jksong";
+    let path = root.join("Library").join(id);
+    core.song_load(id).unwrap();
+    core.player.play().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let under0 = core.player.state().underruns;
+    core.guide_build(id, false).unwrap();
+    let s = wait_for(Duration::from_secs(60), || Some(core.guide_status(id).unwrap()).filter(|s| s.pending_write))
+        .expect("the guide waits in memory while the song plays");
+    assert!(s.in_memory && s.state == "ready", "{s:?}");
+    let st = core.player.state();
+    assert_eq!(st.state, "playing");
+    assert_eq!(st.underruns, under0, "no underrun while the guide was built and written beside playback");
+    assert!(jk_format::SongFile::open(&path).unwrap().chunk("guide").is_none());
+    core.player.pause().unwrap();
+    let pos = core.player.state().position_s;
+    let done = wait_for(Duration::from_secs(10), || Some(core.guide_status(id).unwrap()).filter(|s| !s.pending_write));
+    assert!(done.as_ref().is_some_and(|s| s.state == "ready" && !s.in_memory), "{done:?} now {:?}", core.guide_status(id));
+    assert!(jk_format::SongFile::open(&path).unwrap().chunk("guide").is_some());
+    let st = core.player.state();
+    assert_eq!((st.state, st.song_id.as_deref()), ("paused", Some(id)));
+    assert!((st.position_s - pos).abs() < 0.1, "reloaded at {} (was {pos})", st.position_s);
+    core.player.play().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(core.player.state().state, "playing");
+    core.shutdown();
+    drop(core);
+    let _ = std::fs::remove_dir_all(root);
+}

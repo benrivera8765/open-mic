@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Reader and writer for the ``.jksong`` song file, version 1.0 (docs/SONG_FORMAT.md).
+"""Reader and writer for the ``.jksong`` song file, version 1.1 (docs/SONG_FORMAT.md).
+
+Version 1.1 (Work Order 2, practice mode) adds the melody guide (chunks ``guide`` and
+``guide.curve``, section 10), its raw-copy rewrite into an existing file (section 7.1:
+:func:`add_guide`) and the practice data in the settings slot (section 11); see the
+"1.1" part at the end of this module.
 
 This is the Python reference implementation, used by the Studio to write songs. It is
 independent of the Rust one (``crates/jk-format``); the two are tested against each
@@ -55,14 +60,20 @@ __all__ = [
     "SlotPayloadTooLarge", "StemInput", "quantize_stem", "encode_flac24", "add_seektable",
     "write_song", "write_container", "Song", "open_song", "update_user_state",
     "default_user_state", "validate_lyrics", "list_song_files", "is_song_file_name",
+    # 1.1
+    "GUIDE_CHUNK", "CURVE_CHUNK", "round3", "round_half_away", "encode_curve", "decode_curve",
+    "validate_guide", "validate_curve", "note_graded", "map_words", "set_word_refs",
+    "word_refs_valid", "guide_counts", "guide_state", "prepare_guide_rewrite", "finish_guide_rewrite",
+    "add_guide", "GuideInterrupted", "round_practice_result", "practice_add_result",
+    "practice_shrink_once", "save_practice", "validate_practice",
 ]
 
 # ----------------------------------------------------------------------------- constants
 
 MAGIC = b"\x89JKS\r\n\x1a\n"
 FORMAT_MAJOR = 1
-FORMAT_MINOR = 0
-FORMAT_VERSION = "1.0"
+FORMAT_MINOR = 1          # 1.1 writers write minor 1 (Work Order 2)
+FORMAT_VERSION = "1.1"
 HEADER_LENGTH = 128
 ALIGN = 4096
 DEFAULT_SLOT_SIZE = 262_144
@@ -491,10 +502,11 @@ def default_user_state() -> dict:
 
 # ----------------------------------------------------------------------------- header
 
-def _encode_header(toc_offset: int, toc_length: int, toc_crc: int, slot_size: int, file_length: int) -> bytes:
+def _encode_header(toc_offset: int, toc_length: int, toc_crc: int, slot_size: int, file_length: int,
+                   minor: int = FORMAT_MINOR) -> bytes:
     b = bytearray(HEADER_LENGTH)
     b[0:8] = MAGIC
-    struct.pack_into("<HHIQQIIQQQ", b, 8, FORMAT_MAJOR, FORMAT_MINOR, HEADER_LENGTH, toc_offset, toc_length,
+    struct.pack_into("<HHIQQIIQQQ", b, 8, FORMAT_MAJOR, minor, HEADER_LENGTH, toc_offset, toc_length,
                      toc_crc, slot_size, ALIGN, ALIGN + slot_size, file_length)
     struct.pack_into("<I", b, 124, _crc32(bytes(b[:124])))
     return bytes(b)
@@ -933,6 +945,27 @@ class Song:
         return (q.T.astype(np.float64) * (gain / FULL_SCALE)).astype(np.float32)
 
 
+    # -- 1.1: the melody guide (section 10)
+    def guide(self) -> dict | None:
+        """The ``guide`` chunk parsed, or None."""
+        if GUIDE_CHUNK not in self._chunks:
+            return None
+        return json.loads(self.read_chunk(GUIDE_CHUNK).decode("utf-8"))
+
+    def guide_curve(self) -> dict | None:
+        """The curve the guide names, decoded (see :func:`decode_curve`), or None."""
+        g = self.guide()
+        cid = g.get("curve") if isinstance(g, dict) else None
+        if not cid or cid not in self._chunks:
+            return None
+        return decode_curve(self.read_chunk(cid))
+
+    def practice(self) -> dict | None:
+        """The active slot's ``practice`` value (section 11), or None."""
+        p = self.user_state.get(PRACTICE_KEY)
+        return p if isinstance(p, dict) else None
+
+
 def open_song(path: str | os.PathLike) -> Song:
     return Song(path)
 
@@ -975,3 +1008,699 @@ def list_song_files(folder: str | os.PathLike) -> list[Path]:
     folder = Path(folder)
     return sorted((p for p in folder.iterdir() if p.is_file() and is_song_file_name(p.name)),
                   key=lambda p: p.name.lower())
+
+
+# ============================================================================= 1.1
+#
+# The melody guide (SONG_FORMAT sections 7.1, 9, 10) and the practice data in the
+# settings slot (section 11). Written independently of the Rust implementation
+# (crates/jk-format/src/guide.rs, guide_write.rs, practice.rs and the word rule in
+# crates/jk-pitch/src/guide/words.rs); tests/conformance checks the two against each other.
+
+GUIDE_CHUNK = "guide"
+CURVE_CHUNK = "guide.curve"
+GUIDE_MIME = "application/json"
+CURVE_MIME = "application/octet-stream"
+GUIDE_VERSION = 1
+CURVE_MAGIC = b"JKPC"
+CURVE_VERSION = 1
+CURVE_HEADER_LEN = 32
+CURVE_F32 = 1
+END_TOLERANCE_S = 0.05
+OVERLAP_TOLERANCE_S = 0.001
+WORD_START_TOLERANCE_S = 0.0015
+DEFAULT_TUNING_MIN_STRENGTH = 0.3
+PRACTICE_KEY = "practice"
+MAX_RECENT = 20
+
+
+def round_half_away(x: float, decimals: int) -> float:
+    """Rounds half away from zero to ``decimals`` places, the same arithmetic as the Rust
+    writer's ``(x * 10^d).round() / 10^d`` (Python's ``round`` rounds half to even)."""
+    import math
+    p = 10.0 ** decimals
+    y = x * p
+    a = abs(y)
+    r = math.floor(a)
+    if a - r >= 0.5:
+        r += 1.0
+    return math.copysign(r, y) / p
+
+
+def round3(x: float) -> float:
+    """Guide times and pitches are written to 3 decimals (section 10.1)."""
+    return round_half_away(x, 3)
+
+
+# ----------------------------------------------------------------------------- curve
+
+def encode_curve(midi, voic, lvdb, hop_us: int = 10_000, t0_us: int = 0, extra_fields=()) -> bytes:
+    """The ``guide.curve`` chunk (section 10.3): header, field table (tag, format code),
+    then each field's ``N`` float32 values (planar). ``extra_fields``: more
+    ``(tag, format, values)`` after the three defined ones."""
+    fields = [(b"MIDI", CURVE_F32, midi), (b"VOIC", CURVE_F32, voic), (b"LVDB", CURVE_F32, lvdb)]
+    fields += list(extra_fields)
+    n = len(fields[0][2])
+    if any(len(f[2]) != n for f in fields):
+        raise ValueError("every curve field needs the same number of frames")
+    out = bytearray(CURVE_MAGIC + struct.pack("<HHIIi", CURVE_VERSION, len(fields), n, hop_us, t0_us) + b"\0" * 12)
+    for tag, fmt, _ in fields:
+        if len(tag) != 4:
+            raise ValueError("curve tags are 4 bytes")
+        out += tag + struct.pack("<I", fmt)
+    for _, fmt, vals in fields:
+        out += np.asarray(vals, dtype="<f4").tobytes()
+    return bytes(out)
+
+
+def decode_curve(b: bytes) -> dict:
+    """Parses a curve. Returns ``{"hop_us", "t0_us", "frames", "fields": {tag: array}}``
+    (float fields only; others are skipped). Raises ``Damaged`` for a bad magic or length,
+    ``NewerVersion`` for a curve version above 1 (readers treat it as absent)."""
+    if len(b) < CURVE_HEADER_LEN or b[:4] != CURVE_MAGIC:
+        raise Damaged("pitch curve: bad magic")
+    version, f, n, hop_us, t0_us = struct.unpack_from("<HHIIi", b, 4)
+    if version != CURVE_VERSION:
+        raise NewerVersion(f"pitch curve version {version}")
+    if f == 0 or hop_us == 0:
+        raise Damaged("pitch curve: no fields or zero frame step")
+    if len(b) != CURVE_HEADER_LEN + 8 * f + 4 * n * f:
+        raise Damaged(f"pitch curve: length {len(b)}, expected {CURVE_HEADER_LEN + 8 * f + 4 * n * f}")
+    fields = {}
+    base = CURVE_HEADER_LEN + 8 * f
+    for i in range(f):
+        tag = b[CURVE_HEADER_LEN + 8 * i:CURVE_HEADER_LEN + 8 * i + 4].decode("ascii", "replace")
+        fmt = struct.unpack_from("<I", b, CURVE_HEADER_LEN + 8 * i + 4)[0]
+        if fmt == CURVE_F32 and tag not in fields:
+            fields[tag] = np.frombuffer(b, dtype="<f4", count=n, offset=base + 4 * n * i)
+    return {"hop_us": hop_us, "t0_us": t0_us, "frames": n, "fields": fields}
+
+
+def curve_frames_for(duration_s: float, hop_us: int = 10_000) -> int:
+    """``N = floor(duration / hop) + 1`` (the same tiny epsilon as the Rust writer)."""
+    import math
+    return int(math.floor(duration_s / (hop_us * 1e-6) + 1e-9)) + 1
+
+
+# ----------------------------------------------------------------------------- notes
+
+def note_is_pitched(n: dict) -> bool:
+    return n.get("kind") == "pitched"            # an unknown kind reads as unpitched
+
+
+def note_octave_ok(n: dict) -> bool:
+    return n.get("octave") in ("ok", "unchecked")  # an unknown value counts as flagged
+
+
+def note_graded(n: dict, low_confidence: float) -> bool:
+    """Section 10.1 "Which notes are graded", before the singer's exclusions."""
+    return note_is_pitched(n) and float(n.get("confidence", 0.0)) >= low_confidence and note_octave_ok(n)
+
+
+def guide_counts(doc: dict) -> dict:
+    notes = doc.get("notes", [])
+    low = float(doc.get("low_confidence", 0.5))
+    return {
+        "notes": len(notes),
+        "pitched": sum(1 for n in notes if note_is_pitched(n)),
+        "unpitched": sum(1 for n in notes if not note_is_pitched(n)),
+        # Pitched notes only (the contract's example: 397 pitched - 64 low = 333 graded).
+        "low_confidence": sum(1 for n in notes if note_is_pitched(n) and float(n.get("confidence", 0)) < low),
+        "octave_flags": sum(1 for n in notes if note_is_pitched(n) and not note_octave_ok(n)),
+        "graded": sum(1 for n in notes if note_graded(n, low)),
+    }
+
+
+def map_words(notes: list[tuple[float, float]], words: list[tuple[float, float]]) -> list[int | None]:
+    """Section 10.4: for each note (start, end) the index of the word (start, end, the
+    lyrics offset already added) with the largest positive overlap (the earlier word on a
+    tie), kept when the overlap is at least 30 % of the note or 50 % of the word.
+    Same arithmetic as ``jk_pitch::guide::words::map_words``."""
+    out: list[int | None] = []
+    for ns, ne in notes:
+        best, best_ov = None, 0.0
+        for i, (ws, we) in enumerate(words):
+            ov = min(ne, we) - max(ns, ws)
+            if ov <= 0.0:
+                continue
+            if best is None or ov > best_ov:
+                best, best_ov = i, ov
+        if best is None:
+            out.append(None)
+            continue
+        ws, we = words[best]
+        out.append(best if (best_ov >= 0.3 * (ne - ns) or best_ov >= 0.5 * (we - ws)) else None)
+    return out
+
+
+def _flat_words(lyrics: dict | None, offset_ms: int) -> list[tuple[int, int, float, float]]:
+    if not lyrics:
+        return []
+    off = offset_ms / 1000.0
+    return [(li, wi, w["start"] + off, w["end"] + off)
+            for li, line in enumerate(lyrics.get("lines", []))
+            for wi, w in enumerate(line.get("words", []))]
+
+
+def set_word_refs(doc: dict, lyrics: dict | None, is_override: bool, offset_ms: int) -> None:
+    """Attaches each note to a word of the effective lyrics (section 10.4) in place."""
+    for n in doc.get("notes", []):
+        n.pop("word", None)
+    if lyrics is None:
+        doc["words"] = None
+        return
+    flat = _flat_words(lyrics, offset_ms)
+    m = map_words([(n["start"], n["end"]) for n in doc["notes"]], [(w[2], w[3]) for w in flat])
+    for n, i in zip(doc["notes"], m):
+        if i is not None:
+            li, wi, ws, _ = flat[i]
+            n["word"] = [li, wi, round3(ws)]
+    doc["words"] = {"lyrics": "override" if is_override else "chunk", "offset_ms": int(offset_ms),
+                    "word_count": len(flat)}
+
+
+def word_refs_valid(doc: dict, lyrics: dict | None, offset_ms: int) -> bool:
+    """Section 10.4: may the stored references be used as they are?"""
+    if not lyrics:
+        return all("word" not in n for n in doc.get("notes", []))
+    w = doc.get("words")
+    if not isinstance(w, dict):
+        return False
+    flat = _flat_words(lyrics, offset_ms)
+    if w.get("word_count") != len(flat) or w.get("offset_ms") != offset_ms:
+        return False
+    lines = lyrics.get("lines", [])
+    off = offset_ms / 1000.0
+    for n in doc.get("notes", []):
+        ref = n.get("word")
+        if ref is None:
+            continue
+        if _malformed_word_ref(ref):
+            return False      # a broken cache entry: recompute them all (verifier fix)
+        li, wi, ws = ref
+        if not (0 <= li < len(lines) and 0 <= wi < len(lines[li].get("words", []))):
+            return False
+        if abs(lines[li]["words"][wi]["start"] + off - ws) > WORD_START_TOLERANCE_S:
+            return False
+    return True
+
+
+# ----------------------------------------------------------------------------- validation
+
+def _num(x) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and x == x and abs(x) != float("inf")
+
+
+def _malformed_word_ref(ref) -> bool:
+    """A note's ``word`` that is present but not ``[line, word, word_start]``
+    (non-negative integers and a finite number). Readers treat it as no word; the Rust
+    reader (``jk_format::guide::malformed_word_ref``) and ``verify`` agree."""
+    if ref is None:
+        return False
+    if not (isinstance(ref, list) and len(ref) == 3):
+        return True
+    li, wi, ws = ref
+    ok_int = lambda x: isinstance(x, int) and not isinstance(x, bool) and x >= 0  # noqa: E731
+    return not (ok_int(li) and ok_int(wi) and _num(ws))
+
+
+def validate_guide(doc, duration: float) -> tuple[list[str], list[str]]:
+    """The guide checks of section 9 on a parsed ``guide`` chunk. Returns (errors,
+    warnings); the same split as ``jk_format::guide::validate_doc``."""
+    errs: list[str] = []
+    warns: list[str] = []
+    if not isinstance(doc, dict):
+        return ["guide: not a JSON object"], warns
+    gv = doc.get("guide_version")
+    if isinstance(gv, int) and gv > GUIDE_VERSION:
+        return errs, [f"guide: guide_version {gv} was made by a newer version (not checked further)"]
+    if gv != GUIDE_VERSION:
+        return ["guide: guide_version must be 1"], warns
+    if not (_num(doc.get("hop_s", 0.01)) and doc.get("hop_s", 0.01) > 0):
+        errs.append("guide: hop_s must be a positive number")
+    low = doc.get("low_confidence", 0.5)
+    if not (_num(low) and 0 <= low <= 1):
+        errs.append("guide: low_confidence must be within 0..1")
+    tmax = duration + END_TOLERANCE_S
+    prev = None
+    for i, n in enumerate(doc.get("notes", [])):
+        who = f"guide: note {i}"
+        if not isinstance(n, dict):
+            errs.append(f"{who}: not an object")
+            continue
+        s, e = n.get("start"), n.get("end")
+        if not (_num(s) and _num(e) and 0 <= s < e <= tmax):
+            errs.append(f"{who}: start / end not within 0 <= start < end <= song length + 0.05")
+            prev = None
+            continue
+        if prev is not None:
+            if s < prev["start"]:
+                errs.append(f"{who}: notes are not ordered by start")
+            elif prev["end"] - s > OVERLAP_TOLERANCE_S + 1e-9:
+                errs.append(f"{who}: overlaps the previous note by more than 1 ms")
+        c = n.get("confidence")
+        if not (_num(c) and 0 <= c <= 1):
+            errs.append(f"{who}: confidence not within 0..1")
+        g = n.get("glide_in", 0.0)
+        if not (_num(g) and 0 <= g <= (e - s) + 0.0015):
+            errs.append(f"{who}: glide_in not within 0..(end - start)")
+        m = n.get("midi")
+        midi_ok = _num(m) and 12 <= m <= 120
+        if n.get("kind") == "pitched":
+            if not midi_ok:
+                errs.append(f"{who}: midi not within 12..120")
+        elif n.get("kind") == "unpitched":
+            if not (midi_ok or m == 0):
+                errs.append(f"{who}: unpitched midi is neither 0 nor within 12..120")
+        else:
+            warns.append(f"{who}: unknown kind {n.get('kind')!r} (read as unpitched)")
+        if n.get("octave") not in ("ok", "maybe_high", "maybe_low", "unchecked"):
+            warns.append(f"{who}: unknown octave value {n.get('octave')!r} (read as flagged)")
+        if _malformed_word_ref(n.get("word")):
+            warns.append(f"{who}: word reference is not [line, word, word_start] (ignored)")
+        prev = n
+    prev_start = float("-inf")
+    for i, sp in enumerate(doc.get("spans", [])):
+        s, e = sp.get("start"), sp.get("end")
+        if not (_num(s) and _num(e) and 0 <= s <= e <= tmax):
+            errs.append(f"guide: span {i} is not inside the song")
+            continue
+        if s < prev_start:
+            errs.append(f"guide: span {i} is not ordered by start")
+        prev_start = s
+        if sp.get("kind") not in ("spoken", "breath"):
+            warns.append(f"guide: span {i}: unknown kind {sp.get('kind')!r} (drawn as a gap)")
+    t = doc.get("tuning")
+    if not isinstance(t, dict):
+        errs.append("guide: tuning missing")
+    else:
+        if not (_num(t.get("cents")) and -50 <= t["cents"] <= 50):
+            errs.append("guide: tuning.cents not within -50..50")
+        if not (_num(t.get("strength")) and 0 <= t["strength"] <= 1):
+            errs.append("guide: tuning.strength not within 0..1")
+        if not (_num(t.get("use_cents")) and -50 <= t["use_cents"] <= 50):
+            errs.append("guide: tuning.use_cents not within -50..50")
+        elif _num(t.get("cents")) and _num(t.get("strength")):
+            ms = ((doc.get("provenance") or {}).get("parameters") or {}).get("tuning_min_strength",
+                                                                             DEFAULT_TUNING_MIN_STRENGTH)
+            want = t["cents"] if t["strength"] >= ms else 0.0
+            if abs(t["use_cents"] - want) > 0.05:
+                warns.append("guide: tuning.use_cents disagrees with the 0.3 strength rule")
+    p = doc.get("provenance")
+    if not (isinstance(p, dict) and isinstance(p.get("method"), str) and p["method"].strip()):
+        errs.append("guide: provenance.method missing")
+    if not (isinstance(p, dict) and isinstance(p.get("version"), str) and p["version"].strip()):
+        errs.append("guide: provenance.version missing")
+    c = doc.get("counts")
+    if isinstance(c, dict):
+        want = guide_counts(doc)
+        if any(c.get(k) != v for k, v in want.items()):
+            warns.append("guide: counts disagree with the notes (informational only)")
+    return errs, warns
+
+
+def validate_curve(curve: dict, duration: float) -> list[str]:
+    """Section 9 curve checks on a decoded curve: values finite, MIDI 0 or 12..120,
+    VOIC 0..1, frames cover the song."""
+    errs = []
+    f = curve["fields"]
+    if "MIDI" not in f:
+        errs.append("guide.curve: no MIDI field")
+    for tag, v in f.items():
+        v = np.asarray(v, dtype=np.float64)
+        if not np.all(np.isfinite(v)):
+            errs.append(f"guide.curve: {tag} has a value that is not finite")
+            continue
+        if tag == "MIDI" and np.any((v != 0) & ((v < 12) | (v > 120))):
+            errs.append("guide.curve: MIDI values must be 0 or within 12..120")
+        if tag == "VOIC" and np.any((v < 0) | (v > 1)):
+            errs.append("guide.curve: VOIC values must be within 0..1")
+    hop = curve["hop_us"] * 1e-6
+    covered = (max(curve["frames"], 1) - 1) * hop + curve["t0_us"] * 1e-6
+    if abs(covered - duration) > hop + 1e-6:
+        errs.append(f"guide.curve: frames cover {covered:.3f} s, the song is {duration:.3f} s")
+    return errs
+
+
+def _cmp_versions(a: str, b: str) -> int:
+    def parse(s):
+        out = []
+        for part in str(s).split("."):
+            try:
+                out.append(int(part.strip()))
+            except ValueError:
+                out.append(0)
+        return out
+    x, y = parse(a), parse(b)
+    for i in range(max(len(x), len(y))):
+        p = x[i] if i < len(x) else 0
+        q = y[i] if i < len(y) else 0
+        if p != q:
+            return -1 if p < q else 1
+    return 0
+
+
+def guide_state(song: "Song", method: str, version: str) -> str:
+    """``none`` | ``ready`` | ``outdated`` | ``stale`` | ``newer`` (section 10.2), for a
+    builder ``method`` / ``version``."""
+    if GUIDE_CHUNK not in song.chunk_ids():
+        return "none"
+    try:
+        doc = json.loads(song.read_chunk(GUIDE_CHUNK).decode("utf-8"))
+    except (JkSongError, UnicodeDecodeError, json.JSONDecodeError):
+        return "stale"
+    if isinstance(doc.get("guide_version"), int) and doc["guide_version"] > GUIDE_VERSION:
+        return "newer"
+    src = (doc.get("provenance") or {}).get("source") or {}
+    try:
+        lead = song.chunk_entry(song.stem("lead_vocal")["chunk"])
+    except JkSongError:
+        return "stale"
+    if src.get("length") != lead["length"] or src.get("crc32") != lead["crc32"]:
+        return "stale"
+    p = doc.get("provenance") or {}
+    if p.get("method") != method or _cmp_versions(p.get("version", ""), version) < 0:
+        return "outdated"
+    return "ready"
+
+
+# ----------------------------------------------------------------------------- 7.1 rewrite
+
+class GuideInterrupted(Exception):
+    """Raised by the rewrite at a simulated interruption point (tests): like a crash,
+    the temporary file is left as it is."""
+
+
+INTERRUPT_POINTS = ("after_placeholder", "after_slots", "mid_chunks", "before_toc", "before_header",
+                    "before_second_slot_copy", "before_rename", "truncated_temp")
+
+
+def _read_header_toc(f) -> tuple[dict, dict]:
+    actual = os.fstat(f.fileno()).st_size
+    f.seek(0)
+    h = _parse_header(f.read(ALIGN), actual)
+    f.seek(h["toc_offset"])
+    tb = f.read(h["toc_length"])
+    if _crc32(tb) != h["toc_crc32"]:
+        raise Damaged("table of contents checksum mismatch")
+    try:
+        toc = json.loads(tb.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise Damaged(f"table of contents is not JSON: {e}") from None
+    if not isinstance(toc, dict) or not isinstance(toc.get("chunks"), list):
+        raise Damaged("table of contents has no chunk list")
+    return h, toc
+
+
+def _slot_regions(f, h: dict) -> tuple[bytes, bytes]:
+    f.seek(h["slot_a_offset"])
+    a = f.read(h["slot_size"])
+    f.seek(h["slot_b_offset"])
+    b = f.read(h["slot_size"])
+    if len(a) != h["slot_size"] or len(b) != h["slot_size"]:
+        raise Truncated("settings slots cut short")
+    return a, b
+
+
+def _kept(toc: dict) -> list[tuple]:
+    return [(c["id"], c["type"], c["length"], c["crc32"]) for c in toc["chunks"]
+            if c["id"] not in (GUIDE_CHUNK, CURVE_CHUNK)]
+
+
+def prepare_guide_rewrite(path, guide_json: bytes, curve: bytes, *, _interrupt: str | None = None) -> dict:
+    """Section 7.1 step 2: writes ``<name>.tmp-<random>`` next to the song (header
+    placeholder; both slot regions raw; every chunk raw in TOC order with its CRC checked,
+    an existing guide replaced in place, a new one appended; the TOC; the final header
+    with minor ``max(old, 1)``) and flushes it. The original is only read. Returns the
+    state :func:`finish_guide_rewrite` needs."""
+    path = Path(path)
+    tmp = path.with_name(f"{path.name}.tmp-{secrets.token_hex(8)}")
+    with open(path, "rb") as src:
+        oh, otoc = _read_header_toc(src)
+        if oh["header_length"] != HEADER_LENGTH:
+            raise ValueError("header_length is newer than this writer; not rewritten")
+        sa, sb = _slot_regions(src, oh)
+        ids = [c["id"] for c in otoc["chunks"]]
+
+        def stop(point):
+            if _interrupt == point:
+                raise GuideInterrupted(point)
+
+        done = False
+        try:
+            with open(tmp, "xb") as f:
+                f.write(b"\0" * ALIGN)
+                stop("after_placeholder")
+                f.write(sa)
+                f.write(sb)
+                stop("after_slots")
+                entries = []
+
+                def put(cid, mime, data):
+                    _pad_to(f)
+                    off = f.tell()
+                    f.write(data)
+                    entries.append({"id": cid, "type": mime, "offset": off, "length": len(data),
+                                    "crc32": _crc32(data)})
+
+                for i, c in enumerate(otoc["chunks"]):
+                    if c["id"] == GUIDE_CHUNK:
+                        put(GUIDE_CHUNK, GUIDE_MIME, guide_json)
+                    elif c["id"] == CURVE_CHUNK:
+                        put(CURVE_CHUNK, CURVE_MIME, curve)
+                    else:
+                        _pad_to(f)
+                        off = f.tell()
+                        src.seek(c["offset"])
+                        left, crc = c["length"], 0
+                        while left:
+                            block = src.read(min(left, 1 << 20))
+                            if not block:
+                                raise Damaged(f"chunk {c['id']!r} ended early")
+                            crc = zlib.crc32(block, crc)
+                            f.write(block)
+                            left -= len(block)
+                        if (crc & 0xFFFFFFFF) != c["crc32"]:
+                            raise Damaged(f"chunk {c['id']!r} checksum mismatch while copying; the song was left as it was")
+                        e = dict(c)          # id, type, length, crc32 and unknown keys kept
+                        e["offset"] = off
+                        entries.append(e)
+                    if i == 0:
+                        stop("mid_chunks")
+                if GUIDE_CHUNK not in ids:
+                    put(GUIDE_CHUNK, GUIDE_MIME, guide_json)
+                if CURVE_CHUNK not in ids:
+                    put(CURVE_CHUNK, CURVE_MIME, curve)
+                stop("before_toc")
+                # The TOC keeps "chunks" first, then the unknown top-level keys.
+                toc = {"chunks": entries, **{k: v for k, v in otoc.items() if k != "chunks"}}
+                tb = _json_bytes(toc)
+                _pad_to(f)
+                toc_off = f.tell()
+                f.write(tb)
+                file_len = f.tell()
+                stop("before_header")
+                f.seek(0)
+                header = _encode_header(toc_off, len(tb), _crc32(tb), oh["slot_size"], file_len,
+                                        minor=max(oh["minor"], 1))
+                f.write(header)
+                f.flush()
+                os.fsync(f.fileno())
+            done = True
+        except GuideInterrupted:
+            done = True          # a crash leaves the temporary file behind
+            raise
+        finally:
+            if not done:
+                try:
+                    tmp.unlink()
+                except FileNotFoundError:
+                    pass
+    return {"original": path, "tmp": tmp, "slot_size": oh["slot_size"], "toc": toc,
+            "header": header, "file_length": file_len, "guide_crc": _crc32(guide_json), "curve_crc": _crc32(curve)}
+
+
+def finish_guide_rewrite(prep: dict, *, _interrupt: str | None = None) -> None:
+    """Section 7.1 steps 3-5: copy both slot regions raw again from the original as it is
+    now, check the temporary file against it (same slot size, every chunk but the guide's
+    with the same id/type/length/crc32, the new guide's CRCs, the slots byte-identical),
+    then rename over the original. Any difference: the temporary file is deleted and
+    ``Damaged`` / ``ChangedOnDisk``-like ``Damaged`` is raised; the original stays."""
+    path, tmp = prep["original"], prep["tmp"]
+    keep = False
+    try:
+        if _interrupt == "before_second_slot_copy":
+            keep = True
+            raise GuideInterrupted(_interrupt)
+        with open(path, "rb") as orig:
+            oh, otoc = _read_header_toc(orig)
+            if oh["slot_size"] != prep["slot_size"] or _kept(otoc) != _kept(prep["toc"]):
+                raise Damaged("the song changed on disk while its guide was written; build again")
+            sa, sb = _slot_regions(orig, oh)
+            with open(tmp, "r+b") as t:
+                t.seek(ALIGN)
+                t.write(sa)
+                t.write(sb)
+                t.flush()
+                os.fsync(t.fileno())
+            if _interrupt == "truncated_temp":
+                with open(tmp, "r+b") as t:
+                    t.truncate(prep["file_length"] // 2)
+                keep = True
+                raise GuideInterrupted(_interrupt)
+            with open(tmp, "rb") as t:
+                th, ttoc = _read_header_toc(t)
+                if ttoc != prep["toc"] or os.fstat(t.fileno()).st_size != prep["file_length"]:
+                    raise Damaged("the temporary file does not read back as written")
+                for cid, want in ((GUIDE_CHUNK, prep["guide_crc"]), (CURVE_CHUNK, prep["curve_crc"])):
+                    e = next(c for c in ttoc["chunks"] if c["id"] == cid)
+                    t.seek(e["offset"])
+                    if _crc32(t.read(e["length"])) != want:
+                        raise Damaged(f"chunk {cid!r} did not read back")
+                if _slot_regions(t, th) != (sa, sb):
+                    raise Damaged("settings slots did not read back")
+            oh2, _ = _read_header_toc(orig)
+            if oh2 != oh or _slot_regions(orig, oh2) != (sa, sb):
+                raise Damaged("the song changed on disk while its guide was written; build again")
+        if _interrupt == "before_rename":
+            keep = True
+            raise GuideInterrupted(_interrupt)
+        os.replace(tmp, path)
+        keep = True
+        if hasattr(os, "O_DIRECTORY"):
+            try:
+                fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            except OSError:
+                pass
+    finally:
+        if not keep:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def add_guide(path, guide_json: bytes, curve: bytes, *, _interrupt: str | None = None) -> None:
+    """Adds or replaces the guide by the raw-copy rewrite of section 7.1 (for a song
+    nobody else has open). Every other chunk and both slot regions stay byte-identical."""
+    prep = prepare_guide_rewrite(path, guide_json, curve, _interrupt=_interrupt)
+    finish_guide_rewrite(prep, _interrupt=_interrupt)
+
+
+# ----------------------------------------------------------------------------- practice
+
+def round_practice_result(r: dict) -> dict:
+    """The number-precision rules of section 11 (part of the format): ``overall`` one
+    decimal; ``sung_share`` / ``voiced_share`` two; ``tendency_cents`` and every row's
+    score and tendency whole numbers; row ``start`` one decimal."""
+    r = json.loads(json.dumps(r))
+    if _num(r.get("overall")):
+        r["overall"] = round_half_away(r["overall"], 1)
+    for k in ("sung_share", "voiced_share"):
+        if _num(r.get(k)):
+            r[k] = round_half_away(r[k], 2)
+    if _num(r.get("tendency_cents")):
+        r["tendency_cents"] = int(round_half_away(r["tendency_cents"], 0))
+    lines = r.get("lines")
+    if isinstance(lines, dict):
+        rows = []
+        for row in lines.get("rows", []):
+            row = list(row)
+            row[1] = round_half_away(row[1], 1)
+            if _num(row[2]):
+                row[2] = int(round_half_away(row[2], 0))
+            if _num(row[4]):
+                row[4] = int(round_half_away(row[4], 0))
+            rows.append(row)
+        lines["rows"] = rows
+    return r
+
+
+def _eligible_best(r: dict) -> bool:
+    return (_num(r.get("sung_share")) and r["sung_share"] >= 0.9 and _num(r.get("overall"))
+            and "untrusted" not in r.get("trust", []))
+
+
+def practice_add_result(p: dict, r: dict) -> None:
+    """Adds a take: newest first in ``recent`` (at most 20); ``best`` = the highest
+    ``overall`` among results with ``sung_share >= 0.9`` that are not ``untrusted``."""
+    r = round_practice_result(r)
+    best = p.get("best")
+    if _eligible_best(r) and (not isinstance(best, dict) or r["overall"] > (best.get("overall") or float("-inf"))):
+        p["best"] = r
+    p["recent"] = ([r] + list(p.get("recent", [])))[:MAX_RECENT]
+
+
+def practice_shrink_once(p: dict) -> bool:
+    """One step of the size rule: the rows of the oldest ``recent`` result that has rows,
+    else the oldest ``recent`` result. ``best`` is never dropped."""
+    for r in reversed(p.get("recent", [])):
+        lines = r.get("lines")
+        if isinstance(lines, dict) and lines.get("rows"):
+            lines["rows"] = []
+            return True
+    if p.get("recent"):
+        p["recent"].pop()
+        return True
+    return False
+
+
+def save_practice(path, edit: Callable[[dict], None]) -> tuple[int, int]:
+    """Saves practice data by the slot mechanism (never a whole-file rewrite): when the
+    state does not fit a slot, results are dropped by the size rule until it does."""
+    for steps in range(2 * MAX_RECENT + 2):
+        def apply(state, steps=steps):
+            p = state.get(PRACTICE_KEY)
+            if not isinstance(p, dict):
+                p = {"practice_version": 1, "octave": {"mode": "auto", "shift": 0}, "strictness": None,
+                     "excluded": [], "lane": {}, "best": None, "recent": []}
+            edit(p)
+            for _ in range(steps):
+                if not practice_shrink_once(p):
+                    break
+            if isinstance(p.get("best"), dict):
+                p["best"] = round_practice_result(p["best"])
+            p["recent"] = [round_practice_result(r) for r in p.get("recent", [])][:MAX_RECENT]
+            state[PRACTICE_KEY] = p
+        try:
+            return update_user_state(path, apply)
+        except SlotPayloadTooLarge:
+            continue
+    raise SlotPayloadTooLarge("practice data does not fit a slot even with every recent result dropped")
+
+
+def validate_practice(v) -> list[str]:
+    """The section 11 type checks (``jukeoke-cli verify``); unknown keys are allowed."""
+    e = []
+    if not isinstance(v, dict):
+        return ["practice: not a JSON object"]
+    oc = v.get("octave")
+    if oc is not None:
+        if not isinstance(oc, dict):
+            e.append("practice: octave must be an object")
+        else:
+            if oc.get("mode") not in ("auto", "fixed", "strict"):
+                e.append("practice: octave.mode must be auto, fixed or strict")
+            if not (isinstance(oc.get("shift"), int) and -2 <= oc["shift"] <= 2):
+                e.append("practice: octave.shift must be an integer -2..2")
+    if v.get("strictness") not in (None, "relaxed", "standard", "strict"):
+        e.append("practice: strictness must be relaxed, standard, strict or null")
+    ex = v.get("excluded")
+    if ex is not None:
+        if not isinstance(ex, list):
+            e.append("practice: excluded must be a list")
+        else:
+            for i, s in enumerate(ex):
+                if not (isinstance(s, dict) and _num(s.get("start")) and _num(s.get("end")) and s["start"] <= s["end"]):
+                    e.append(f"practice: excluded[{i}] needs numbers start <= end")
+    rec = v.get("recent")
+    if rec is not None:
+        if not isinstance(rec, list):
+            e.append("practice: recent must be a list")
+        elif len(rec) > MAX_RECENT:
+            e.append(f"practice: {len(rec)} recent results (at most {MAX_RECENT})")
+    return e

@@ -15,7 +15,7 @@ use crate::playback::{PlayerState, SongDetail, SongSettings};
 #[tauri::command(rename_all = "snake_case")]
 pub async fn song_load(state: State<'_, AppState>, song_id: String) -> ApiResult<SongDetail> {
     let core = state.core.clone();
-    blocking(move || core.player.load(&song_id)).await
+    blocking(move || core.song_load(&song_id)).await
 }
 
 #[tauri::command(rename_all = "snake_case")]

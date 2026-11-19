@@ -1498,7 +1498,7 @@ button.title-strip:hover {
 
 .title-strip__row:hover .title-strip__delete,
 .title-strip__row:focus-within .title-strip__delete,
-.title-strip--current + .title-strip__delete {
+.title-strip--current + .title-strip__actions .title-strip__delete {
   opacity: 1;
 }
 
@@ -1779,4 +1779,35 @@ button.title-strip:hover {
   .app-header {
     flex-wrap: wrap;
   }
+}
+
+/* ---------- library: practice data (Work Order 2) ---------- */
+
+/* The card's own controls (Add practice data, delete) in the row's second column. */
+.title-strip__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.title-strip__badge--practice-ready {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.title-strip__badge--practice-busy {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.library__practice {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.library__practice-progress {
+  font-size: 0.9rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }

@@ -12,12 +12,14 @@
 //! owns, which are tested without a window.
 
 mod app;
+mod guide;
 mod library;
 mod player;
 mod recorder;
 mod studio;
 
 pub use app::*;
+pub use guide::*;
 pub use library::*;
 pub use player::*;
 pub use recorder::*;
@@ -100,6 +102,12 @@ macro_rules! all_commands {
             $crate::commands::pick_files,
             $crate::commands::pick_cover_image,
             $crate::commands::studio_cover_preview,
+            // melody guide (WO2)
+            $crate::commands::guide_status,
+            $crate::commands::guide_build,
+            $crate::commands::guide_build_all,
+            $crate::commands::guide_cancel,
+            $crate::commands::guide_queue,
         ]
     };
 }
