@@ -114,6 +114,27 @@ pub struct KeyStatus {
     /// full): key changes then use the real-time path.
     #[serde(default)]
     pub note: Option<String>,
+    /// The key in effect (Work Order 2, 4.6): semitones sounding at the DAC now, i.e. at
+    /// `Snapshot::position_s`. It follows the audio, not the control: a change counts
+    /// from the midpoint of its crossfade. Practice mode draws and grades with this key
+    /// (see `crate::keyheard`).
+    #[serde(default)]
+    pub heard: i32,
+    /// The key last asked for (`load` / `set_params`, clamped to -12..=12). Differs from
+    /// `heard` while a change is on its way.
+    #[serde(default)]
+    pub requested: i32,
+    /// The next change of the key heard, when one is coming: the key, and the song time
+    /// from which it is heard once the engine has scheduled it in its output (about a
+    /// quarter of a second ahead in real-time mode; in render-ahead mode only once the
+    /// engine crosses over to the rendered key).
+    #[serde(default)]
+    pub pending: Option<crate::keyheard::KeyPending>,
+    /// The playback segment `position_s` and `heard` belong to. A new one starts at every
+    /// load, seek, device switch and paused re-render; pass it to
+    /// [`crate::Engine::key_at`] to ask which key was heard at a song position of it.
+    #[serde(default)]
+    pub segment: u64,
 }
 
 /// Measure Rubber Band R3's real-time factor on this computer: one stereo instance at

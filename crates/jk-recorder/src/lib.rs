@@ -43,6 +43,7 @@
 
 pub mod error;
 pub mod format;
+pub mod input;
 pub mod media;
 pub mod meter;
 pub mod pipeline;

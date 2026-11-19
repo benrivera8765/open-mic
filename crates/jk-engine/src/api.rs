@@ -9,7 +9,9 @@
 //!                             is missing: playback then reports a `no_device` error.
 //! engine.load(path, params)   opens a .jksong, paused at 0.
 //! engine.play() / pause() / seek(s) / set_params(p) / set_master(v)
-//! engine.snapshot()           state, song time at the DAC, device, counters, meter.
+//! engine.snapshot()           state, song time at the DAC, device, counters, meter,
+//!                             the key heard there and the next key change (`key`).
+//! engine.key_at(t, segment)   the key that was heard at song time t (recent past).
 //! engine.events()             StateChanged / Ended / Error / DeviceLost notifications.
 //! render_offline(...)         "Export backing track": same graph, single-threaded.
 //! ```
@@ -385,6 +387,23 @@ impl Engine {
 
     pub fn snapshot(&self) -> Snapshot {
         self.inner.snapshot()
+    }
+
+    /// Which key (semitones) was heard at song time `pos_s`, for the recent past (the
+    /// last 64 playback segments of the loaded song), so practice mode can grade each
+    /// note in the key that was sounding when it was sung (Work Order 2, 4.6). With
+    /// `segment` (`Snapshot::key.segment` read when the position was stamped) the answer
+    /// is for that segment, from its start on, including changes already scheduled but
+    /// not heard yet. Without it, the newest segment that played `pos_s` answers. `None`:
+    /// no song, or the position was not played (in that segment).
+    pub fn key_at(&self, pos_s: f64, segment: Option<u64>) -> Option<i32> {
+        self.inner.key_at(pos_s, segment)
+    }
+
+    /// The recent history of the key heard, per playback segment (diagnostics, tests,
+    /// evidence; practice mode uses [`key_at`](Self::key_at) and `Snapshot::key`).
+    pub fn key_timeline(&self) -> Vec<crate::keyheard::KeySegment> {
+        self.inner.key_timeline()
     }
 
     pub fn events(&self) -> crossbeam_channel::Receiver<EngineEvent> {

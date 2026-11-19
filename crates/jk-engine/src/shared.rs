@@ -2,7 +2,7 @@
 //! State shared lock-free between the control thread (API calls), the render worker and
 //! the device callback. Plain atomics only; floats are stored as their bit patterns.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering::*};
+use std::sync::atomic::{fence, AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering::*};
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -70,6 +70,9 @@ pub struct Shared {
     pub dac_pos: AtomicF64,
     /// Generation the DAC position belongs to (0 = nothing yet).
     pub dac_gen: AtomicU64,
+    /// Sequence counter over `dac_pos` + `dac_gen` (odd while the callback writes them),
+    /// so readers get a matching pair ([`Shared::publish_dac`], [`Shared::dac`]).
+    pub dac_seq: AtomicU64,
     /// `now_ns()` of the last callback.
     pub dac_ns: AtomicU64,
     /// Generation whose end marker the callback reached (song played to the end).
@@ -130,6 +133,10 @@ pub struct Shared {
     /// Key heard at the worker's output.
     pub audible_semitones: AtomicI32,
 
+    /// Key changes the worker could not report because its key log was full (the house
+    /// thread drains it every 5 ms; must stay 0).
+    pub key_log_lost: AtomicU64,
+
     /// Key cache (prerender mode): the worker's next input frame, the route its graph
     /// heads for (`ROUTE_*`), the cache entry tag of that route when cached, the tag of
     /// a feed waiting to be switched to, and cached blocks that were missing.
@@ -153,6 +160,35 @@ impl Shared {
         s.master.store(master);
         s.min_ahead_frames.store(u64::MAX, Relaxed);
         s
+    }
+
+    /// Device callback (the only writer): publish the song time and generation of the
+    /// sample leaving the DAC as one pair. Plain atomic stores (a sequence lock), so the
+    /// callback never waits.
+    pub fn publish_dac(&self, pos: f64, generation: u64) {
+        let s = self.dac_seq.load(Relaxed);
+        self.dac_seq.store(s.wrapping_add(1), Relaxed);
+        fence(Release);
+        self.dac_pos.store(pos);
+        self.dac_gen.store(generation, Release);
+        self.dac_seq.store(s.wrapping_add(2), Release);
+    }
+
+    /// The DAC position and the generation it belongs to, read as one pair (never a
+    /// position of one segment with the generation of another).
+    pub fn dac(&self) -> (f64, u64) {
+        loop {
+            let s1 = self.dac_seq.load(Acquire);
+            if s1 & 1 == 0 {
+                let pos = self.dac_pos.load();
+                let generation = self.dac_gen.load(Relaxed);
+                fence(Acquire);
+                if self.dac_seq.load(Relaxed) == s1 {
+                    return (pos, generation);
+                }
+            }
+            std::hint::spin_loop();
+        }
     }
 
     /// Reset the per-song counters (on load).

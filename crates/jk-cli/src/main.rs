@@ -17,6 +17,9 @@
 //! * `make-demo-song <out.jksong>`: the generated demo song (public-domain text,
 //!   synthesised audio, letter timings exact by construction).
 //! * `make-test-song <out.jksong> --seconds 240`: a long stereo synthetic song.
+//! * `key-switch-capture <song> --out DIR --changes 2:-3,5:4`: Work Order 2 key in effect:
+//!   play the lead vocal alone in real time on the null device, change key during
+//!   playback, write the played audio and the key timeline the engine published.
 //! * `devices`: list output devices.
 //!
 //! Engine development (stem folders, generated material):
@@ -94,6 +97,10 @@ enum Cmd {
         rate: u32,
         #[arg(long, default_value_t = 3)]
         seed: u32,
+        /// Instead: a steady sine of this frequency (Hz) in the lead stem, other stems
+        /// silent (Work Order 2 key-in-effect measurements).
+        #[arg(long)]
+        tone: Option<f64>,
     },
     /// List the output devices.
     Devices,
@@ -128,6 +135,34 @@ enum Cmd {
     },
     /// Render a fixed set of generated test cases to OUT_DIR (CI cross-platform check).
     CiRender { out_dir: PathBuf },
+    /// Work Order 2, key in effect: play the song's lead vocal alone on the null device in
+    /// real time, change key during playback, and write the played audio (OUT/capture.wav,
+    /// 32-bit float) and the key timeline the engine published (OUT/keys.json), so the
+    /// moment the pitch really changes can be measured offline. Plays nothing aloud.
+    KeySwitchCapture {
+        song: PathBuf,
+        /// Output folder.
+        #[arg(long)]
+        out: PathBuf,
+        /// `realtime` or `prerender` (forced; uses --cache).
+        #[arg(long, default_value = "realtime")]
+        mode: String,
+        /// Key cache folder for prerender mode (default: OUT/keycache).
+        #[arg(long)]
+        cache: Option<PathBuf>,
+        /// Song time to start playing from (seconds).
+        #[arg(long, default_value_t = 0.0)]
+        start: f64,
+        /// Key changes as `seconds:key` after play starts, comma-separated (`2:-3,5:4,8:0`).
+        #[arg(long, allow_hyphen_values = true)]
+        changes: String,
+        /// How long to play (seconds).
+        #[arg(long, default_value_t = 12.0)]
+        seconds: f64,
+        /// Play the whole mix with the guide vocal instead of the lead vocal alone.
+        #[arg(long)]
+        full_mix: bool,
+    },
 }
 
 #[derive(Args, Clone)]
@@ -265,12 +300,15 @@ fn main() {
         }
         Cmd::SeekTest { song, seeks, device } => cmd_seek_test(&song, seeks, device),
         Cmd::MakeDemoSong { out } => cmd_make_demo(&out),
-        Cmd::MakeTestSong { out, seconds, rate, seed } => cmd_make_test_song(&out, seconds, rate, seed),
+        Cmd::MakeTestSong { out, seconds, rate, seed, tone } => cmd_make_test_song(&out, seconds, rate, seed, tone),
         Cmd::Devices => cmd_devices(),
         Cmd::GenTestStems { out, seconds, rate, seed } => gen_test_stems(out, seconds, rate, seed),
         Cmd::RenderStems { stems, out, rate, mix } => cmd_render_stems(&stems, &out, rate, mix.params()),
         Cmd::Bench { seconds } => cmd_bench(seconds),
         Cmd::CiRender { out_dir } => cmd_ci_render(&out_dir),
+        Cmd::KeySwitchCapture { song, out, mode, cache, start, changes, seconds, full_mix } => {
+            cmd_key_switch_capture(&song, &out, &mode, cache, start, &changes, seconds, full_mix)
+        }
     };
     if let Err(e) = r {
         eprintln!("error: {e}");
@@ -540,9 +578,12 @@ fn cmd_make_demo(out: &Path) -> Res<()> {
     Ok(())
 }
 
-fn cmd_make_test_song(out: &Path, seconds: f64, rate: u32, seed: u32) -> Res<()> {
+fn cmd_make_test_song(out: &Path, seconds: f64, rate: u32, seed: u32, tone: Option<f64>) -> Res<()> {
     let t = Instant::now();
-    let r = jk_engine::demo::make_synth_song(out, seconds, rate, seed)?;
+    let r = match tone {
+        Some(f0) => jk_engine::demo::make_tone_song(out, seconds, rate, f0)?,
+        None => jk_engine::demo::make_synth_song(out, seconds, rate, seed)?,
+    };
     println!(
         "{}: {} bytes, {} frames at {} Hz ({:.1} s), stereo 24-bit; {:.1} s",
         r.path.display(),
@@ -1196,6 +1237,122 @@ fn cmd_bench(seconds: f64) -> Res<()> {
         drop(s);
     }
     println!("Rubber Band R3 construct + drop at 44.1 kHz: {:.2} ms each (off the render thread)", t.elapsed().as_secs_f64() * 1000.0 / n as f64);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------
+// key-switch-capture (Work Order 2: the key in effect)
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_key_switch_capture(
+    song: &Path,
+    out: &Path,
+    mode: &str,
+    cache: Option<PathBuf>,
+    start: f64,
+    changes: &str,
+    seconds: f64,
+    full_mix: bool,
+) -> Res<()> {
+    use jk_engine::KeyMode;
+    let plan: Vec<(f64, i32)> = changes
+        .split(',')
+        .filter(|x| !x.trim().is_empty())
+        .map(|x| {
+            let (t, k) = x.split_once(':').ok_or("changes: expected seconds:key")?;
+            Ok::<_, Box<dyn std::error::Error>>((t.trim().parse()?, k.trim().parse()?))
+        })
+        .collect::<Result<_, _>>()?;
+    std::fs::create_dir_all(out)?;
+    let rate = jk_format::SongFile::open(song)?.manifest().sample_rate;
+    // The null device at the song rate: no resampling, nothing audible, real-time pacing.
+    let (engine, cap) = Engine::new_with_capture(rate, false, 1.0)?;
+    match mode {
+        "realtime" => engine.set_key_mode(KeyMode::Realtime),
+        "prerender" => {
+            let dir = cache.unwrap_or_else(|| out.join("keycache"));
+            engine.set_key_cache(Some(&dir), 8 << 30)?;
+            engine.set_key_mode(KeyMode::Prerender);
+        }
+        m => return Err(format!("unknown mode {m}").into()),
+    }
+    let base = if full_mix {
+        MixParams { guide_vocal: 1.0, ..MixParams::default() }
+    } else {
+        MixParams { guide_vocal: 1.0, backing_on: false, other: 0.0, drums: 0.0, ..MixParams::default() }
+    };
+    engine.load(song, base)?;
+    engine.seek(start);
+    let t = Instant::now();
+    while engine.key_at(start, Some(engine.snapshot().key.segment)).is_none() {
+        if t.elapsed() > Duration::from_secs(5) {
+            return Err("the engine did not start the segment".into());
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    cap.lock().map_err(|_| "capture lock")?.clear();
+    engine.play();
+    let t0 = Instant::now();
+    let mut next = 0;
+    let mut requests = Vec::new();
+    // Per change: first wall time its switch was published with a position, and first
+    // wall time it was heard at the DAC.
+    let mut published: Vec<Option<f64>> = vec![None; plan.len()];
+    let mut heard: Vec<Option<f64>> = vec![None; plan.len()];
+    while t0.elapsed().as_secs_f64() < seconds {
+        let now = t0.elapsed().as_secs_f64();
+        if next < plan.len() && now >= plan[next].0 {
+            let s = engine.snapshot();
+            requests.push(serde_json::json!({ "wall_s": now, "key": plan[next].1, "position_s": s.position_s }));
+            engine.set_params(MixParams { semitones: plan[next].1, ..base });
+            next += 1;
+        }
+        let s = engine.snapshot();
+        for i in 0..next {
+            if published[i].is_none()
+                && s.key.requested == plan[i].1
+                && s.key.pending.is_some_and(|p| p.semitones == plan[i].1 && p.at_s.is_some())
+            {
+                published[i] = Some(now);
+            }
+            if heard[i].is_none() && s.key.heard == plan[i].1 && i + 1 == next {
+                heard[i] = Some(now);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    engine.pause();
+    let snap = engine.snapshot();
+    let d = engine.diagnostics();
+    let timeline = engine.key_timeline();
+    let seg = timeline.iter().find(|x| x.segment == snap.key.segment).ok_or("no key timeline")?;
+    let samples = cap.lock().map_err(|_| "capture lock")?.clone();
+    let k0 = samples.chunks(2).position(|f| f[0] != 0.0 || f[1] != 0.0).ok_or("nothing was played")?;
+    let left: Vec<f32> = samples.chunks(2).map(|f| f[0]).collect();
+    let right: Vec<f32> = samples.chunks(2).map(|f| f[1]).collect();
+    write_wav_f32(&out.join("capture.wav"), &[left, right], rate)?;
+    let report = serde_json::json!({
+        "song": song.file_name().map(|x| x.to_string_lossy().to_string()),
+        "mode": mode,
+        "key_mode_in_effect": format!("{:?}", snap.key.mode),
+        "rate": rate,
+        "start_s": start,
+        "first_frame_index": k0,
+        "note": "first_frame_index: the first non-zero captured frame. Playback starts at song frame round(start_s * rate) after digital silence, so this is that frame unless the lead vocal itself is silent there (then align by content). The capture is contiguous when underruns == 0.",
+        "underruns": d.underruns,
+        "key_log_lost": d.key_log_lost,
+        "cache_misses": d.cache_misses,
+        "requests": requests,
+        "published_wall_s": published,
+        "heard_wall_s": heard,
+        "segment": seg.segment,
+        "keys": seg.keys,
+    });
+    std::fs::write(out.join("keys.json"), serde_json::to_string_pretty(&report)?)?;
+    println!("{}: {} frames captured, underruns {}, key changes published: {:?}", out.display(), samples.len() / 2, d.underruns, &seg.keys[1..]);
+    if d.underruns > 0 {
+        return Err("underruns: the capture is not contiguous".into());
+    }
     Ok(())
 }
 

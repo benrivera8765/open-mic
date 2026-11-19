@@ -15,6 +15,10 @@ path = "src/lib.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Practice-mode microphone input (src/input/): the capture callback hands samples and
+# host-clock time stamps to the analysis thread through lock-free SPSC rings. Same
+# version as jk-engine (MIT OR Apache-2.0), so the workspace builds one copy.
+rtrb = "0.4"
 
 # The macOS backend is written against the objc2 family of crates. Every API used
 # exists on macOS 13.0 (the owner's MacBook runs 13.6.9); see docs/MAC.md, section
@@ -32,6 +36,11 @@ objc2-core-media = "0.3.2"
 objc2-core-audio-types = "0.3.2"
 objc2-core-audio = "0.3.2"
 objc2-core-graphics = "0.3.2"
+# Practice-mode microphone input on macOS (src/input/mac.rs). Pinned to 0.16 like
+# jk-engine: cpal 0.17+ links the macOS 14.2 process-tap API (DECISIONS D-37). cpal 0.16
+# opens an input through the plain HAL output unit (kAudioUnitSubType_HALOutput), never
+# Apple's voice-processing unit (WO2 section 4.8).
+cpal = "0.16"
 
 # The Windows backend (WASAPI loopback). `wasapi` and `windows` are the versions
 # jk-engine already uses (wasapi 0.27 is built on windows 0.62), so the workspace
@@ -59,6 +68,11 @@ features = [
     "Win32_Media_Audio",
     "Win32_Media_Audio_Endpoints",
     "Win32_System_Com",
+    # Microphone list (src/input/win.rs): the endpoint property store (form
+    # factor, enumerator, device format) and its PROPVARIANT values.
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
     "Win32_System_Performance",
     "Win32_System_Registry",
     "Win32_System_Threading",
@@ -79,3 +93,11 @@ test = true   # run its unit tests (tone-frequency estimator) with `cargo test`
 name = "loopback_probe"
 path = "examples/loopback_probe.rs"
 test = true
+
+[[example]]
+# Practice-mode microphone probe (WO2 sections 4.4 and 4.8): lists the input devices,
+# opens one for a few seconds IN MEMORY (format, per-channel level, noise floor; no
+# sound is written anywhere), and feeds generated "voice on one channel" signals
+# through the same input path at several sample rates. Plays nothing.
+name = "mic_probe"
+path = "examples/mic_probe.rs"

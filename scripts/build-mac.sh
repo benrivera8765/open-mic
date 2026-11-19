@@ -18,6 +18,8 @@
 #   5. Builds the app for Apple Silicon with macOS 13.0 as the minimum system.
 #   6. Signs it "ad hoc" (no Apple account needed; Apple Silicon refuses to
 #      run code without at least this).
+#      Then checks the bundle carries the microphone usage text practice mode
+#      needs (scripts/check-macos-infoplist.sh).
 #   7. Checks every program and library inside the app:
 #      a. declares macOS 13.0 or older as its minimum (scripts/check-macos-minos.sh);
 #      b. links no API newer than macOS 13.0 without a weak reference
@@ -275,6 +277,14 @@ if [ -n "$APP" ]; then
     plist="$APP/Contents/Info.plist"
     lsmin="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist" 2>/dev/null || echo "not set")"
     info "Info.plist LSMinimumSystemVersion: $lsmin (should be $MIN_MACOS; set bundle.macOS.minimumSystemVersion in tauri.conf.json)"
+    # Practice mode (WORK_ORDER-2 4.8, trap 3): without NSMicrophoneUsageDescription
+    # macOS ends the app the first time it opens the microphone. The text comes from
+    # app/src-tauri/Info.plist. The signature above has no hardened runtime (no
+    # --options runtime), so no audio-input entitlement is needed; the script fails
+    # if a hardened-runtime signature ever lacks it.
+    info "Info.plist and signature carry what practice mode needs for the microphone (scripts/check-macos-infoplist.sh)"
+    bash "$ROOT/scripts/check-macos-infoplist.sh" "$APP" \
+        || die "the app cannot use the microphone as built (FAIL above). app/src-tauri/Info.plist must carry NSMicrophoneUsageDescription; the Tauri CLI merges that file into the bundle."
 fi
 
 # ---------------------------------------------------------------------------
@@ -343,5 +353,6 @@ Next steps (docs/MAC.md has the details and the exact wording macOS shows):
     (from Terminal; macOS will then ask for Screen Recording for "Terminal"; --tone
     plays a 3-second test tone at -20 dBFS, so turn the volume down first).
   * Every new build is a new ad-hoc signature, so macOS may ask for the
-    Screen Recording permission again after you install a new build.
+    Screen Recording and Microphone permissions again after you install a
+    new build.
 EOF

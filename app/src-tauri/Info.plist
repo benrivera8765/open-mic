@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  SPDX-License-Identifier: GPL-3.0-or-later
+
+  Merged by the Tauri CLI into the Mac bundle's Contents/Info.plist: Tauri 2 picks up an
+  Info.plist that sits next to tauri.conf.json (documented on tauri-utils
+  MacConfig::info_plist and in Tauri's "macOS Application Bundle" guide; tauri-codegen
+  embeds the same file in development builds).
+
+  NSMicrophoneUsageDescription (WO2 section 4.8, trap 3): without it macOS ends the app
+  the first time it touches the microphone. macOS shows this sentence in its own permission
+  prompt, after the app's own explanation (jk_recorder::input::MIC_PERMISSION_EXPLANATION).
+  It must equal jk_recorder::input::MACOS_MIC_USAGE_DESCRIPTION (a jk-recorder test checks
+  it), and scripts/build-mac.sh checks that the built bundle carries it.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Jukeoke listens to your microphone only while practice mode is open, to show and grade the pitch you sing. The sound is analysed in memory on this Mac and is never recorded, saved or sent anywhere.</string>
+</dict>
+</plist>

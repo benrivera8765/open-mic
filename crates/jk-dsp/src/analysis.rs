@@ -150,6 +150,53 @@ pub fn argmax_abs(x: &[f32], range: std::ops::Range<usize>) -> usize {
     best.1
 }
 
+/// Where the pitch of a steady tone changes from `f_old` to `f_new` (a key change, as
+/// heard in rendered or played audio): the sample index where the two tones' windowed
+/// energies, each divided by its own steady level, are equal. For the engine's
+/// equal-power crossfade that is the crossfade's midpoint, whatever the window length,
+/// because both the fade and the window are symmetric (Work Order 2, 4.6: the key in
+/// effect must match the pitch really heard).
+///
+/// `around` is where the change is expected. The steady levels are measured one window
+/// plus `margin` samples before and after it, and the crossing is searched between those
+/// two points in steps of `hop` samples (linear interpolation between steps). The window
+/// (4-term Blackman-Harris) is long enough to separate the two frequencies: about six
+/// times the inverse of their difference, at least 1024 samples. Returns `None` if `x`
+/// is too short around `around` or no crossing is found.
+pub fn tone_switch_index(x: &[f32], rate: u32, f_old: f64, f_new: f64, around: usize, margin: usize, hop: usize) -> Option<f64> {
+    let r = rate as f64;
+    let df = (f_new - f_old).abs().max(1.0);
+    let n = ((6.0 * r / df).ceil() as usize).clamp(1024, rate as usize);
+    let w = blackman_harris(n);
+    let half = n / 2;
+    let reach = half + margin;
+    if around < reach + half || around + reach + half > x.len() || hop == 0 {
+        return None;
+    }
+    let energies = |c: usize| -> (f64, f64) {
+        let seg = &x[c - half..c - half + n];
+        (dtft_mag(seg, &w, r, f_old).powi(2), dtft_mag(seg, &w, r, f_new).powi(2))
+    };
+    let old_ref = energies(around - reach).0.max(1e-30);
+    let new_ref = energies(around + reach).1.max(1e-30);
+    // d(c) > 0 while the old tone dominates, < 0 once the new one does.
+    let d = |c: usize| -> f64 {
+        let (a, b) = energies(c);
+        a / old_ref - b / new_ref
+    };
+    let (mut c0, mut d0) = (around - reach, d(around - reach));
+    let mut c = c0 + hop;
+    while c <= around + reach {
+        let d1 = d(c);
+        if d0 > 0.0 && d1 <= 0.0 {
+            return Some(c0 as f64 + hop as f64 * d0 / (d0 - d1));
+        }
+        (c0, d0) = (c, d1);
+        c += hop;
+    }
+    None
+}
+
 /// Result of [`impulse_alignment`]: where impulses sent through the band (pitch) path come
 /// out, relative to the same impulses sent through the unshifted drum path.
 #[derive(Clone, Debug)]
