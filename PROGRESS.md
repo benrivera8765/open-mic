@@ -56,9 +56,21 @@ Read this first in every session. Then DECISIONS.md, then docs/ARCHITECTURE.md.
 
 - 2026-11-18 HANDOFF.md independently reviewed against the evidence and corrected (commit 519dad5). Last fixes (commit e2c5be7): Clean/Permissive model downloads from the app with licence shown first, accurate preset hints, key-progress display, real-app runs of recording -> karaoke, re-align, cover replacement, OLE drag-and-drop; dist/ rebuilt and proven again; local CI all green.
 
+
+### Owner changes, 18 November 2026 (each built, independently verified, committed)
+
+- Lyrics ticker paced smoothly by word (commit 3e1702a, D-216/D-217): `ui.lyrics_motion` word (default) | letter.
+- Static-line lyrics with a gold word-paced wipe, lead-in bar and next-line preview (commit 1de08e5, D-218): `ui.lyrics_display` page (default) | scroll; default colours gold #ffc21a / white #f4f4f4.
+- Progress bar (needle) riding the wipe edge in the static-line display (commit 59a34db, D-219/D-220): `ui.show_marker`.
+- Record & play via Windows media controls, and "Record songs separately" from a playlist split at track changes (commit 5b36ad1, D-221..D-229). Windows only. Never tested against the real Spotify.
+- Delete songs from the Library, with Deleted songs (restore / delete for good) and multi-select (commit 938742f, D-230..D-233).
+- The owner made their own song (dist/Library) and a recording (dist/Recordings) and has settings in dist/Settings. Never use `make-dist.sh --force-clean`; replace only rebuilt files in dist/.
+
 ## In flight
 
-- Nothing. The hourly continuation job was deleted on 2026-11-18: everything that can be done unattended on this PC is done.
+- WORK ORDER 2: Practice Mode (`../WORK_ORDER-2-practice-mode.md`, started 2026-11-19). Plan follows its section 8 stages; each stage = one builder (at most two in parallel) then one independent verifier, a commit, and an update here. Usage limit: never more than 2-3 agents at once.
+  - Stage 0 (in progress): baseline local CI (log `$JK_BUILD/wo2-baseline-local-ci.log`); owner's dist/ files backed up to `../jukeoke-build/owner-backup-20261119/` with `SHA256SUMS-dist-owner-files.txt` (387 files); news checked 11:57 (no GitHub login, no self-check report, test-songs empty). Next: risky experiments (guide methods, live tracker, key-in-effect, microphone capture).
+  - Stages 1-7: pending (contracts; guide; listening + scoring; screen; key + octave; Mac; finish).
 
 ## Next (needs the owner; see HANDOFF.md section 8)
 
