@@ -258,6 +258,8 @@ Events while it runs:
 ```
 
 Stages, in order: `decode`, `separate`, `lyrics`, `align`, `analyse`, `write`.
+After `job.done` the **app** runs one more stage of its own, `guide` (the melody guide
+for practice mode); the Studio takes no part in it (section 12).
 
 **(added)** Progress events come at most about five times a second per job (always the
 first and last of each stage); `overall` never goes down. The report also carries
@@ -392,3 +394,112 @@ Error codes: `bad_request`, `unknown_type`, `protocol_mismatch`, `not_found`,
 
 12. `job.submit`: `metadata.cover_path` (section 7): replace (a JPEG/PNG path) or remove
     (`null`) the cover; absent keeps the old behaviour. `provenance.metadata_source.cover`.
+
+2026-11-19, Work Order 2 (practice mode):
+
+13. The melody guide stage (section 12). **No message changes**: the protocol stays
+    version 1 and the Studio process is unchanged. The app adds a `guide` stage to its
+    own job record after `job.done`; the `make` command line gains `--guide` and
+    `--jukeoke-cli`.
+
+## 12. The melody guide stage (Work Order 2; app side, no Studio change)
+
+Every song the Studio makes gets a melody guide (docs/SONG_FORMAT.md section 10)
+automatically, with no step for the user (WO2 4.3, "Every song gets one").
+
+### 12.1 Design: the app builds it, after `job.done`
+
+The **app core** builds the guide with the shared Rust builder `jk-pitch::guide`
+right after the Studio's `job.done`, and reports it as a final `guide` stage of the same
+job in `studio://job` (docs/APP_API.md section 9). The Studio does nothing new.
+
+Why there and not in the Studio:
+
+- **One code path.** The builder is Rust (DECISIONS D-236). Existing songs, songs on a
+  computer without a Studio (the Mac) and new songs all get their guide from the same
+  code in the app (`guide_build`, docs/APP_API.md section 12.3), so a new song's guide
+  is exactly what "Add practice data" would make.
+- **No new code in the Studio runtime.** Calling Rust from the Studio would need a
+  compiled Python extension in the relocatable runtime, or a second copy of the builder.
+- **The GPU queue is not held up.** The guide is CPU work (about 1.2 s for a 4-minute
+  vocal, plus the file rewrite); the Studio can start the next job's separation meanwhile.
+
+The cost: the new song file is written twice, once by the Studio and once by the app's
+atomic rewrite that adds the guide (SONG_FORMAT 7.1), a few seconds later. On a USB
+stick that is one more copy of 100-150 MB (estimated 2-10 s depending on the stick; to
+be measured in Stage 2). Writing the guide inside the Studio's own write would avoid
+it, but would need the builder in Python; not worth a second implementation.
+
+### 12.2 The flow
+
+1. The Studio sends `job.done` with `output` (unchanged). The app records the song in
+   `<root>/Settings/guide-queue.json` (written atomically: the app's guide queue, every
+   song waiting for a guide build, new songs and those queued by `guide_build` /
+   `guide_build_all` alike: docs/APP_API.md 12.3), keeps the job `running` with
+   `stage: "guide"` (`overall` goes
+   from 0.95 to 1.0; the Studio's own stages fill 0..0.95), and the Library lists the
+   song at once with its guide status `building` (`library://changed`).
+2. The app's guide builder (one build at a time, below-normal priority, never on an
+   audio thread) reads the song's `lead_vocal` stem and lyrics from the file, builds the
+   guide and adds it with the atomic rewrite of SONG_FORMAT 7.1. If the user has loaded
+   the new song meanwhile, it is released for the rename and reloaded at the same
+   position when it is not playing (the delete feature's release path, D-231/D-233);
+   while it plays, the swap waits until it is paused or replaced and the guide is used
+   from memory, so playback never stutters (docs/APP_API.md 12.3).
+3. Done: the job becomes `done`, its `guide` status `ready`, and the song leaves
+   `guide-queue.json`.
+4. **Failure never loses the song.** The song file the Studio wrote is complete and plays
+   normally whatever happens here. The job still becomes `done`, with `guide.state`
+   `failed` and a plain reason; the Library and Practice say practice is not ready, why,
+   and offer to try again (`guide_build`). Error codes: `guide_no_lead` (no lead vocal
+   in the file), `guide_read_failed` (the song file could not be read), `guide_damaged`
+   (a chunk failed its checksum while copying), `guide_disk_full` (no room for the
+   rewrite), `guide_read_only` (the folder or file cannot be written), `guide_in_use`
+   (another program holds the file), `guide_internal`, `cancelled`. A vocal with no
+   sung melody is not a failure: the guide is written with no notes, and Practice says
+   the song has no melody to practise.
+5. **Interrupted.** If the app quits or crashes during the stage, the song stays in
+   `guide-queue.json`, and the app builds its guide at the next start (the file is
+   either the Studio's original or the finished new file: SONG_FORMAT 7.1). An entry
+   whose song is gone is dropped.
+
+The Studio's queue does not wait for step 2: the next job's `job.started` may arrive
+while the previous job is in its `guide` stage, so the app's queue can show two jobs
+running, one of them in `guide`. A Studio crash does not affect a running guide stage
+(it runs in the app).
+
+### 12.3 The `make` command line
+
+`python -I -m jukeoke_studio make <file> ...` (tests and benchmarks; the app never uses
+it) adds the guide itself after writing the song, through the Rust command line:
+
+- `--guide auto|off|require` (default `auto`): after the song is written, run
+  `jukeoke-cli guide add <song> --json`. `auto` skips this, with a note on stderr, when
+  `jukeoke-cli` cannot be found; `require` then fails with exit code 3 (the song file is
+  still written). The JSON line `jukeoke-cli` prints is added to `make`'s report as
+  `guide`.
+- Where `jukeoke-cli` is looked for: `--jukeoke-cli PATH`, then the environment variable
+  `JUKEOKE_CLI`, then `jukeoke-cli.exe` in the folder above the Studio runtime
+  (`<root>/Windows/`, next to `Jukeoke.exe`), then `jukeoke-cli` (`jukeoke-cli.exe`) on
+  `PATH`. The packaged Studio
+  runtime does not ship `jukeoke-cli` (the app adds guides itself), so `make` run from a
+  stick prints the note and the app's "Add practice data" fills the gap.
+
+`jukeoke-cli guide` (crates/jk-cli, same builder and writer as the app):
+
+- `jukeoke-cli guide add SONG... [--force] [--json]`: adds a guide to each song that has
+  none, or has a stale or outdated one (`--force`: rebuild any). Exit code 0 when every
+  song has a current guide afterwards, 1 when one failed, 2 on a usage error. `--json`
+  prints one line per song: `{"song", "ok", "state", "error_code", "message", "notes",
+  "seconds"}`.
+- `jukeoke-cli guide show SONG [--json]`: status, counts, tuning and provenance (never
+  the lyrics).
+- `jukeoke-cli verify` checks guides (SONG_FORMAT section 9).
+
+### 12.4 Re-alignment and replaced stems
+
+`realign` (section 8) changes only the lyrics (stored as `lyrics_override`): the guide
+stays valid; its word references are recomputed from the new lyrics when they are
+read (SONG_FORMAT 10.4). No Studio request ever rewrites the stems of an existing song;
+should a future one do so, the guide becomes stale (SONG_FORMAT 10.2) and the app
+rebuilds it.

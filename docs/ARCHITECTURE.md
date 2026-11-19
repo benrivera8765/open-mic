@@ -30,6 +30,9 @@ and their reasons are in `DECISIONS.md`.
 
 The Mac build has no Studio. The player never imports Python.
 
+Practice mode (Work Order 2, section 12) adds microphone capture (jk-recorder::input) and
+pitch analysis (jk-pitch) to the core, on both systems; the Studio is not involved.
+
 ## 2. Repository layout
 
 ```
@@ -45,8 +48,12 @@ crates/
                            reader, render-ahead worker, house-keeping thread, device
                            output (WASAPI / Core Audio / null), playback clock, export,
                            FLAC writer, generated demo song
+  jk-pitch/                practice mode DSP (section 12): guide builder, live pitch
+                           tracker, own-playback echo detection/removal, scorer. Pure
+                           functions: no threads, no I/O, no OS calls.
   jk-recorder/             system-audio capture: WASAPI loopback (Windows),
                            ScreenCaptureKit (macOS 13+), writes float WAV / RF64;
+                           microphone input for practice mode (`input`, D-240);
                            media-player link (Windows media sessions, `media`),
                            recording sessions + splitter (`session`), preview player
   jk-cli/                  `jukeoke-cli`: info, verify, render, export, play, seek-test,
@@ -477,3 +484,161 @@ blocking pool, never on the main thread. The engine is reached through `AudioEng
 - **Start-up errors** (startup.rs, D-85): written to `Settings/logs/startup-error.txt`
   and shown in a native dialog, exit 1; never a panic inside Tauri.
 - **Portable paths** (portable.rs): section 8.
+
+## 12. Practice mode (Work Order 2)
+
+The singer sings into a microphone; the singing screen shows the guide's notes as bars
+in a lane with a piano keyboard and a marker at the pitch sung; the take is graded at
+the end. Contracts: docs/SONG_FORMAT.md sections 7.1, 10, 11 (guide and practice data),
+docs/STUDIO_PROTOCOL.md section 12 (guide stage), docs/APP_API.md section 12 (commands,
+events, the pitch/key/octave rule). Decisions D-234..D-240 and the Stage 0 reports in
+`docs/benchmarks/practice-*.md`.
+
+### 12.1 Where each piece lives
+
+| Piece | Where | Threads / I/O |
+|---|---|---|
+| Guide builder (pYIN curve -> notes, octave check, tuning; D-236) | `jk-pitch::guide` | none (pure) |
+| Live tracker (MPM, 10 ms hop, one channel; D-238) | `jk-pitch::tracker` | none |
+| Own-playback detection and removal ("music in the input") | `jk-pitch::echo` | none |
+| Scorer (per-note credit, bands, tendency, breakdown, octave decision) | `jk-pitch::score` | none |
+| Microphone capture (`InputSource`; WASAPI / cpal 0.16; rings, meters; D-240) | `jk-recorder::input` | OS capture thread |
+| Key heard, `key_at` history (D-239); output tap for the echo reference (Stage 3) | `jk-engine` | render worker, house thread |
+| Guide chunks, practice slot data, raw-copy rewrite | `jk-format` (+ `jksong.py`) | file I/O |
+| Guide queue (new songs after `job.done`, "Add practice data", on-the-spot builds) | app core `guide.rs` | one builder thread |
+| Practice session (open input, analysis thread, results to the slot, events) | app core `practice.rs` | analysis thread |
+| Lane and result screen (pure layout + verify + Canvas 2D renderer) | `app/ui/src/practice/` | the existing frame loop |
+| `jukeoke-cli guide add/show`, `verify` additions | `jk-cli` | |
+
+`jk-pitch` has no threads, no I/O and no OS calls, so the same code runs on Windows and
+the Mac and every piece is tested offline with generated input (WO2 section 6). The UI
+only draws.
+
+### 12.2 Data flow
+
+```
+microphone / mixer (USB)                               engine render worker
+   | OS capture callback: copy samples + host-clock       | output tap: copy of the output mix
+   | stamp into lock-free rings, nothing else (D-240)     | + song frame into a lock-free ring
+   v                                                      v  (no allocation, no lock; rt_alloc test)
+ input rings (2 s) ------------------> practice analysis thread "jk-practice" <---- tap ring
+                                         1. read blocks; meters per channel (mic://levels)
+                                         2. take the chosen channel (never a sum)
+                                         3. echo: reference (tap, resampled to the input rate,
+                                            aligned by the two clocks) vs input -> detect,
+                                            measure delay/level, remove when stable;
+                                            Trust per stretch (Clean/Singer/Music/Unknown)
+                                         4. tracker on the cleaned channel -> PitchEvent
+                                            {time, ready_at, hz|None, clarity, level};
+                                            never told the expected note (WO2 trap 6)
+                                         5. map event.time -> host time -> song time + segment
+                                            (section 12.3); pitch in a Music stretch -> None
+                                         6. scorer: target = guide note + key_at(t, segment)
+                                            + 12 x octave (APP_API 12.1); per-note credit,
+                                            octave decision (auto), running totals
+                                         7. every 16 ms: practice://live batch
+                                            {pitch[], hits[], done[]}; practice://state on change
+                                         8. take end: PracticeResult -> song slot (practice key)
+                                            -> practice://result
+                                                      |
+                                                      v
+                       UI: lane = pure function (layout, clock time, key heard/pending,
+                       octave, guide, recent pitch values) -> frame; Canvas 2D in the
+                       existing 60 fps loop (bars drawn once and moved, WO2 trap 13)
+```
+
+Nothing from the analysis thread reaches the output: with practice on, the engine's
+output is bit-identical (WO2 section 5). Microphone samples live only in the rings and
+the analysis thread's fixed buffers; nothing is written or sent.
+
+The guide reaches the session through `practice_guide` (notes, spans, curve, tuning) when
+practice starts; the lane draws from it and from the clock, the core grades from the
+same data, so drawing and grading cannot disagree.
+
+### 12.3 Clocks
+
+Three clocks meet here (WO2 trap 4: the input and output devices drift apart, up to
+about 24 ms over a song):
+
+- **Host clock**: QPC on Windows, `mach_absolute_time` on the Mac. Every input block is
+  stamped with the host time of its first frame by the capture thread (WASAPI's QPC
+  position; cpal's `mHostTime`), never by counting samples. The engine's `now_ns` is
+  `std::time::Instant` from a process epoch, which is the same QPC / mach clock: the
+  core measures the epoch offset once (both clocks read back to back) and the self-check
+  confirms it.
+- **Playback (DAC) clock**: the engine's `Snapshot` pairs `position_s` (song time at the
+  DAC, the declared output latency removed) with `position_ns` and the `segment`
+  (published together by a sequence lock, D-239). The analysis thread keeps the last
+  2 s of these anchors (sampled every 5 ms by the house thread or on every snapshot) and
+  maps a capture host time to (segment, song time) by interpolating between the anchors
+  on either side, so drift never accumulates (each anchor is a fresh device callback).
+- **Input sample clock**: the tracker's `time` is in input samples; with the block
+  stamps it becomes a host time (frame offset / the input rate, from the newest block's
+  stamp backwards), minus the input latency the device declares.
+
+`song_time = dac_song_time(capture_host_time) - latency.applied_ms` (APP_API 12.7). When
+the app's music comes back in the input, the echo stage measures how late it arrives
+relative to the declared latencies; that residual is exactly the hidden output + input
+delay the singer's timing needs (the singer hears the music by the same path), so it is
+applied automatically (WO2 4.10 "the delay comes for free"). Otherwise the rig check's
+measurement, else the manual offsets (the input's, plus the output device's offset the
+lyrics already use), else 0, and the scorer's timing tolerance absorbs the rest. Every
+measured delay is this residual and is never added to the declared latencies twice
+(APP_API 12.7 "Timing").
+
+**Key and segment.** Each tracker value is graded against `key_at(song_time, segment)`
+from the engine's bounded history, so a note sung before a key change keeps the key it
+was sung in, in both key modes (in render ahead the switch is the crossover onto the
+cached key, D-239). The lane uses the clock's `key_heard` / `key_pending.at_s`, so bars
+move when the key is heard, not when the dial is turned. A seek, device switch or reload
+starts a new segment, and values are never mapped across it.
+
+### 12.4 Threads and real-time safety
+
+- OS capture callback (WASAPI event thread, MMCSS "Pro Audio"; Core Audio's HAL thread
+  through cpal on the Mac): copies samples and one stamp per block into `rtrb` rings,
+  nothing else; a full ring drops the whole block and flags the next. 0 allocations
+  measured (D-240). Known on the Mac only: cpal 0.16's input wrapper may grow its own
+  buffer when the callback size changes (practice-mic.md, "Not done").
+- Engine render worker: one extra lock-free push of the output block into the tap ring
+  while practice is on (fixed capacity, drop on full; the `rt_alloc` test keeps covering
+  it). The device callback is unchanged.
+- Practice analysis thread (one per session, normal priority, never an audio thread):
+  everything in 12.2 steps 1-8. Budget on the build PC: tracker 1.0 ms per second of
+  audio (practice-tracker.md section 8), echo removal a few ms per second; the M1 is
+  estimated at 2-3 times that. It allocates only at session start and on a device
+  change.
+- Guide builder thread (below normal priority, one build at a time): about 1.2 s per
+  4-minute song on the build PC (estimated 1.7-2 s on the M1), then the atomic rewrite.
+- Slot writes (practice settings, exclusions, results) go through the existing debounced
+  per-song save (section 11 "Playback"), never from the analysis thread directly.
+
+Memory: rings 2 s of input, the tap ring about 1 s, the guide (about 0.4 MB on disk per
+4-minute song, a few MB in memory with the curve), the tracker's and canceller's fixed
+buffers: a few tens of MB at most, inside the 1 GB budget (WO2 4.8).
+
+### 12.5 What runs on the Mac
+
+Everything in 12.1 except the Studio: the guide builder (so the Mac can add a guide to an
+old song with no Studio), capture through cpal 0.16 with the AVFoundation permission
+check before opening (macOS hands a refused app silence, not an error), the tracker, echo
+handling, scorer and lane. The bundle carries `NSMicrophoneUsageDescription`
+(app/src-tauri/Info.plist, checked by `scripts/check-macos-infoplist.sh`); no audio-input
+entitlement is needed while the app is signed without the hardened runtime, and
+build-mac.sh fails if that changes (D-240). Apple's voice-processing I/O unit is never
+used (it would lower and reshape the app's own playback). Nothing newer than macOS 13.0
+is called. All of this is type-checked on Windows only; built but not verified until a
+Mac report comes back.
+
+### 12.6 Failure paths
+
+- No guide: built on the spot (any computer); if that fails, Practice says why and offers
+  to try again; the song plays normally (STUDIO_PROTOCOL 12.2).
+- No input, no permission, input unplugged mid-song: watch only (notes and keys, no
+  marker, no grade), with the reason and, for permission, the exact steps; the device is
+  reopened when it comes back; the take is flagged `input_lost`.
+- Music coming back that cannot be removed well (a wandering Bluetooth delay): the
+  warning, the marker, and no grade (APP_API 12.5).
+- A guide that cannot be written (read-only stick, full stick, file in use): used from
+  memory for the session, with the reason; the song file is never left half-written
+  (SONG_FORMAT 7.1).

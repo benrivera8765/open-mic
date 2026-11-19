@@ -45,6 +45,8 @@ interface AppInfo {
                 settings_url: string | null;            // (added) macOS: where the user switches it on
                 backend: string };                      // (added) "WASAPI loopback" | "ScreenCaptureKit"
     exclusive_mode: boolean;                       // Windows only
+    microphone: MicCapability;                     // (added WO2) practice mode's input, section 12.4
+    practice: { guide_method: string; guide_version: string };  // (added WO2) this app's guide builder
   };
   // (added)
   identifier: string;                              // bundle identifier from branding.json
@@ -87,6 +89,9 @@ interface SongSummary {
   semitones: number;                               // saved key shift
   file_bytes: number; modified_ms: number; preset: string;
   error: string | null;                            // non-null: listed but unplayable (damaged, newer version...)
+  // (added WO2, practice mode)
+  guide: GuideStatus;                              // the melody guide: none / queued / building / ready / ... (section 12.3)
+  practice_best: { overall: number | null; grade: string | null; date: string } | null;  // from the slot (section 12.6)
 }
 ```
 
@@ -166,6 +171,7 @@ interface SongDetail {
   settings: SongSettings;                          // effective saved settings, SONG_FORMAT section 6
   stems: { role: string; in_karaoke_mix: boolean; pitched: boolean }[];
   sample_rate: number; channels: number;
+  guide: GuideStatus;                              // (added WO2) as in the summary, section 12.3
 }
 interface SongSettings {
   semitones: number; shift_drums: boolean; guide_vocal: number;   // 0..1
@@ -211,8 +217,34 @@ interface PlayerState {
                              // ahead; the previous key/mix plays until then. progress 0..1
   key_note: string | null;   // prerender asked for but unavailable (no cache folder, disk error):
                              // plain words; key changes then use the real-time path
+  // (added WO2, D-239) the key HEARD: practice mode draws and grades with it, never with the request
+  key_heard: number;         // semitones sounding at the DAC now, i.e. at position_s (-12..12)
+  key_requested: number;     // the key last asked for (= settings.semitones)
+  key_pending: { semitones: number; at_s: number | null } | null;
+                             // the next change of the key heard: from song time at_s on. at_s null:
+                             // not scheduled yet (render ahead still rendering; the old key plays on)
+  key_segment: number;       // playback segment position_s and key_heard belong to (new at every load,
+                             // seek, device switch and paused re-render)
+  key_heard_label: string | null;     // as key_label, for the key heard ("A major → F# major (-3)")
+  key_spelling: "sharps" | "flats";   // how to name notes in the key heard; agrees with key_heard_label
+  key_pending_spelling: "sharps" | "flats" | null;   // the same for key_pending
 }
 ```
+
+`key_label` stays the label of the key asked for (the key dial's). `key_heard` changes at
+the midpoint of the key change's 40 ms crossfade, measured within 0.02 ms of the pitch
+change in the produced audio, in both key modes (docs/benchmarks/practice-key.md). The
+spelling agrees with the key name the app shows (`keys.rs` spells the tonic: Db, Eb, Ab,
+Bb major and Eb, Bb minor with flats, F# major and C#, F#, G# minor with sharps): notes
+are spelled with flats in keys whose signature has flats (F, Bb, Eb, Ab, Db major; D, G,
+C, F, Bb, Eb minor) and with sharps in every other key; a song with no detected key uses
+sharps. A C4 heard at -3 is named A3 (WO2 4.6).
+
+`player_key_at(position_s: number, segment?: number) -> { semitones: number | null }`
+**(added WO2)**: the key that was heard at song time `position_s` of `segment` (default: the
+newest segment that played it), from the engine's bounded history (the last 64 segments);
+`null` when unknown. The UI does not need it to draw (`key_pending.at_s` and the practice
+batches' per-note key cover that, section 12.5); the screen checks and tests use it.
 
 Key change modes (WORK_ORDER 4.5, ARCHITECTURE section 4 "render ahead and cache"):
 `realtime` shifts in the render worker (heard about 0.3 s after the change).
@@ -236,7 +268,10 @@ Events:
 
 - `playback://clock` about 30 times per second while playing (absolute 33.3 ms
   deadlines; and on every state change, checked 4 times a second while not playing):
-  `{ position_s: number; playing: boolean; seq: number }`.
+  `{ position_s: number; playing: boolean; seq: number }`, and **(added WO2)**
+  `key_heard: number`, `key_pending: { semitones: number; at_s: number | null } | null`
+  and `segment: number`, all belonging to that `position_s` (as in `PlayerState`), so the
+  lane moves its bars when the key that is heard changes, at the right song time.
   `position_s` is the song time of the sample now leaving the DAC (device latency
   already subtracted), extrapolated from the engine's last device callback to the
   moment the event is sent (at most 100 ms). The UI interpolates between events with
@@ -245,7 +280,8 @@ Events:
   `lyric_time = position_s - (song.lyrics_offset_ms + device_offset_ms) / 1000`, where
   `device_offset_ms` is `settings.audio.device_offsets_ms[device_id ?? "default"]`.
 - `playback://state`: a full `PlayerState`. Sent on a state or song change, and when
-  `key_mode`, `key_note` or `key_preparing` changes (progress in whole percent).
+  `key_mode`, `key_note` or `key_preparing` changes (progress in whole percent), and
+  **(added WO2)** when `key_heard`, `key_requested`, `key_pending` or `key_segment` changes.
 - `playback://error`: `{ code, message }` (device lost, file unreadable...).
 
 ## 4. Output devices
@@ -285,6 +321,7 @@ interface AppSettings {
            key_cache_mb: number;                          // key cache size cap (LRU), MB
            key_benchmarks: Record<string, number> };      // written by the core: Rubber Band
                                                           // real-time factor per "<computer>@<rate>"
+  practice: PracticeAppSettings;     // (added WO2) per computer where it matters, section 12.7
 }
 ```
 
@@ -513,8 +550,21 @@ interface StudioStatus { available: boolean; reasons: string[]; running: boolean
 interface StudioJob { job_id: string; input_name: string; state: "queued" | "running" | "done" | "failed" | "cancelled";
   stage: string | null; overall: number; message: string | null; output_song_id: string | null; error: string | null;
   stage_progress: number | null;                   // (added) progress of the current stage, 0..1
-  error_code: string | null }                      // (added) e.g. "studio_crashed", "decode_failed"
+  error_code: string | null;                       // (added) e.g. "studio_crashed", "decode_failed"
+  guide: GuideStatus | null }                      // (added WO2) the app's guide stage, below
 ```
+
+**(added WO2)** After the Studio's `job.done` the app runs a last stage of its own,
+`stage: "guide"` (STUDIO_PROTOCOL section 12): the job stays `running` while the melody
+guide is built and written into the new song (`overall` 0.95..1.0, `stage_progress` from
+the build, `message` "Making the practice data"), then becomes `done` with `guide` set.
+`output_song_id` is set from `job.done` on, so the song can be listed and played during
+the stage. A failed guide never fails the job: the job is `done`, `guide.state` is
+`failed` with a plain `reason` and `error_code`, the song plays, and Practice offers to try
+again. The Studio may start the next job meanwhile, so two jobs can be `running`, one of
+them in `guide`. `studio_cancel` on a job in its `guide` stage cancels only the guide
+(the song stays, without a guide). Songs whose guide stage was interrupted by quitting
+are finished at the next start (`Settings/guide-queue.json`).
 
 Events: `studio://job` (a `StudioJob` on every change), `studio://models { name, done_bytes, total_bytes }`,
 `studio://status` **(added)**: a full `StudioStatus` when availability or the running
@@ -529,13 +579,15 @@ within 10 minutes the waiting jobs fail with a plain explanation (also
 
 ## 10. Self-check (WORK_ORDER 4.10)
 
-`selfcheck_run(user_agent?: string, silent?: boolean) -> { report_path: string; passed: boolean; items: { name: string; ok: boolean; detail: string }[] }`
+`selfcheck_run(user_agent?: string, silent?: boolean, lane?: LaneCost) -> { report_path: string; passed: boolean; items: { name: string; ok: boolean; detail: string }[] }`
+(`lane` **added WO2**, section 10.1)
 
 Plays a test tone, loads and renders the bundled test song, shifts its key, checks the
 recorder permission and makes a 3-second capture, and records OS version, web engine
 version (the UI passes `navigator.userAgent` as `user_agent`), memory and output
 device format. Items, in order: System, Web engine, Memory, Output device, Test tone,
-Recorder, Demo song, Key change. The test tone peaks at exactly -60 dBFS;
+Recorder, Demo song, Key change, then **(added WO2)** the six practice items of section
+10.1. The test tone peaks at exactly -60 dBFS;
 `silent: true` **(added)** plays digital silence instead (use it whenever people are
 around). The user's song is unloaded during the check and reloaded at the same
 position afterwards. Writes a plain-text report to
@@ -545,6 +597,59 @@ position afterwards. Writes a plain-text report to
 
 `selfcheck_user_agent(user_agent)` **(added, internal)**: in `--selfcheck` runs the
 page reports `navigator.userAgent` through this command; screens do not call it.
+
+### 10.1 Practice additions (added WO2, section 4.8)
+
+Six items follow "Key change", in this order; none of them makes a sound, and the
+microphone capture never writes sound anywhere:
+
+| Item | What it does and reports |
+|---|---|
+| Microphone permission | `mic_permission()`: granted / denied / not determined / restricted, the Windows privacy switches. It never asks: in a `--selfcheck` run, or when the UI did not ask first, "not determined" is reported as it is. |
+| Microphone capture | 3 s from the chosen (or automatic) input, analysed in memory and dropped: device, kind, format (rate, channels, sample format, declared latency), per-channel peak, RMS and noise floor, the suggested voice channel, dropped blocks. Skipped with the reason when there is no permission or no input (not a failure on a computer without a microphone: `ok` with "no input"). |
+| Pitch tracker | Generated tones (C2..C6) and a generated voice through the real analysis path (`InputSource` generator -> rings -> channel -> tracker -> song-time mapping): cents error, octave errors, delay, and its speed on this computer (ms per second of audio). |
+| Practice guide | The bundled demo song's guide read and checked (counts, provenance), and a guide built again from its lead stem: same notes, and the builder's speed on this computer. |
+| Practice score | A generated singer on the demo melody through the whole practice path scores in the top band; the same singer a semitone flat in the lowest band; silence scores nothing. |
+| Practice lane | The lane's drawing cost in this web view: average and 95th-percentile ms per frame over 600 frames of the demo song at the window's size, plain and with the simple lane (WO2 4.5 budget: 4 ms average with the lyrics). Measured by the UI, which passes it as `selfcheck_run(user_agent, silent, lane)` with `lane: { frames, avg_ms, p95_ms, simple_avg_ms, width, height, dpr }`; in `--selfcheck` runs the page reports it through `selfcheck_lane(lane)` (internal). Missing: "not measured". |
+
+### 10.2 The practice rig check (added WO2; audible, started by hand only)
+
+`practice_rig_check(options: RigCheckOptions) -> RigCheckReport` (argument name `options`).
+The one check that makes sound: the owner starts it from the Settings screen with the
+mixer plugged in and the in-ears on. The UI labels it "Makes a sound" and says what will
+happen first; the call rejects with `audible_not_confirmed` unless `audible_confirmed` is
+true. It is never part of `selfcheck_run`, `--selfcheck` or any automated test (tests
+drive the same code on the `null` device with a generated input, so nothing plays aloud).
+Playback is paused first and practice input is suspended.
+
+```ts
+interface RigCheckOptions { audible_confirmed: boolean;
+  output_device_id?: string | null; input_device_id?: string | null;  // default: the current ones
+  label?: string;                    // the owner's note for this run, e.g. "loopback on"
+  voice_step?: boolean }             // default true: ask the owner to speak for 3 s
+interface RigCheckReport { report_path: string; ok: boolean; label: string | null;
+  output: { name: string; kind: string; sample_rate: number; channels: number; format: string; latency_ms: number | null };
+  input:  { name: string; kind: string; sample_rate: number; channels: number; format: string; declared_latency_ms: number | null;
+            same_device_as_output: boolean };
+  channels: { index: number; noise_floor_db: number; voice_rms_db: number | null; test_rms_db: number | null;
+              carries: "voice" | "test_sound" | "both" | "nothing" }[];
+  returned: { detected: boolean; channel: number | null; level_db: number | null;   // relative to what was played
+              delay_ms: number | null; delay_spread_ms: number | null };            // over 3 bursts: fixed (cable, USB) or wandering;
+                                                                                // delay_ms beyond the declared latencies (12.7 "Timing")
+  findings: string[] }               // plain sentences, e.g. "The mixer sends the app's music back on channel 1 and 2, 23 ms late."
+```
+
+Steps (event `practice://rigcheck { step, progress, message }` for each): `silence` (2 s:
+noise floor per channel), `voice` (3 s: "Say a few words into your microphone now"; which
+channel carries the voice), `test_sound` (three 0.5 s bursts of a swept tone and noise,
+peaking at -24 dBFS, through the chosen output at the app's master volume), `analysing`,
+`done`. It writes `<root>/Settings/selfcheck-rig-<local time>.txt` (picked up with the
+other `selfcheck-*.txt` reports): both devices and their formats, which channels carry
+signal, levels and noise floors, whether the test sound came back, how loud and how late,
+and the label. No sound is written. A measured delay is also saved for the timing
+(`practice.measured_latency_ms`, section 12.7). Running it twice with different labels
+(for example the mixer's loopback switch on, then off) appends both to the same report
+file within one app session.
 
 ## 11. Additions to version 1 (Stage 1, 2026-11-17)
 
@@ -567,6 +672,9 @@ reader: the UI uses a field when present and degrades when it is absent.
 | 9 | 2026-11-18: `studio_inspect` fills a recorded song's empty title / artist / album / `cover_path` from its sidecar and adds `recorded`; `studio_submit` without `metadata.cover_path` uses the sidecar's cover. |
 | 9 | `StudioStatus.checking`; `StudioJob.stage_progress`, `error_code`; `studio_clear_finished()`; `studio_models_status(preset?)` / `studio_models_download(preset?)`; event `studio://status`. 2026-11-18: `pick_cover_image()`, `studio_cover_preview(path, max_px?)`, `metadata.cover_path` in `studio_submit`. |
 | 10 | `selfcheck_run`'s `silent`; internal `selfcheck_user_agent`. |
+| 1, 2, 3 | 2026-11-19, Work Order 2 (practice mode): `capabilities.microphone`, `capabilities.practice`; `SongSummary.guide`, `practice_best`; `SongDetail.guide`; `PlayerState.key_heard`, `key_requested`, `key_pending`, `key_segment`, `key_heard_label`, `key_spelling`, `key_pending_spelling`; `playback://clock` `key_heard`, `key_pending`, `segment`; `playback://state` on key-heard changes; `player_key_at`. |
+| 5, 9, 10 | WO2: `AppSettings.practice`; `StudioJob.guide` and the app's `guide` stage; self-check practice items, `selfcheck_run`'s `lane`, internal `selfcheck_lane`; `practice_rig_check` and `practice://rigcheck`. |
+| 12 | WO2: guides (`guide_status`, `guide_build`, `guide_build_all`, `guide_cancel`, `guide_queue`; `guide://status`, `guide://batch`), microphone (`mic_permission`, `mic_request_permission`, `mic_open_settings`, `mic_list`, `mic_choose`, `mic_meter`; `mic://levels`, `mic://permission`, `mic://devices`), practice (`practice_start`, `practice_stop`, `practice_state`, `practice_guide`, `practice_suspend_input`, `practice_finish`, `practice_again`, `practice_song_set`, `practice_exclude`, `practice_history`, `practice_latency_set`, internal `practice_target_at` and `practice_test_input`; `practice://state`, `practice://live`, `practice://result`); `AppSettings.practice` (12.7); error codes (12.8). |
 
 The UI also uses the Tauri window API directly, outside this contract: full screen
 (`setFullscreen`, needs `core:window:allow-set-fullscreen` in
@@ -574,3 +682,491 @@ The UI also uses the Tauri window API directly, outside this contract: full scre
 resize, in `core:default`), which pauses the skin's animation and the lyrics ticker's
 frame loop because a web view does not always report a minimised window as a hidden
 page (WebView2 does not).
+
+## 12. Practice mode (added WO2, 2026-11-19)
+
+Work Order 2: the singer sings into a microphone while the singing screen shows a pitch
+lane (the guide's notes as bars, a piano keyboard, a marker at the pitch sung) and the
+lyrics; at the end the take is graded. Practice is a **mode of the singing screen**, not a
+second player: transport, key dial, mixer, `player_*` and `playback://*` keep working as
+in section 3, and with practice off nothing in this section runs. Everything here runs on
+Windows and on the Mac (the guide builder, the tracker, the echo handling and the scorer
+are the same Rust code, `jk-pitch`); only the Studio's own stages are Windows-only.
+
+Rules every command below keeps:
+
+- **The UI only draws.** Tracking, echo detection and removal, the octave decision and
+  scoring run in the core on the practice analysis thread (ARCHITECTURE section 12); the
+  UI gets small time-stamped batches and draws them.
+- **The microphone is open only while practice mode is on screen** (between
+  `practice_start` and `practice_stop`, and while the input picker's meters run, 12.4),
+  never while the window is hidden (`practice_suspend_input`), never for anything else.
+  Its sound is analysed in memory and dropped: never written, never sent, never played.
+- **Playback is untouched.** Nothing here feeds the output; the engine's output is
+  bit-identical with practice on or off.
+- **Nothing is kept in web storage.** Per-song data is in the song's slot (SONG_FORMAT
+  section 11), per-computer data in `settings.json` (12.7).
+
+### 12.1 Pitch, key and octave: one rule for drawing and grading
+
+Every reader (lane, piano keys, note names, scorer, screen checks) uses this rule, so
+"everything moves together" (WO2 4.6):
+
+```
+target(note, t) = note.midi + key_at(t) + 12 * octave_shift     // MIDI with fractions, never rounded
+lane(m)         = m - guide.tuning.use_cents / 100                // vertical position in the lane
+note name       = name(round(lane(target)), spelling)             // "A3"; spelling: sharps | flats
+singer(t)       = 69 + 12 * log2(hz / 440)                        // drawn at lane(singer(t))
+error_cents     = 100 * (singer(t) - target(note, t))             // octave-folded unless strict
+```
+
+- `key_at(t)`: the key **heard** at song time `t` (section 3, D-239). For the lane: the
+  clock's `key_heard` before `key_pending.at_s` and `key_pending.semitones` from `at_s`
+  on (with `at_s` null the old key stays). For grading: the core's `key_at` history, so a
+  note already sung keeps the key it was sung in. Never the requested key.
+- `octave_shift`: the practice state's `octave.shift` (12.5). `auto` finds it from the
+  first sung phrases, `fixed` takes the song's setting, `strict` is 0. In `auto` and
+  `fixed` a pitch a whole number of octaves from the target counts as on the target
+  (`error_cents` folded into -600..600); in `strict` it does not.
+- The bars, the curve, the piano rows and the marker all go through `lane()`, so the bars
+  sit on the key rows whatever the recording's tuning, and the marker sits on a bar
+  exactly when the singer matches the recording. Grading compares unrounded pitches in
+  cents; nothing is snapped to a piano key.
+- `spelling` is `PlayerState.key_spelling` (section 3) for the key heard; `name()` is
+  `jk-pitch`'s note namer, mirrored in the UI and tested against it for every key
+  -12..12 (a C4 at -3 is named A3).
+
+`practice_target_at(position_s: number, segment?: number) -> { note: number | null; midi: number | null; lane: number | null; name: string | null; key: number | null; octave: number; graded: boolean }`
+(internal, for the screen checks and tests): the scorer's target at that song time, by
+the rule above.
+
+`practice_test_input(source: { kind: "wav"; path: string } | { kind: "silence" } | null) -> { ok: boolean }`
+(internal, accepted only under `--smoke-test`, like `smoke_report`; refused with
+`bad_request` otherwise): the next `practice_start` takes its input from a WAV of
+**generated** sound (a scripted singer, a mixer-shaped two-channel file, music fed back)
+or from digital silence instead of the microphone, through the same
+`jk_recorder::input::InputSource` path, rings, meters and analysis thread, at real-time
+pace and stamped with the host clock; `null` returns to the real input. A WAV that ends
+behaves like an unplugged device (`input_lost`). This is how WO2 section 9's real-app runs
+are fed (the 20-minute run with the generated singer, the input unplugged during a song);
+microphone sound is never written, so no recorded file ever goes in here.
+
+### 12.2 Lifecycle
+
+```
+practice_start --> guide usable? --no--> "preparing" (built on the spot, progress) --+
+     |                  | yes                  | failed --> "not_ready" (reason, retry)
+     |                  v                      v
+     |        microphone usable? --no--> "watch_only" (notes and keys, no marker, no grade)
+     |                  | yes
+     |                  v
+     |        "listening": the marker follows the singer; a take runs while the song plays
+     |                  | song ends / practice_finish / practice_stop (enough sung)
+     |                  v
+     |        "result" (practice://result, saved in the song's slot) --practice_again--> "listening"
+     v
+practice_stop: microphone closed, practice off (the song stays loaded where it was)
+```
+
+A **take** starts at the first `player_play` after `practice_start`, `practice_again` or
+a finished take, or at once when the song is already playing at that moment (Practice
+pressed in the middle of a playing song: the take covers from there on), and ends when the
+song ends, on `practice_finish()`, or when practice or
+the song is left (`practice_stop`, `song_load` of another song, `library_delete`). Pausing
+does not end a take. A seek does not end it either: a note sung again keeps its latest
+attempt, and the result counts the seeks. A take ended early is graded on what was sung
+and says how much that was (`stopped_early`); a take that covered less than 10 % of the
+song's graded note time is still graded and shown when the singer pressed Finish (WO2 4.7:
+"grade what was sung"), but it is not saved in the song's history, and a take that short
+ended by `practice_stop`, a song change or a delete gives no result at all. While paused or before the first
+play the marker still shows the pitch sung (the singer can find the note) and nothing is
+graded.
+
+### 12.3 Guides
+
+```ts
+interface GuideStatus {
+  state: "none" | "queued" | "building" | "ready" | "outdated" | "stale" | "newer" | "failed";
+  reason: string | null;           // plain words for none / stale / newer / failed ("Practice data could not be
+                                   // saved: the stick is full. Free 150 MB and press Try again.")
+  error_code: string | null;       // failed: guide_no_lead | guide_read_failed | guide_damaged | guide_disk_full |
+                                   // guide_read_only | guide_in_use | guide_internal | cancelled (STUDIO_PROTOCOL 12.2)
+  progress: number | null;         // building: 0..1
+  in_memory: boolean;              // usable now, but not (yet) in the file: it could not be written (reason says
+                                   // why: used for this session only), or the write waits (pending_write)
+  pending_write: boolean;          // the swap into the file waits until the song stops playing
+  method: string | null; version: string | null; created_utc: string | null;   // provenance (SONG_FORMAT 10.2)
+  counts: { notes: number; pitched: number; unpitched: number; low_confidence: number;
+            octave_flags: number; graded: number } | null;
+  tuning_cents: number | null;     // tuning.use_cents
+}
+```
+
+States: `none` (no guide; Practice adds one on the spot), `queued` / `building` (in the
+guide queue), `ready`, `outdated` (made by an older builder or another method: used as it
+is; "Update practice data" or `guide_build_all({ include_outdated: true })` rebuilds it),
+`stale` (the lead vocal stem changed after the guide was made: not used, rebuilt like
+`none`), `newer` (made by a newer Jukeoke, `guide_version` above 1: kept, never
+overwritten; practice in this app uses a guide built in memory for the session),
+`failed` (the last attempt failed; the song still plays; Practice says why and offers to
+try again). A song with no lead vocal stem gets `failed` / `guide_no_lead` ("This song
+has no separate lead vocal, so there is no melody to practise").
+
+- `guide_status(song_id) -> GuideStatus`.
+- `guide_build(song_id, force?: boolean) -> GuideStatus`: queues a build (`force`: rebuild
+  a `ready` guide too). Returns at once (`queued` or `building`); progress comes as
+  `guide://status`. A song already queued or building gets its status, not a second
+  build. The guide is built from the file's own `lead_vocal` stem and lyrics (no Studio,
+  so it works on the Mac) and written by the atomic rewrite of SONG_FORMAT 7.1, which
+  keeps every other byte. **The loaded song** (the delete feature's release path, D-231 /
+  D-233): when it is not playing, the core releases it (pending slot save flushed),
+  renames, and loads it again at the same position and play state (about 0.15 s;
+  `playback://state` shows `loading` for that moment). When it is playing, the swap waits
+  until it is paused, stopped, replaced or the app quits, so playback never stutters for
+  a guide; meanwhile the guide is used from memory (`in_memory` and `pending_write`
+  true). During a take nothing is swapped until the take has ended.
+- `guide_build_all(options?: { include_outdated?: boolean }) -> { queued: number; skipped: number }`
+  ("Add practice data to all songs"): queues every song whose guide is `none`, `stale` or
+  `failed` (and `outdated` when asked); damaged songs are skipped.
+- `guide_cancel(song_id?: string)`: cancels one queued or running build, or all
+  (`song_id` absent). A cancelled build leaves the file as it was.
+- `guide_queue() -> { items: { song_id: string; state: "queued" | "building"; progress: number | null }[]; running: boolean }`.
+
+One build at a time, below-normal priority, never on an audio thread (about 1.2 s of CPU
+for a 4-minute song, plus one copy of the file). The queue survives a restart
+(`Settings/guide-queue.json`, STUDIO_PROTOCOL 12.2). New songs from the Studio enter it
+automatically (STUDIO_PROTOCOL section 12; `StudioJob.guide`, section 9).
+
+Events: `guide://status { song_id: string; status: GuideStatus }` on every change
+(progress at most 5 times a second); `guide://batch { total: number; done: number; failed: number; current: string | null; running: boolean }`
+while a `guide_build_all` batch runs, and once when it ends. `library://changed` follows
+each rewrite as for any file change.
+
+### 12.4 Microphone
+
+```ts
+interface MicCapability {
+  available: boolean;              // false: no input device at all, or capture unsupported here
+  reason: string | null;           // plain words when not available
+  permission: MicPermission;
+  backend: "WASAPI" | "Core Audio";
+}
+interface MicPermission {
+  state: "granted" | "denied" | "not_determined" | "restricted";
+  explanation: string;             // the app's own words, shown BEFORE the OS asks (MIC_PERMISSION_EXPLANATION)
+  steps: string | null;            // denied / restricted: the exact steps to allow it on this system
+  settings_url: string | null;     // what mic_open_settings opens (macOS Privacy > Microphone; ms-settings:privacy-microphone)
+  windows: { microphone_access: "allow" | "deny" | "unset";      // Windows privacy switches: read only, never changed
+             user_access: "allow" | "deny" | "unset";
+             desktop_apps: "allow" | "deny" | "unset" } | null;   // null on macOS
+}
+interface MicInput {
+  id: string; name: string; adapter: string | null;
+  kind: "usb" | "built_in" | "wired_external" | "bluetooth" | "display" | "virtual" | "unknown";
+  channels: number; sample_rate: number; sample_format: string | null;
+  is_default: boolean;             // the system's default input
+  bluetooth: boolean;              // kind bluetooth, or a hands-free endpoint
+  preferred: boolean;              // the automatic choice: USB > wired external > built-in > unknown > display;
+                                   // never Bluetooth or virtual automatically (WO2 trap 2)
+  declared_latency_ms: number | null;
+  same_device_as_output: boolean;  // also the current output device (a USB mixer used both ways: one clock)
+  warning: string | null;          // e.g. Bluetooth: "Opening a Bluetooth headset's microphone turns its sound into
+                                   // low-quality mono. Use a cable or the mixer's USB connection for practice."
+}
+interface InputChoice { device_id: string | null; device_name: string | null; channel: number | null }   // channel 0-based
+interface ChannelMeter { index: number; peak_db: number; rms_db: number; noise_floor_db: number | null;
+  active_db: number | null; clipping: boolean; clipped_samples: number;
+  advice: "good" | "waiting" | "too_quiet" | "clipping" | "silent"; message: string | null }
+```
+
+- `mic_permission() -> MicPermission` (never asks). `mic_request_permission() -> MicPermission`:
+  macOS asks the system (its prompt appears only the first time; the UI calls this only
+  after showing `explanation` with a Continue button), returns at once, and the answer
+  arrives as `mic://permission` (the core polls every 0.5 s for up to 2 minutes). Windows
+  asks nothing and returns the switches. `mic_open_settings()` opens `settings_url`; the
+  app never changes system settings.
+- `mic_list() -> { inputs: MicInput[]; chosen: InputChoice; automatic: string | null }`:
+  every input device, the saved choice for this computer (`chosen.device_id` null = none
+  yet) and the device the automatic rule would take now. Listing never opens a device and
+  never activates a Bluetooth endpoint.
+- `mic_choose(choice: InputChoice) -> InputChoice`: saves the choice **for this computer**
+  in `settings.json` (`practice.inputs`, 12.7; never in a song), found again by id, then by
+  name. `device_id` null returns to the automatic choice; `channel` null = the suggested
+  voice channel (the one carrying sound, never a sum). If practice is listening, the
+  input is reopened on the new device or channel at once. A Bluetooth device is accepted
+  when chosen by hand, with its `warning`, and the take gets the `bluetooth_input` flag.
+- `mic_meter(device_id: string | null) -> { device: MicInput | null; error: InputError | null }`:
+  opens a device for the input picker's per-channel meters only (no tracking), closing any
+  meter opened before; `mic_meter(null)` closes it. Only while the input picker is on
+  screen; `practice_stop` and a hidden window close it too.
+- Failures are `InputError { kind: "no_device" | "unplugged" | "permission_denied" | "stalled" | "format" | "device"; message: string }`
+  (`jk_recorder::input::FailureKind`), in plain words with what to do.
+
+Events: `mic://levels { device_id: string; seconds: number; channels: ChannelMeter[]; suggested_channel: number | null; chosen_channel: number | null }`
+about 20 times a second while a meter or the practice input is open (each channel metered
+on its own; channels are never added together); `mic://permission`: a `MicPermission` on
+every change; `mic://devices` (no payload) when inputs appear or disappear.
+
+The app never changes the input gain (that is set on the mixer), never plays the
+microphone back, and never uses a system voice-processing mode (Windows raw stream,
+category Other; macOS HAL unit without Apple's voice processing: D-240).
+
+### 12.5 Practice session
+
+`practice_start(options?: PracticeStartOptions) -> PracticeState` (argument name `options`).
+
+```ts
+interface PracticeStartOptions {
+  song_id?: string;                // default: the loaded song; another song is loaded first (paused at 0)
+  watch_only?: boolean;            // open without the microphone
+}
+interface PracticeState {
+  active: boolean; song_id: string | null; seq: number;
+  phase: "off" | "preparing" | "not_ready" | "watch_only" | "listening" | "result";
+  guide: GuideStatus;
+  not_ready: { code: string; message: string; can_retry: boolean } | null;   // retry = guide_build(song_id)
+  watch_only: { code: "chosen" | "no_device" | "permission_denied" | "not_determined" | "restricted" | "input_lost";
+                message: string } | null;
+  input: PracticeInput | null;
+  music: MusicInInput;
+  octave: { mode: "auto" | "fixed" | "strict"; shift: number; settled: boolean };   // settled: auto has decided
+  strictness: "relaxed" | "standard" | "strict";
+  latency: { applied_ms: number;   // taken off capture times on top of the latencies the devices declare
+             source: "returned_music" | "rig_check" | "manual" | "none";   // manual: the input's offset + the output
+                                                                         // device's offset (12.7 "Timing")
+             measured_ms: number | null; manual_ms: number };
+  take: { running: boolean; started_s: number;
+          covered: number;          // share of the song's graded note time covered so far
+          graded: number; total: number; overall: number | null;   // running score of the notes finished so far
+          seeks: number; key_changes: number } | null;
+  excluded: { line: number | null; start: number; end: number }[];
+  last_result: PracticeResult | null;
+}
+interface PracticeInput { device: MicInput; channel: number; sample_rate: number;
+  state: "starting" | "running" | "unplugged" | "stalled" | "failed" | "suspended";
+  message: string | null;          // plain words: too quiet, clipping, unplugged, what to do
+  meter: ChannelMeter | null; dropped_blocks: number }
+interface MusicInInput {
+  presence: "searching" | "absent" | "present";   // the app's own playback coming back in the input
+  level_db: number | null;         // how loud it comes back, relative to what the app plays
+  delay_ms: number | null;         // beyond the declared device latencies (12.7 "Timing")
+  stability: "unknown" | "stable" | "wandering"; drift_ppm: number | null;
+  removal: "not_needed" | "checking" | "good" | "marginal" | "unusable";
+  suppression_db: number | null;   // measured removal
+  grading: "normal" | "less_certain" | "not_graded";
+  message: string | null;          // present: plain words saying the mixer sends the song back (how late), what that
+                                   // does to the marker and the grade, and how to stop it (LOOPBACK off, music over USB...)
+}
+```
+
+- `practice_start` opens the chosen input (12.4) unless `watch_only`, the permission is
+  missing (macOS `not_determined`: the UI shows the explanation and calls
+  `mic_request_permission` first) or there is no input; then the phase is `watch_only`
+  with the reason: the notes and the piano keys show the melody, there is no marker and no
+  grade. A song without a usable guide goes to `preparing` (the guide is built on the
+  spot, with `guide://status` progress) and then on; if that fails, `not_ready`. Called
+  while active for the same song it returns the state; for another song it stops the
+  first (a running take ends as by `practice_stop`).
+- `practice_stop(options?: { keep_result?: boolean }) -> { result: PracticeResult | null }`:
+  closes the microphone, ends a running take (graded and saved when enough was sung,
+  12.2; `keep_result: false` drops it), practice off. The song stays loaded, playing or
+  paused as it was.
+- `practice_state() -> PracticeState`.
+- `practice_suspend_input(suspended: boolean)`: closes (true) or reopens (false) the
+  microphone without leaving practice. The UI calls it when the window is hidden or
+  minimised and when it comes back; the rig check uses it too. While suspended a take
+  continues without a singer (nothing sung counts as not sung).
+- `practice_finish() -> { result: PracticeResult | null }`: "Finish": ends the take now,
+  grades what was sung and pauses the song.
+- `practice_again() -> PracticeState`: "Sing again": seeks to 0, starts a new take, plays.
+- `practice_guide(song_id?: string) -> PracticeGuide`: the guide as the lane draws it (the
+  loaded song by default), with the graded rule and the song's exclusions applied and the
+  word references checked or recomputed (SONG_FORMAT 10.4):
+
+```ts
+interface PracticeGuide {
+  song_id: string; status: GuideStatus;
+  tuning_cents: number;            // tuning.use_cents, for lane() of 12.1
+  range: { low: number; high: number } | null;    // pitched notes, original key, no octave shift
+  notes: { start: number; end: number; midi: number; kind: "pitched" | "unpitched";
+           confidence: number; dim: boolean;        // dim: low confidence or octave-flagged: drawn dimmer
+           graded: boolean;                          // SONG_FORMAT 10.1's rule, exclusions included
+           glide_in: number; word: [number, number] | null }[];   // [line, word] of the effective lyrics
+  spans: { start: number; end: number; kind: string }[];          // spoken / breath: "speak" bars, never graded
+  curve: { hop_s: number; t0_s: number; midi: number[] } | null;  // 0 = unvoiced; two decimals (~150 kB per 4 min)
+  lines: { line: number; start: number; end: number }[];          // rows of the breakdown (lyric lines, else phrases)
+}
+```
+
+- `practice_song_set(song_id, changes: { octave?: { mode: "auto" | "fixed" | "strict"; shift?: number }; strictness?: "relaxed" | "standard" | "strict" | null }) -> PracticeState`:
+  saved in the song's slot (`practice.octave`, `practice.strictness`), debounced like
+  `player_set` and flushed on song change and exit. The lane moves at once; a running
+  take grades the notes still to come with the new setting.
+- `practice_exclude(song_id, span: { line: number | null; start: number; end: number }, excluded: boolean) -> { excluded: { line: number | null; start: number; end: number }[] }`:
+  "the guide is wrong here" on a lyric line, and its undo; saved in the song's slot at
+  once. Notes whose midpoint lies inside an excluded span stop counting from then on,
+  in a running take too; saved results are not rewritten.
+
+Events while practice is on:
+
+- `practice://live`, about 60 times a second (every 16 ms while the input runs; nothing
+  while it does not), each batch holding what is new since the previous one:
+
+```ts
+interface PracticeLive {
+  seq: number; segment: number;
+  pitch: [number, number | null, number][];
+      // tracker values, one per 10 ms: [song_time_s, midi | null, level_db]. song_time_s is the song time that was
+      // playing when the sound was sung (12.7 "Timing"). midi null = no pitch: silence, breath, consonant, noise, or
+      // nothing but returned music; the marker disappears. Not snapped, not octave-shifted (the UI applies lane()).
+  hits: [number, number, number, -1 | 0 | 1][];
+      // [note, from_s, to_s, where] for stretches of graded notes the scorer has decided: 0 on pitch (lit),
+      // 1 above, -1 below. A stretch that continues the previous batch's last one extends it.
+  done: [number, number | null, number, number | null][];
+      // notes finished: [note, credit 0..1 (null: not graded), key heard, mean error in cents (signed, folded)]
+}
+```
+
+  The UI draws the marker at the newest value and the tail from the last second of values,
+  placed by `song_time_s` against the clock it already interpolates. The sound-to-event
+  time is a median of 36 ms and at most 62 ms on generated voices (practice-tracker.md
+  section 5), so the marker may show a value that much late; that never costs points,
+  because grading uses `song_time_s`, not the moment of display. **Delay budget** (WO2
+  4.4: aim 50 ms from the sound reaching the app to the marker moving, never more than
+  100 ms): tracker (36 / 62 ms) + waiting for the next batch (8 / 16 ms) + the event's
+  trip to the web view (a few ms) + the next frame (8 / 17 ms at 60 fps). That is why the
+  batches go out every 16 ms and not slower; a batch is sent early when a tracker value
+  changes the marker's visibility (singing starts or stops). Stage 4 measures the whole
+  chain in the real app on both systems.
+- `practice://state`: a full `PracticeState` whenever something in it changes (phase,
+  input state, music in the input, the octave decided, the running score), at most 4
+  times a second.
+- `practice://result`: a `PracticeResult` when a take is graded.
+
+**Music in the input** (WO2 4.4, 4.10, trap 6). The core always compares the input with
+what the app is playing (the engine's output, which it knows exactly), so the warning does
+not depend on anything the singer does. `presence` becomes `present` within a few seconds
+of music at any level that could move the marker, and `message` says so. Removal starts by
+itself when the delay is `stable` (cable or USB). `grading` is `normal` (no music, or
+removal `good`), `less_certain` (`marginal`: the result is flagged) or `not_graded`
+(`unusable`, for example a wandering Bluetooth delay: the marker still shows, the result
+has `overall` null and says why). With nobody singing the marker stays off and the grade
+is the lowest, with or without the music coming back: a pitch that the residue of the
+music could explain is treated as no pitch, never credited. The measured delay of the
+returned music is also the singer's timing correction (`latency.source`
+`returned_music`).
+
+### 12.6 Results and history
+
+```ts
+interface PracticeResult {         // the slot's result (SONG_FORMAT section 11), as stored
+  date: string; key: number; key_changes: number; seeks: number;
+  octave: number; octave_mode: "auto" | "fixed" | "strict"; strictness: "relaxed" | "standard" | "strict";
+  overall: number | null; grade: string | null;    // null: could not be graded honestly (trust says why)
+  graded: number; total: number;                   // "graded on 212 of 240 notes"
+  tendency_cents: number | null;                   // + sharp, - flat
+  sung_share: number; voiced_share: number; completed: boolean;
+  trust: string[];                                 // empty = trusted; flags in SONG_FORMAT section 11
+  guide: string; scorer: string; app: string;
+  lines: { basis: "lyrics" | "phrases"; rows: [number, number, number | null, number, number | null][] };
+  // added for the screen, not stored:
+  trust_messages: string[];                        // one plain sentence per flag
+  best: boolean;                                   // this take is now the song's best
+  saved: boolean;                                  // false: too short for the history (12.2), or the slot
+                                                   // could not be written (read-only stick)
+  key_label: string | null;                        // "A major → F# major (-3)" for `key`
+}
+```
+
+- `practice_history(song_id) -> { best: PracticeResult | null; recent: PracticeResult[] }`
+  (newest first, at most 20; read from the song's slot, so it travels with the song).
+- `SongSummary.practice_best` (section 2) carries the best result's `overall`, `grade` and
+  `date` for the Library.
+
+Grading (shared Rust, `jk-pitch::score`, identical on Windows and the Mac): for each graded
+note, the share of its length during which the singer was on pitch by the bands below;
+vibrato around the note and a scoop inside its `glide_in` are not punished, and each
+moment of the note may be matched within the timing tolerance, so being a little early or
+late costs nothing. `overall` = 100 x the length-weighted mean credit of the graded notes
+in the part of the song the take covered; `total` counts the notes of that part and
+`graded` those of them that were graded (SONG_FORMAT section 11), and `sung_share` says
+how much of the song was covered. Silence scores 0 on every note; the
+original singer, through the engine, scores in the top band at every key (WO2 section 9).
+
+| `strictness` | full credit within | nothing from | timing tolerance |
+|---|---|---|---|
+| `relaxed` | 75 cents | 150 cents | 200 ms |
+| `standard` (default, owner decision 4) | 50 cents | 100 cents | 150 ms |
+| `strict` | 30 cents | 60 cents | 100 ms |
+
+Grades (owner decision 3): A+ from 95, A from 90, B+ from 85, B from 80, C+ from 75, C
+from 70, D from 60, F below 60. The `standard` cents are fixed by WO2 4.7; the other
+bands, the tolerances and the letter thresholds are the scorer's constants, to be
+confirmed by measurement in Stage 3 against WO2 section 9's scripted singers. A result
+stores the `scorer` version that made it, so a later change never rewrites history.
+
+### 12.7 Practice settings (`AppSettings.practice`)
+
+```ts
+interface PracticeAppSettings {
+  piano_side: "left" | "right";    // owner decision 1: left
+  simple_lane: boolean;            // no tail, no glow (reduce-motion also gives a plain marker)
+  words_under_notes: boolean;      // owner decision 2: true
+  lyrics_below: boolean;           // the usual lyrics display under the lane: true
+  strictness: "relaxed" | "standard" | "strict";   // for songs without their own (slot strictness null)
+  octave_mode: "auto" | "fixed" | "strict";         // for songs never practised (owner decision 5: auto)
+  auto_latency: boolean;           // use a measured delay (returned music, rig check): true
+  inputs: Record<string, InputChoice>;             // per computer: key = computer hash, as audio.key_benchmarks
+  latency_offsets_ms: Record<string, number>;      // manual offset per "<computer>|<input device id>", -500..500
+  measured_latency_ms: Record<string, { ms: number; how: "returned_music" | "rig_check"; utc: string }>;
+                                                    // last measurement per "<computer>|<input id>|<output id>"
+}
+```
+
+Defaults: `piano_side` "left", `simple_lane` false, `words_under_notes` true,
+`lyrics_below` true, `strictness` "standard", `octave_mode` "auto", `auto_latency` true,
+the maps empty. Per-song choices (octave mode and shift, strictness override, excluded
+lines, results) are in the song's slot, never here. The input and the latency belong to
+the computer, and `settings.json` travels on the stick between the PC and the Mac, so
+they are keyed by a hash of the computer (src/keymode.rs). Colours are the existing
+`ui.colors`: sung (gold) for lit bars, marker (mint) for the singer's marker and key (WO2
+4.5). Clamping and unknown keys follow section 5.
+
+**Timing** (WO2 4.4 "Timing", trap 4). The core maps every tracker value to the song time
+that was playing when it was sung: the input block's host-clock stamp, minus the input
+latency the device declares, read through the engine's DAC clock (whose position already
+has the declared output latency removed), minus `latency.applied_ms`. `applied_ms` is the
+measured delay when `auto_latency` is on and a measurement exists for this computer, input
+and output (the returned music measures it live; the rig check stores one), else the
+manual offset for this input plus the output device's offset
+(`audio.device_offsets_ms[device_id ?? "default"]`, the same value the lyrics use, section
+3: a Bluetooth output makes the singer hear the song late), else 0. A delay nobody could
+measure is absorbed by the timing tolerance of 12.6, never charged to the singer, and the
+result gets `latency_unmeasured`.
+
+Every **measured delay** in this section (`MusicInInput.delay_ms`, `latency.measured_ms`,
+`RigCheckReport.returned.delay_ms`, `practice.measured_latency_ms`) is the residual: how
+late the returned sound arrives after the declared output and input latencies are taken
+off (the echo stage compares the input with the engine's output placed by the two clocks
+exactly as the voice is placed, ARCHITECTURE 12.3). It is therefore subtracted as it is,
+never added to the declared latencies a second time. The whole round trip, for reports,
+is that residual plus `RigCheckReport.output.latency_ms` and `input.declared_latency_ms`.
+
+The **lane's "now"** is `position_s - device_offset_ms / 1000`: section 3's lyric formula
+without the song's `lyrics_offset_ms`, because the notes come from the audio and the
+lyrics offset corrects only the words (SONG_FORMAT 10.4). The bars thus pass the needle
+when the singer hears them.
+
+`practice_latency_set(manual_ms: number, device_id?: string | null) -> { manual_ms: number }`:
+the manual offset for this computer and that input (default: the chosen input), clamped to
+-500..500 ms and saved in `practice.latency_offsets_ms` under the computer's hash, which
+the UI does not know (as for `mic_choose`). 0 removes it. A running session applies it at
+once when it is the source in use.
+
+### 12.8 Error codes added
+
+`no_guide` (practice needs a guide and none could be made; the message says why),
+`no_input`, `permission_denied`, `input_unavailable` (the device is gone or busy),
+`practising` (`selfcheck_run` and `practice_rig_check` refuse while a take runs),
+`audible_not_confirmed` (10.2), the guide codes of 12.3, and the existing `not_found`,
+`not_loaded` and `bad_request`.
