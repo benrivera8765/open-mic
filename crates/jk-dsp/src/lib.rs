@@ -23,7 +23,7 @@ pub mod ring;
 pub mod shifter;
 pub mod smooth;
 
-pub use graph::{DspError, GraphConfig, GraphStats, PitchGraph, RouteInfo, CACHE_SLOTS, MAX_SPARE_STRETCHERS};
+pub use graph::{DspError, GraphConfig, GraphStats, KeySwitch, PitchGraph, RouteInfo, CACHE_SLOTS, MAX_SPARE_STRETCHERS};
 pub use params::{ExtraBlock, MixParams, Stem, StemBlock, CHANNELS, MAX_SEMITONES, MIN_SEMITONES};
 pub use render::{render, resample_whole, ParamEvent, RenderOptions, RenderOutput, StemsRef};
 pub use resample::OutputResampler;

@@ -129,6 +129,23 @@ pub enum RouteInfo {
     Cached { slot: usize, semitones: i32 },
 }
 
+/// A change of the key heard that the graph has scheduled in its output (Work Order 2,
+/// 4.6: practice mode follows the key that is *heard*, not the one asked for). See
+/// [`PitchGraph::scheduled_switch`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeySwitch {
+    /// Stream frame (counted from the last reset, like
+    /// [`PitchGraph::frames_processed`]) from which the new key is heard; the output
+    /// carries stream frame `at` [`PitchGraph::latency`] frames after it was fed in. It is
+    /// the crossfade's midpoint, where the equal-power fade gives both keys the same
+    /// weight, and where [`PitchGraph::audible_semitones`] switches too. It can lie before
+    /// the next input frame (the fade began before it) but never before the next output
+    /// frame, so a switch is always known before any of its audio leaves the graph.
+    pub at: u64,
+    /// The key heard from `at` on.
+    pub semitones: i32,
+}
+
 /// One slot of prerendered pitch-path material, on the graph's absolute timeline.
 struct CacheSlot {
     hist: AbsRing,
@@ -310,7 +327,23 @@ impl PitchGraph {
             Some(x) => x.from,
             None => self.current,
         };
-        match route {
+        self.route_semitones(route)
+    }
+
+    /// The key change scheduled by the running crossfade (`None` when none runs). A
+    /// crossfade is created `latency()` frames before its first output frame, so the
+    /// caller learns of every switch well before it is heard; the switch stays reported
+    /// until the crossfade has finished. The target of a crossfade can change once, when
+    /// a cached key's data goes missing ([`cache_miss`](Self::cache_miss)): the same `at`
+    /// is then reported with the bypass key (0).
+    pub fn scheduled_switch(&self) -> Option<KeySwitch> {
+        let x = self.xfade?;
+        let mid = x.start + self.table.len() as u64 / 2;
+        Some(KeySwitch { at: mid.saturating_sub(self.base), semitones: self.route_semitones(x.to) })
+    }
+
+    fn route_semitones(&self, r: Route) -> i32 {
+        match r {
             Route::Bypass => 0,
             Route::Shift(s) => self.paths[s].semitones,
             Route::Cached(k) => self.cached[k].semitones,

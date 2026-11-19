@@ -554,8 +554,7 @@ impl Filler {
         // Clock: the sample leaving the DAC now was written `latency_frames` ago.
         let s = &self.shared;
         if let Some((pos, generation)) = self.spans.position_back(latency_frames as u64) {
-            s.dac_pos.store(pos);
-            s.dac_gen.store(generation, Release);
+            s.publish_dac(pos, generation);
         }
         s.latency_frames.store(latency_frames, Relaxed);
         let mask = (1u64 << crate::shared::FILLER_SEG_BITS) - 1;

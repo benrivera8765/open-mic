@@ -562,6 +562,44 @@ pub fn make_demo_song(out: &Path) -> Result<MadeSong, EngineError> {
     )
 }
 
+/// A test song whose lead vocal is one steady sine at `f0` Hz (amplitude 0.3, both
+/// channels) and whose other stems are silent (no lyrics), 24-bit stereo. With the guide
+/// vocal up, the pitch of the output is `f0` shifted by exactly the key heard, which makes
+/// the moment of a key change measurable in played audio (Work Order 2, 4.6).
+pub fn make_tone_song(out: &Path, seconds: f64, rate: u32, f0: f64) -> Result<MadeSong, EngineError> {
+    let frames = (seconds * rate as f64).round() as usize;
+    let tone = jk_dsp::signals::sine(f0, rate, frames, 0.3, 0.3);
+    let mut lead = Vec::with_capacity(frames * 2);
+    let mut peak = 0.0f64;
+    for &x in &tone {
+        let v = (x as f64 * 8_388_608.0).round().clamp(-8_388_608.0, 8_388_607.0) as i32;
+        peak = peak.max((v as f64 / 8_388_608.0).abs());
+        lead.push(v);
+        lead.push(v);
+    }
+    let silent = vec![0i32; frames * 2];
+    let list = vec![
+        ("lead_vocal", lead, peak, false, true),
+        ("backing_vocals", silent.clone(), 0.0, true, true),
+        ("drums", silent.clone(), 0.0, true, false),
+        ("other", silent, 0.0, true, true),
+    ];
+    write_song(
+        out,
+        &format!("Test tone {f0} Hz ({seconds:.0} s)"),
+        "Generated",
+        rate,
+        2,
+        frames as u64,
+        &list,
+        None,
+        None,
+        None,
+        None,
+        &format!("make_tone_song: steady {f0} Hz sine in the lead stem"),
+    )
+}
+
 /// A long stereo test song from `jk_dsp::signals::synth_song` (no lyrics), 24-bit.
 pub fn make_synth_song(out: &Path, seconds: f64, rate: u32, seed: u32) -> Result<MadeSong, EngineError> {
     let stems = jk_dsp::signals::synth_song(rate, seconds, seed);

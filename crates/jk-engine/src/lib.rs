@@ -11,6 +11,7 @@
 //!   null device for tests), the lock-free device-side "filler" and the playback clock.
 //! * [`export`]: offline render for "Export backing track".
 //! * [`keycache`]: key change by rendering ahead into a disk cache (prerender mode).
+//! * [`keyheard`]: the key that is heard at the DAC, and its recent history.
 //! * [`flac_write`]: an in-house FLAC encoder (fixtures, exports).
 //! * [`demo`]: the generated demo song (self-check, ticker ground truth).
 
@@ -25,6 +26,7 @@ pub mod engine;
 pub mod export;
 pub mod flac_write;
 pub mod keycache;
+pub mod keyheard;
 pub mod output;
 pub mod shared;
 pub mod source;
@@ -39,5 +41,6 @@ pub use flac_write::{encode_flac, FlacEncoder};
 pub use keycache::{
     benchmark_realtime_factor, choose_key_mode, KeyMode, KeyPrepare, KeyStatus, AUTO_MIN_REALTIME_FACTOR,
 };
+pub use keyheard::{KeyPending, KeySegment};
 pub use output::{OutputRequest, StreamInfo};
 pub use shared::now_ns;

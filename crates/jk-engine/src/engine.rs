@@ -43,11 +43,12 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use jk_dsp::{ExtraBlock, GraphConfig, OutputResampler, PitchGraph, RouteInfo, StemBlock, Stretcher, CACHE_SLOTS, CHANNELS};
+use jk_dsp::{ExtraBlock, GraphConfig, KeySwitch, OutputResampler, PitchGraph, RouteInfo, StemBlock, Stretcher, CACHE_SLOTS, CHANNELS};
 
 use crate::api::*;
 use crate::output::{self, Capture, DeviceFeed, Marker, MarkerKind, OpenOutput, OutputRequest, StreamInfo};
 use crate::keycache::{self, CacheFeed, Entry, EntryKey, KeyCache, KeyMode, KeyPrepare, KeyStatus, Pull, Renderer};
+use crate::keyheard::{KeyHistory, KeyMark, KeyPending, KeySegment};
 use crate::shared::{now_ns, Shared, FILLER_SEG_BITS, ROUTE_BYPASS, ROUTE_CACHED, ROUTE_SHIFT};
 use crate::source::{slot_buffers, SlotBuffers, SongInfo, SongSource, SLOT_EXTRA_PITCHED, SLOT_EXTRA_UNPITCHED, SLOT_OTHER};
 
@@ -61,6 +62,9 @@ const STEM_BUFFER_S: f64 = 4.0;
 const READ_CHUNK: usize = 4096;
 /// Spare Rubber Band instances the worker keeps in the graph.
 const GRAPH_SPARES: usize = 2;
+/// Key changes the worker can report before the house thread drains them (every 5 ms;
+/// a change happens at most once per crossfade).
+const KEY_LOG: usize = 256;
 
 // =====================================================================================
 // Messages
@@ -119,6 +123,8 @@ pub(crate) struct WorkerSong {
     feeds: [Option<Box<CacheFeed>>; CACHE_SLOTS],
     pending_feed: Option<Box<CacheFeed>>,
     cache_buf: [[Vec<f32>; CHANNELS]; CACHE_SLOTS],
+    /// The graph's scheduled key change last reported to control (`crate::keyheard`).
+    key_logged: Option<KeySwitch>,
 }
 
 pub(crate) enum WorkerCmd {
@@ -257,6 +263,9 @@ struct Worker {
     cmd_rx: rtrb::Consumer<WorkerCmd>,
     garbage: rtrb::Producer<Garbage>,
     spares: rtrb::Consumer<Stretcher>,
+    /// Key heard: the key each segment starts in and every key change the graph
+    /// schedules, to control (`crate::keyheard`).
+    key_log: rtrb::Producer<KeyMark>,
     stop: Arc<AtomicBool>,
     out: Option<Box<OutputSide>>,
     song: Option<Box<WorkerSong>>,
@@ -271,6 +280,13 @@ struct Worker {
     /// in the graph must not re-latch a warning the caller just cleared).
     clip_epoch: u64,
     clip_hold: u64,
+}
+
+/// Report a key mark to control (lock-free push; a full log is counted, never waited on).
+fn log_key(log: &mut rtrb::Producer<KeyMark>, shared: &Shared, m: KeyMark) {
+    if log.push(m).is_err() {
+        shared.key_log_lost.fetch_add(1, Relaxed);
+    }
 }
 
 impl Worker {
@@ -456,6 +472,10 @@ impl Worker {
             song.resampler.reset();
             song.rs_skip = song.resampler.output_delay();
             song.needs_reset = false;
+            // The key this segment starts in, heard from its first frame.
+            let m = KeyMark { segment: seg.generation, frame: seg.start, semitones: song.graph.audible_semitones(), start: true };
+            log_key(&mut self.key_log, &self.shared, m);
+            song.key_logged = song.graph.scheduled_switch();
         }
         if !song.started {
             let m = Marker { at: out.total_pushed, generation: seg.generation, kind: MarkerKind::Start { pos: seg.start as f64 / song.song_rate as f64 } };
@@ -603,6 +623,18 @@ impl Worker {
             }
         }
         song.song_in += BLOCK as u64;
+        // A key change the graph scheduled (a crossfade began, or its target changed):
+        // report the song frame from which the new key is heard. Stream frame `at` (since
+        // the reset) is song frame `read_from + at`. It lies one graph latency or more
+        // ahead of what has been output, so control knows it before it is heard.
+        let sw = song.graph.scheduled_switch();
+        if sw != song.key_logged {
+            if let Some(s) = sw {
+                let frame = (seg.read_from + s.at).max(seg.start);
+                log_key(&mut self.key_log, &self.shared, KeyMark { segment: seg.generation, frame, semitones: s.semitones, start: false });
+            }
+            song.key_logged = sw;
+        }
         {
             let (cur, to) = song.graph.route();
             let (kind, tag) = match to.unwrap_or(cur) {
@@ -766,6 +798,9 @@ struct Control {
     /// Finished reader threads to join.
     zombies: Vec<JoinHandle<()>>,
     key: KeyCtl,
+    /// The key heard (`crate::keyheard`): marks from the worker, and their history.
+    key_log: rtrb::Consumer<KeyMark>,
+    keys: KeyHistory,
 }
 
 /// Key mode and cache state (control side, under the control mutex).
@@ -850,6 +885,8 @@ pub struct Diagnostics {
     pub key_cache_bytes: u64,
     /// Fraction of the current key's cache entry rendered (prerender mode, key not 0).
     pub key_target_progress: Option<f32>,
+    /// Key changes the worker could not report (its log was full; must stay 0).
+    pub key_log_lost: u64,
 }
 
 fn lock(core: &Core) -> MutexGuard<'_, Control> {
@@ -881,8 +918,9 @@ impl Core {
             PlaybackState::Empty => 0.0,
             PlaybackState::Ended => dur,
             _ => {
-                if self.shared.dac_gen.load(Acquire) == ctl.generation {
-                    self.shared.dac_pos.load()
+                let (pos, generation) = self.shared.dac();
+                if generation == ctl.generation {
+                    pos
                 } else {
                     self.shared.target_pos.load()
                 }
@@ -909,9 +947,12 @@ impl Core {
                 latency_ms: lat as f64 * 1000.0 / d.info.sample_rate.max(1) as f64,
             }
         });
+        let position_s = self.current_position(ctl);
+        let mut key = ctl.key.status.clone();
+        self.key_in_effect(ctl, position_s, &mut key);
         Snapshot {
             state: ctl.state,
-            position_s: self.current_position(ctl),
+            position_s,
             duration_s: ctl.song.as_ref().map_or(0.0, |x| x.info.duration_s()),
             device,
             underruns: s.underruns.load(Relaxed),
@@ -920,7 +961,51 @@ impl Core {
             clipped: s.clipped.load(Relaxed),
             error: if ctl.state == PlaybackState::Error { ctl.error.clone() } else { None },
             position_ns: if s.dac_gen.load(Acquire) == ctl.generation { s.dac_ns.load(Relaxed) } else { 0 },
-            key: ctl.key.status.clone(),
+            key,
+        }
+    }
+
+    /// Bring the key history up to date: marks from the worker, and how far the DAC got in
+    /// its segment. House thread (every 5 ms) and every `snapshot` / key query.
+    fn drain_keys(&self, ctl: &mut Control) {
+        while let Ok(m) = ctl.key_log.pop() {
+            ctl.keys.add(m);
+        }
+        let (pos, generation) = self.shared.dac();
+        if generation != 0 && ctl.state != PlaybackState::Empty {
+            ctl.keys.note_dac(generation, pos);
+        }
+    }
+
+    /// The key in effect at `position_s` (the song time at the DAC that this snapshot
+    /// reports): `heard`, `requested`, `pending`, `segment` (WO2 4.6).
+    fn key_in_effect(&self, ctl: &Control, position_s: f64, key: &mut KeyStatus) {
+        let requested = ctl.params.to_dsp().semitones;
+        key.requested = requested;
+        if ctl.song.is_none() || ctl.state == PlaybackState::Empty {
+            (key.heard, key.pending, key.segment) = (0, None, 0);
+            return;
+        }
+        // `position_s` is the DAC's position in the current segment, or that segment's
+        // start while the DAC still plays out the previous one (a seek in progress).
+        let segment = ctl.generation;
+        key.segment = segment;
+        match ctl.keys.heard(segment, position_s) {
+            Some(heard) => {
+                key.heard = heard;
+                key.pending = match ctl.keys.next_after(segment, position_s) {
+                    Some((at, k)) => Some(KeyPending { semitones: k, at_s: Some(at) }),
+                    None => (requested != heard).then_some(KeyPending { semitones: requested, at_s: None }),
+                };
+            }
+            None => {
+                // The worker has not started this segment yet (a few ms after a seek, or
+                // while it waits for a prepared shifter): nothing new is audible, so the key
+                // last heard still counts and the request is pending.
+                let heard = ctl.keys.last_heard().unwrap_or(requested);
+                key.heard = heard;
+                key.pending = (requested != heard).then_some(KeyPending { semitones: requested, at_s: None });
+            }
         }
     }
 
@@ -1144,7 +1229,7 @@ impl Core {
         };
         if ctl.song.is_none() || eff != KeyMode::Prerender {
             self.renderer.set_job(None, 0);
-            ctl.key.status = KeyStatus { mode: eff, preparing: None, note };
+            ctl.key.status = KeyStatus { mode: eff, preparing: None, note, ..Default::default() };
             return;
         }
         let s = &self.shared;
@@ -1223,7 +1308,7 @@ impl Core {
                 }
             }
         }
-        ctl.key.status = KeyStatus { mode: eff, preparing, note };
+        ctl.key.status = KeyStatus { mode: eff, preparing, note, ..Default::default() };
     }
 
     fn unload_locked(&self, ctl: &mut Control) {
@@ -1294,6 +1379,7 @@ impl Core {
             self.emit_state(&ctl);
         }
         ctl.zombies.retain(|h| !h.is_finished());
+        self.drain_keys(&mut ctl);
         self.key_tick(&mut ctl);
     }
 }
@@ -1347,6 +1433,7 @@ impl EngineInner {
         let (worker_tx, cmd_rx) = rtrb::RingBuffer::<WorkerCmd>::new(64);
         let (garbage_tx, garbage_rx) = rtrb::RingBuffer::<Garbage>::new(256);
         let (spare_tx, spare_rx) = rtrb::RingBuffer::<Stretcher>::new(GRAPH_SPARES);
+        let (key_log_tx, key_log_rx) = rtrb::RingBuffer::<KeyMark>::new(KEY_LOG);
         let (ev_tx, ev_rx) = crossbeam_channel::bounded(256);
         let stop = Arc::new(AtomicBool::new(false));
         let priority = Arc::new(OnceLock::new());
@@ -1357,6 +1444,7 @@ impl EngineInner {
             cmd_rx,
             garbage: garbage_tx,
             spares: spare_rx,
+            key_log: key_log_tx,
             stop: stop.clone(),
             out: None,
             song: None,
@@ -1387,6 +1475,8 @@ impl EngineInner {
                 params: MixParams::default(),
                 zombies: Vec::new(),
                 key: KeyCtl { policy_auto: true, ..Default::default() },
+                key_log: key_log_rx,
+                keys: KeyHistory::default(),
             }),
             events: ev_tx,
             spare_rate: AtomicU32::new(0),
@@ -1548,6 +1638,7 @@ impl EngineInner {
             feeds: [None, None],
             pending_feed: None,
             cache_buf: std::array::from_fn(|_| [vec![0.0; BLOCK], vec![0.0; BLOCK]]),
+            key_logged: None,
         };
         core.send_worker(&mut ctl, WorkerCmd::Song(Box::new(wsong)));
         let (reader_tx, reader_rx) = crossbeam_channel::unbounded();
@@ -1566,6 +1657,10 @@ impl EngineInner {
         core.key_hint.store(params.semitones, Relaxed);
         core.spare_rate.store(rate, Release);
         ctl.state = PlaybackState::Paused;
+        // Key history of this song: marks of the previous song's segments are ignored.
+        core.drain_keys(&mut ctl);
+        let first_segment = ctl.generation + 1;
+        ctl.keys.reset(rate, first_segment);
         core.start_segment(&mut ctl, 0.0);
         core.emit_state(&ctl);
         Ok(LoadedSong {
@@ -1671,8 +1766,24 @@ impl EngineInner {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        let ctl = lock(&self.core);
+        let mut ctl = lock(&self.core);
+        self.core.drain_keys(&mut ctl);
         self.core.snapshot_locked(&ctl)
+    }
+
+    pub fn key_at(&self, pos_s: f64, segment: Option<u64>) -> Option<i32> {
+        let mut ctl = lock(&self.core);
+        self.core.drain_keys(&mut ctl);
+        if ctl.song.is_some() { ctl.keys.key_at(pos_s, segment) } else { None }
+    }
+
+    pub fn key_timeline(&self) -> Vec<KeySegment> {
+        let mut ctl = lock(&self.core);
+        self.core.drain_keys(&mut ctl);
+        if ctl.song.is_none() {
+            return Vec::new();
+        }
+        ctl.keys.timeline()
     }
 
     pub fn events(&self) -> crossbeam_channel::Receiver<EngineEvent> {
@@ -1748,6 +1859,7 @@ impl EngineInner {
             key_evictions: ctl.key.cache.as_ref().map_or(0, |c| c.evictions),
             key_cache_bytes: ctl.key.cache.as_ref().map_or(0, |c| c.store.total_bytes()),
             key_target_progress: ctl.key.target.as_ref().map(|t| t.progress()),
+            key_log_lost: s.key_log_lost.load(Relaxed),
         }
     }
 
