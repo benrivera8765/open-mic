@@ -470,6 +470,18 @@ pub(super) fn request_mic_permission() -> MicPermission {
     mic_permission()
 }
 
+/// The three switches as stored (read only): the machine's "Microphone access", the
+/// user's "Microphone access" and "Let desktop apps access your microphone". `None` =
+/// the value is absent (Windows' default, which allows).
+pub(super) fn privacy_switches() -> [Option<String>; 3] {
+    const STORE: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone";
+    [
+        reg_value(HKEY_LOCAL_MACHINE, STORE),
+        reg_value(HKEY_CURRENT_USER, STORE),
+        reg_value(HKEY_CURRENT_USER, &format!("{STORE}\\NonPackaged")),
+    ]
+}
+
 // ---------------------------------------------------------------------------
 // Capture
 // ---------------------------------------------------------------------------

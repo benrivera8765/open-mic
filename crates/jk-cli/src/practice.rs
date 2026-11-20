@@ -41,7 +41,7 @@ pub enum PracticeCmd {
     Run(Box<RunArgs>),
     /// The original lead vocal at every key against the guide at that key, and against
     /// wrongly shifted guides.
-    Sweep(SweepArgs),
+    Sweep(Box<SweepArgs>),
 }
 
 #[derive(Args, Clone)]
@@ -50,7 +50,8 @@ pub struct RunArgs {
     /// A performance WAV of generated sound (any rate, any channels).
     pub performance: Option<PathBuf>,
     /// A scripted singer from the guide: perfect | steady | sharp:C | flat:C | octave:N |
-    /// late:MS | early:MS | one-note | silent | noise.
+    /// late:MS | early:MS | one-note | silent | noise | rubato:MS[:SEED] | behind[:EARLY_MS]
+    /// | ahead[:LATE_MS] | swap | staccato:SHARE | gap:SHARE:silence|breath|whisper|speech.
     #[arg(long)]
     pub singer: Option<String>,
     /// The song's own isolated lead vocal, rendered by the engine's graph at the key(s).
@@ -149,9 +150,16 @@ pub struct RunArgs {
     /// scorer's).
     #[arg(long)]
     pub bridge_ms: Option<f64>,
+    #[command(flatten)]
+    pub scorer: ScorerOpts,
     /// Write the generated input (generated sound only) to this WAV.
     #[arg(long)]
     pub write_input: Option<PathBuf>,
+    /// Diagnostics: write the tracker values the scorer received (song time, MIDI or null,
+    /// level, clarity, flags) and the guide's pitch curve to this JSON (pitch numbers only,
+    /// never lyrics; the input is generated or rendered sound, never a microphone).
+    #[arg(long)]
+    pub dump_samples: Option<PathBuf>,
     /// Write the result JSON here instead of stdout.
     #[arg(long)]
     pub out: Option<PathBuf>,
@@ -175,11 +183,47 @@ pub struct SweepArgs {
     /// Scorer: bridge tracker dropouts up to this long on each side (ms).
     #[arg(long)]
     pub bridge_ms: Option<f64>,
+    #[command(flatten)]
+    pub scorer: ScorerOpts,
     /// Input rate (default: the song's rate).
     #[arg(long)]
     pub rate: Option<u32>,
     #[arg(long)]
     pub out: Option<PathBuf>,
+}
+
+/// Scorer settings for experiments (default: the scorer's own).
+#[derive(Args, Clone, Default)]
+pub struct ScorerOpts {
+    /// Excusal rule: `SHARE[,CLARITY]` (share of a note's moments; lowest tracker clarity).
+    /// `0` turns it off.
+    #[arg(long)]
+    pub excuse: Option<String>,
+    /// Shortest rendition of a note the timing tolerance stretches onto it (share, 0..1).
+    #[arg(long)]
+    pub min_rendition: Option<f64>,
+    /// Overlap allowed between renditions of consecutive graded notes (ms).
+    #[arg(long)]
+    pub overlap_ms: Option<f64>,
+}
+
+impl ScorerOpts {
+    fn apply(&self, mut c: ScoreConfig) -> Res<ScoreConfig> {
+        if let Some(e) = &self.excuse {
+            let mut it = e.split(',');
+            c.excuse_share = it.next().unwrap_or("0").trim().parse()?;
+            if let Some(cl) = it.next() {
+                c.excuse_clarity = cl.trim().parse()?;
+            }
+        }
+        if let Some(m) = self.min_rendition {
+            c.min_rendition = m;
+        }
+        if let Some(o) = self.overlap_ms {
+            c.overlap_s = o / 1000.0;
+        }
+        Ok(c)
+    }
 }
 
 pub fn run(cmd: PracticeCmd) -> Res<()> {
@@ -446,6 +490,22 @@ enum SingerKind {
     Natural { cents: f64, octave: i32, late: f64 },
     /// The guide's notes held dead steady.
     Steady,
+    /// Rubato: the natural singer with each note's onset moved by its own random offset in
+    /// +-`range` s (uniform, seeded); a note is held until the next one starts, and keeps
+    /// at least half of its length (the next onset waits for it).
+    Rubato { range: f64, seed: u64 },
+    /// Borrowing adversaries, never on the right note: each note's time sung at the pitch
+    /// of the previous pitched note (`Behind`, moved `shift` s, negative = early), of the
+    /// next one (`Ahead`, moved `shift` s), or adjacent notes swapped in pairs (`Swap`).
+    Behind { shift: f64 },
+    Ahead { shift: f64 },
+    Swap,
+    /// The natural singer sounding only the first `share` of every note (silent after).
+    Staccato { share: f64 },
+    /// The natural singer with the middle `share` of every note replaced by unvoiced sound
+    /// at the same level (0 silence, 1 breath, 2 whisper-like fricatives, 3 speech-shaped
+    /// noise): the excusal rule must not excuse it.
+    Gap { share: f64, kind: u8 },
     /// One pitch whenever the guide sings.
     OneNote,
     Silent,
@@ -465,6 +525,28 @@ fn parse_singer(s: &str) -> Res<SingerKind> {
         "late" => SingerKind::Natural { cents: 0.0, octave: 0, late: num(100.0)? / 1000.0 },
         "early" => SingerKind::Natural { cents: 0.0, octave: 0, late: -num(100.0)? / 1000.0 },
         "one-note" => SingerKind::OneNote,
+        "rubato" => {
+            let mut it = arg.unwrap_or("120").split(':');
+            let range = it.next().unwrap_or("120").parse::<f64>()? / 1000.0;
+            let seed = it.next().map(str::parse::<u64>).transpose()?.unwrap_or(1);
+            SingerKind::Rubato { range, seed }
+        }
+        "behind" => SingerKind::Behind { shift: -num(0.0)? / 1000.0 },
+        "ahead" => SingerKind::Ahead { shift: num(0.0)? / 1000.0 },
+        "swap" => SingerKind::Swap,
+        "staccato" => SingerKind::Staccato { share: num(0.5)? },
+        "gap" => {
+            let mut it = arg.unwrap_or("0.25:breath").split(':');
+            let share = it.next().unwrap_or("0.25").parse::<f64>()?;
+            let kind = match it.next().unwrap_or("breath") {
+                "silence" => 0,
+                "breath" => 1,
+                "whisper" => 2,
+                "speech" => 3,
+                k => return Err(format!("gap kind {k}: silence | breath | whisper | speech").into()),
+            };
+            SingerKind::Gap { share, kind }
+        }
         "silent" => SingerKind::Silent,
         "noise" => SingerKind::Noise,
         _ => return Err(format!("unknown singer {s}").into()),
@@ -520,7 +602,124 @@ fn make_singer(song: &Song, kind: SingerKind, keys: &KeyTimeline, rate: u32, lev
                 Some(tv::midi_hz(m))
             })
         }
+        SingerKind::Gap { share, kind } => {
+            let k = keys.clone();
+            let gap = |n: &ScoreNote, t: f64| {
+                let half = 0.5 * share * (n.end - n.start);
+                (t - n.midpoint()).abs() < half
+            };
+            let nn = notes.clone();
+            let mut x = tv::sing(rate, dur, voice, move |t| {
+                let n = find(&nn, t)?;
+                if gap(&n, t) {
+                    return None;
+                }
+                Some(tv::midi_hz(natural_pitch(n.midi + f64::from(k.key_at(t, None)), t - n.start, n.end - n.start)))
+            });
+            let noise = match kind {
+                1 => tv::breath(rate, dur, level_db, 41),
+                2 => tv::fricatives(rate, dur, level_db, 43),
+                3 => tv::speech_noise(rate, dur, level_db, 47),
+                _ => vec![0.0; x.len()],
+            };
+            // Unvoiced sound only inside the gaps, with 5 ms ramps.
+            let ramp = 0.005;
+            for (i, v) in x.iter_mut().enumerate() {
+                let t = i as f64 / f64::from(rate);
+                if let Some(n) = find(&notes, t) {
+                    let half = 0.5 * share * (n.end - n.start);
+                    let d = half - (t - n.midpoint()).abs();
+                    if d > 0.0 {
+                        *v += noise.get(i).copied().unwrap_or(0.0) * (d / ramp).min(1.0) as f32;
+                    }
+                }
+            }
+            x
+        }
+        SingerKind::Rubato { .. } | SingerKind::Behind { .. } | SingerKind::Ahead { .. } | SingerKind::Swap | SingerKind::Staccato { .. } => {
+            let spans = sung_spans(&notes, kind, keys);
+            tv::sing(rate, dur, voice, move |t| {
+                let i = spans.partition_point(|s| s.1 <= t);
+                let &(s0, s1, m0) = spans.get(i).filter(|s| t >= s.0)?;
+                Some(tv::midi_hz(natural_pitch(m0, t - s0, s1 - s0)))
+            })
+        }
     }
+}
+
+/// The natural singer's pitch `into` s into a sung note of `len` s at `midi`: a 60 ms scoop
+/// from 80 cents below, then a +-30 cent vibrato at 5.5 Hz on notes longer than 0.35 s.
+fn natural_pitch(midi: f64, into: f64, len: f64) -> f64 {
+    let mut m = midi;
+    if into < 0.06 {
+        m -= 0.8 * (1.0 - into / 0.06);
+    }
+    if len > 0.35 && into > 0.15 {
+        let depth = 0.3 * ((into - 0.15) / 0.1).min(1.0);
+        m += depth * (2.0 * std::f64::consts::PI * 5.5 * into).sin();
+    }
+    m
+}
+
+/// What the timing singers and the adversaries sing: `(start, end, MIDI with the key heard)`,
+/// ordered and not overlapping. `notes` are the guide's pitched notes.
+fn sung_spans(notes: &[ScoreNote], kind: SingerKind, keys: &KeyTimeline) -> Vec<(f64, f64, f64)> {
+    let key = |t: f64| f64::from(keys.key_at(t, None));
+    let mut out: Vec<(f64, f64, f64)> = Vec::with_capacity(notes.len());
+    match kind {
+        SingerKind::Rubato { range, seed } => {
+            let mut rng = tv::Rng::new(seed.wrapping_mul(7919).wrapping_add(13));
+            let mut prev_start = f64::NEG_INFINITY;
+            let mut prev_len = 0.0;
+            for n in notes {
+                let o = range * rng.bipolar();
+                // The next onset waits until the previous note has had half its length.
+                let s = (n.start + o).max(prev_start + 0.5 * prev_len);
+                let e = n.end + o;
+                if let Some(last) = out.last_mut() {
+                    last.1 = last.1.min(s);
+                }
+                if e > s {
+                    out.push((s, e, n.midi + key(n.midpoint())));
+                }
+                prev_start = s;
+                prev_len = n.end - n.start;
+            }
+        }
+        SingerKind::Behind { shift } => {
+            for w in notes.windows(2) {
+                out.push((w[1].start + shift, w[1].end + shift, w[0].midi + key(w[1].midpoint())));
+            }
+        }
+        SingerKind::Ahead { shift } => {
+            for w in notes.windows(2) {
+                out.push((w[0].start + shift, w[0].end + shift, w[1].midi + key(w[0].midpoint())));
+            }
+        }
+        SingerKind::Swap => {
+            for p in notes.chunks(2) {
+                if let [x, y] = p {
+                    out.push((x.start, x.end, y.midi + key(x.midpoint())));
+                    out.push((y.start, y.end, x.midi + key(y.midpoint())));
+                }
+            }
+        }
+        SingerKind::Staccato { share } => {
+            for n in notes {
+                out.push((n.start, n.start + share * (n.end - n.start), n.midi + key(n.midpoint())));
+            }
+        }
+        _ => {}
+    }
+    // Ordered, not overlapping (a later onset cuts the note before it).
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for i in 1..out.len() {
+        if out[i - 1].1 > out[i].0 {
+            out[i - 1].1 = out[i].0;
+        }
+    }
+    out.retain(|s| s.1 > s.0);
+    out
 }
 
 // ---------------------------------------------------------------------------------------
@@ -784,7 +983,7 @@ fn cmd_run(a: &RunArgs) -> Res<()> {
             octave_shift,
             detail: a.notes,
             bridge_s: a.bridge_ms.map(|b| b / 1000.0).unwrap_or(ScoreConfig::default().bridge_s),
-            ..ScoreConfig::default()
+            ..a.scorer.apply(ScoreConfig::default())?
         },
         latency: LatencyConfig { auto: !a.no_auto_latency, stored_s: None, manual_s: a.latency_ms / 1000.0 },
         block: a.block.unwrap_or((rate / 100) as usize),
@@ -794,6 +993,9 @@ fn cmd_run(a: &RunArgs) -> Res<()> {
     let t_chain = Instant::now();
     let (r, chain, shown, trace) = play(&song.guide, &song.excluded, &keys_used, &setup, rate, channels, channel, &input, refslice.as_deref(), song_start, completed);
     let chain_s = t_chain.elapsed().as_secs_f64();
+    if let Some(p) = &a.dump_samples {
+        dump_samples(p, &a.song, &chain)?;
+    }
     let audio_s = (last - first) as f64 / f64::from(rate);
     let truth_delay_ms = ret.as_ref().map(|(_, d)| {
         let mid = d.len() / 2;
@@ -825,9 +1027,55 @@ fn cmd_run(a: &RunArgs) -> Res<()> {
         } else {
             Value::Null
         },
+        // With --notes: whether each guide note is pitched (sung) rather than spoken.
+        "guide_pitched": if a.notes {
+            json!(song.guide.notes.iter().map(|n| n.pitched).collect::<Vec<_>>())
+        } else {
+            Value::Null
+        },
+        // With --notes and a timing singer or adversary: what it sang (start, end, MIDI).
+        "singer_spans": match (a.notes, a.performance.is_none() && !a.vocal, a.singer.as_deref().map(parse_singer)) {
+            (true, true, Some(Ok(kind @ (SingerKind::Rubato { .. } | SingerKind::Behind { .. } | SingerKind::Ahead { .. } | SingerKind::Swap | SingerKind::Staccato { .. })))) => {
+                let pitched: Vec<ScoreNote> = song.guide.notes.iter().filter(|n| n.pitched).cloned().collect();
+                json!(sung_spans(&pitched, kind, &keys).iter().map(|&(s, e, m)| json!([round3(s), round3(e), round3(m)])).collect::<Vec<_>>())
+            }
+            _ => Value::Null,
+        },
         "timing": { "render_s": render_s, "chain_s": chain_s, "chain_x_realtime": audio_s / chain_s.max(1e-9), "total_s": t_all.elapsed().as_secs_f64() },
     });
     emit(&out, a.out.as_deref())
+}
+
+/// `--dump-samples`: the scorer's input (one row per tracker value: song time, MIDI or
+/// null, level dBFS, clarity, unknown, music) and the guide's pitch curve (MIDI per hop, 0 =
+/// unvoiced) for per-note diagnostics. Pitch numbers only.
+fn dump_samples(path: &Path, song: &Path, chain: &Chain) -> Res<()> {
+    let rows: Vec<Value> = chain
+        .scorer()
+        .samples()
+        .iter()
+        .map(|s| {
+            json!([
+                (s.t * 1e4).round() / 1e4,
+                s.midi.map(|m| (m * 1e3).round() / 1e3),
+                (f64::from(s.level_db) * 10.0).round() / 10.0,
+                (f64::from(s.clarity) * 1e3).round() / 1e3,
+                u8::from(s.unknown),
+                u8::from(s.music)
+            ])
+        })
+        .collect();
+    let f = jk_format::SongFile::open(song)?;
+    let curve = jk_format::guide::read_guide(&f)?.and_then(|(_, c)| c).map(|c| {
+        let midi = c.fields.first().map(|x| x.values.iter().map(|v| (f64::from(*v) * 1e3).round() / 1e3).collect::<Vec<_>>());
+        json!({ "hop_s": f64::from(c.hop_us) / 1e6, "t0_s": f64::from(c.t0_us) / 1e6, "midi": midi })
+    });
+    let v = json!({ "samples": rows, "curve": curve });
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(path, serde_json::to_string(&v)?)?;
+    Ok(())
 }
 
 /// The events with the given base parameters (each event keeps only its key).
@@ -892,7 +1140,7 @@ fn cmd_sweep(a: &SweepArgs) -> Res<()> {
             octave_shift: song.octave_shift,
             strictness: song.strictness.unwrap_or(Strictness::Standard),
             bridge_s: a.bridge_ms.map(|b| b / 1000.0).unwrap_or(ScoreConfig::default().bridge_s),
-            ..ScoreConfig::default()
+            ..a.scorer.apply(ScoreConfig::default())?
         },
         latency: LatencyConfig::default(),
         block: (rate / 100) as usize,

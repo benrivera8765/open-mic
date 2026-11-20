@@ -469,7 +469,7 @@ impl Chain {
         self.live.pitch.push((t, midi, ev.level_dbfs));
         if playing {
             self.stats.scored += 1;
-            self.scorer.push(SingerSample { t, segment, midi, level_db: ev.level_dbfs, unknown, music });
+            self.scorer.push(SingerSample { t, segment, midi, level_db: ev.level_dbfs, unknown, music, clarity: ev.clarity });
         }
     }
 
@@ -535,6 +535,14 @@ impl Chain {
         out.pitch.clear();
         out.hits.clear();
         out.done.clear();
+        // The caller's vectors get their room on the first call, not when the first note
+        // is finished (which may come seconds later: a note can wait for the next one).
+        if out.hits.capacity() < 256 {
+            out.hits.reserve(256);
+        }
+        if out.done.capacity() < 64 {
+            out.done.reserve(64);
+        }
         out.segment = self.live.segment;
         std::mem::swap(&mut out.pitch, &mut self.live.pitch);
         out.hits.extend_from_slice(&self.score_live.hits);

@@ -38,6 +38,21 @@ pub trait AudioEngine: Send + Sync + 'static {
     fn diagnostics(&self) -> Option<jk_engine::engine::Diagnostics> {
         None
     }
+    /// (WO2, D-239) The key that was heard at song time `pos_s` of `segment` (the newest
+    /// segment that played it when `None`). Default: unknown.
+    fn key_at(&self, _pos_s: f64, _segment: Option<u64>) -> Option<i32> {
+        None
+    }
+    /// (WO2) The recent history of the key heard, per playback segment (practice mode
+    /// forwards it to the scorer). Default: none.
+    fn key_timeline(&self) -> Vec<jk_engine::KeySegment> {
+        Vec::new()
+    }
+    /// (WO2) A reader of the output tap (exactly what the device plays, with DAC time
+    /// stamps): practice mode's echo reference. Default: none (no echo stage).
+    fn output_tap(&self) -> Option<jk_engine::TapReader> {
+        None
+    }
 }
 
 impl AudioEngine for jk_engine::Engine {
@@ -82,6 +97,15 @@ impl AudioEngine for jk_engine::Engine {
     }
     fn diagnostics(&self) -> Option<jk_engine::engine::Diagnostics> {
         Some(jk_engine::Engine::diagnostics(self))
+    }
+    fn key_at(&self, pos_s: f64, segment: Option<u64>) -> Option<i32> {
+        jk_engine::Engine::key_at(self, pos_s, segment)
+    }
+    fn key_timeline(&self) -> Vec<jk_engine::KeySegment> {
+        jk_engine::Engine::key_timeline(self)
+    }
+    fn output_tap(&self) -> Option<jk_engine::TapReader> {
+        Some(jk_engine::Engine::output_tap(self))
     }
 }
 

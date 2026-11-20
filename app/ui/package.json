@@ -15,6 +15,7 @@
     "icons": "tauri icon ../src-tauri/icons/source/app-icon.svg -o ../src-tauri/icons && node scripts/prune-icons.mjs",
     "check-css": "node scripts/check-dist-css.mjs",
     "screenshots": "node scripts/screenshots.mjs",
+    "practice-screens": "node scripts/practice-screens.mjs",
     "extract-demo-lyrics": "node scripts/extract-jksong-lyrics.mjs",
     "real-app-check": "node scripts/real-app-check.mjs",
     "real-app-screens": "node scripts/real-app-screens.mjs"

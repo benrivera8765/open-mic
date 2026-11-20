@@ -25,11 +25,19 @@
 //                          a FLAC export reports the gain it applied, like the real core)
 //   ?practice=none         start with no practice data on any song (WO2: by default two
 //                          demo songs have it and the others not)
+//   ?mic=granted|denied|not_determined|restricted|none, ?micprivacy=off, ?music=present|
+//   marginal|unusable, ?singeroctave=-1: practice mode's input side (mock-practice.ts)
+//   ?keymode=prerender     key changes are heard only after a simulated render ahead
+//                          (key_pending.at_s null for 1.5 s), as on a slow computer
+//   ?speed=12              the simulated clock runs 12 times faster (a whole take in seconds)
+//   ?guidefail=1           adding practice data to Frère Jacques fails (its lead vocal cannot be read)
 // Handled by the UI (App.tsx `mockStartup`), not here:
 //   ?song=N&at=SECONDS     load playable song N (0-based) at a position, paused
 //   &play=1                ...and start playing
 //   &screen=NAME           open that screen (library, stage, sync, recorder, studio, settings)
 //   &overlay=help|selfcheck, &fullscreen=1
+//   &practice=1 (practice mode on the loaded song), &practice=watch, &practice=result
+//   (sing to the end at 8x and show the result screen), &picker=1 (the input picker)
 import type { Api, Unsubscribe } from "./client";
 import { coverDataUrl, DEFAULT_SONG_SETTINGS, demoLibrary, type DemoSong, fillerSongs } from "./demo";
 import type {
@@ -80,6 +88,26 @@ import type {
   StudioSubmitRequest,
 } from "./types";
 import { STUDIO_STAGES } from "./types";
+import type {
+  ExcludedSpan,
+  InputChoice,
+  KeyPending,
+  MicList,
+  MicPermission,
+  OctaveMode,
+  PracticeGuide,
+  PracticeHistory,
+  PracticeResult,
+  PracticeStartOptions,
+  PracticeState,
+  PracticeTarget,
+  Strictness,
+  MicInput,
+  InputError,
+  LaneCost,
+} from "./types";
+import { MockPractice, type MockPracticeOptions } from "./mock-practice";
+import { spellingFor } from "../practice/pitch";
 import { DEFAULT_APP_SETTINGS } from "./defaults";
 import { cloneLyrics, editLineText, lyricsText } from "../lib/lyrics";
 import { keyLabel } from "../lib/keys";
@@ -141,6 +169,17 @@ export interface MockOptions {
   noPractice: boolean;
   /** WO2: song ids whose practice data fails to save (the stick is full), for tests. */
   guideFailIds: string[];
+  /** WO2: song ids whose practice data cannot be made at all (the lead vocal cannot be read). */
+  guideHardFailIds: string[];
+  /** WO2 practice input side (mock-practice.ts). */
+  mic: MockPracticeOptions["mic"];
+  micPrivacyOff: boolean;
+  music: MockPracticeOptions["music"];
+  singerOctave: number;
+  /** WO2: how a key change becomes heard: about 0.28 s later, or after a simulated render ahead. */
+  keyMode: "realtime" | "prerender";
+  /** Playback speed of the simulated clock (screenshots of a whole take: ?speed=12). */
+  speed: number;
   /** Clock source (ms); injectable for tests. */
   now: () => number;
   /** Timer functions; injectable for tests. */
@@ -165,6 +204,13 @@ const DEFAULT_OPTIONS: MockOptions = {
   exportPeak: 0.89,
   noPractice: false,
   guideFailIds: [],
+  guideHardFailIds: [],
+  mic: "granted",
+  micPrivacyOff: false,
+  music: "off",
+  singerOctave: 0,
+  keyMode: "realtime",
+  speed: 1,
   now: () => performance.now(),
   setInterval: (f, ms) => setInterval(f, ms),
   clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
@@ -333,6 +379,13 @@ export class MockApi implements Api {
   private guideRunning: string | null = null;
   private guideBatchState: { total: number; done: number; failed: number; ids: Set<string> } | null = null;
   private guideTicker: unknown = null;
+  /** WO2 (D-239): the key HEARD, the next change and the playback segment, like the engine. */
+  private keyHeard = 0;
+  private keyPending: KeyPending | null = null;
+  private keySegment = 1;
+  private pendingTimer: ReturnType<typeof setTimeout> | null = null;
+  /** WO2 practice mode (mock-practice.ts). */
+  private practice: MockPractice;
 
   constructor(options: Partial<MockOptions> = {}) {
     this.o = { ...DEFAULT_OPTIONS, ...options };
@@ -361,6 +414,32 @@ export class MockApi implements Api {
       { path: "Recordings/2026-11-16 21-04-12.wav", name: "2026-11-16 21-04-12.wav", duration_s: 187.4, sample_rate: 48000, channels: 2, bytes: 71_965_000, clipped: false },
       { path: "Recordings/2026-11-15 19-30-55.wav", name: "2026-11-15 19-30-55.wav", duration_s: 64.0, sample_rate: 48000, channels: 2, bytes: 24_576_000, clipped: true },
     ];
+    const mic = this.o.mic === "granted" && this.o.platform === "macos" && !options.mic ? "not_determined" : this.o.mic;
+    this.practice = new MockPractice(
+      {
+        now: () => this.o.now(),
+        position: () => this.position(),
+        playing: () => this.playing,
+        ended: () => this.ended,
+        song: () => this.current?.demo ?? null,
+        semitones: () => this.current?.settings.semitones ?? 0,
+        keyAt: (t) => this.keyAtSong(t),
+        segment: () => this.keySegment,
+        settings: () => this.settings,
+        guideStatus: (id) => {
+          const s = this.find(id);
+          return s ? { ...s.guide } : null;
+        },
+        buildGuide: (id) => void this.guideBuild(id),
+        emit: (event, payload) => this.emit(event as ApiEventName, payload as never),
+        setInterval: (f, ms) => this.o.setInterval(f, ms),
+        clearInterval: (h) => this.o.clearInterval(h),
+        pause: () => void this.playerPause(),
+        seek: (t) => void this.playerSeek(t),
+        play: () => void this.playerPlay(),
+      },
+      { platform: this.o.platform, mic, micPrivacyOff: this.o.micPrivacyOff, music: this.o.music, singerOctave: this.o.singerOctave },
+    );
   }
 
   /** Reads the URL switches documented at the top of this file. */
@@ -385,6 +464,17 @@ export class MockApi implements Api {
     const many = Number(q.get("many"));
     if (many > 0) o.many = Math.min(2000, Math.floor(many));
     if (q.get("practice") === "none") o.noPractice = true;
+    const mic = q.get("mic");
+    if (mic === "granted" || mic === "denied" || mic === "not_determined" || mic === "restricted" || mic === "none") o.mic = mic;
+    if (q.get("micprivacy") === "off") o.micPrivacyOff = true;
+    const music = q.get("music");
+    if (music === "present" || music === "marginal" || music === "unusable") o.music = music;
+    const so = Number(q.get("singeroctave"));
+    if (q.has("singeroctave") && Number.isInteger(so) && Math.abs(so) <= 2) o.singerOctave = so;
+    if (q.get("keymode") === "prerender") o.keyMode = "prerender";
+    if (q.get("guidefail") === "1") o.guideHardFailIds = ["Traditional - Frère Jacques.jksong"];
+    const speed = Number(q.get("speed"));
+    if (speed > 0 && speed <= 32) o.speed = speed;
     const peak = Number(q.get("exportpeak"));
     if (peak > 0 && Number.isFinite(peak)) o.exportPeak = peak;
     return o;
@@ -396,6 +486,9 @@ export class MockApi implements Api {
     this.ticker = this.recTicker = this.jobTicker = this.guideTicker = null;
     if (this.previewTimer) clearTimeout(this.previewTimer);
     this.previewTimer = null;
+    if (this.pendingTimer) clearTimeout(this.pendingTimer);
+    this.pendingTimer = null;
+    this.practice.dispose();
     this.handlers.clear();
   }
 
@@ -471,6 +564,13 @@ export class MockApi implements Api {
           permission: this.permission,
         },
         exclusive_mode: !mac,
+        microphone: {
+          available: this.o.mic !== "none",
+          reason: this.o.mic === "none" ? "No microphone or audio input was found on this computer." : null,
+          permission: this.practice.micPermission(),
+          backend: mac ? "Core Audio" : "WASAPI",
+        },
+        practice: { guide_method: "jk-pitch pyin+notes", guide_version: "0.1.0" },
       },
     });
   }
@@ -497,6 +597,7 @@ export class MockApi implements Api {
 
   private guideEmit(s: MockSongState): void {
     this.emit("guide://status", { song_id: s.demo.summary.song_id, status: { ...s.guide } });
+    this.practice?.onGuideStatus(s.demo.summary.song_id, { ...s.guide });
   }
 
   private guideBatchEmit(): void {
@@ -536,9 +637,12 @@ export class MockApi implements Api {
       return;
     }
     const failed = this.o.guideFailIds.includes(s.demo.summary.song_id);
-    s.guide = failed
-      ? { ...noGuide("Practice data could not be saved: the drive is full. Free 150 MB and press Try again."), state: "failed", error_code: "guide_disk_full", in_memory: true }
-      : readyGuide();
+    const hard = this.o.guideHardFailIds.includes(s.demo.summary.song_id);
+    s.guide = hard
+      ? { ...noGuide("The lead vocal in this song file could not be read, so no practice data could be made. Copy the song again from the original and press Try again."), state: "failed", error_code: "guide_read_failed" }
+      : failed
+        ? { ...noGuide("Practice data could not be saved: the drive is full. Free 150 MB and press Try again."), state: "failed", error_code: "guide_disk_full", in_memory: true }
+        : readyGuide();
     const b = this.guideBatchState;
     if (b && b.ids.has(s.demo.summary.song_id)) {
       b.done += 1;
@@ -771,7 +875,7 @@ export class MockApi implements Api {
   private position(): number {
     if (!this.current) return 0;
     if (!this.playing) return this.anchorPos;
-    return Math.min(this.current.demo.summary.duration_s, this.anchorPos + (this.o.now() - this.anchorT) / 1000);
+    return Math.min(this.current.demo.summary.duration_s, this.anchorPos + ((this.o.now() - this.anchorT) / 1000) * this.o.speed);
   }
 
   private stateName(): PlayerState["state"] {
@@ -799,16 +903,81 @@ export class MockApi implements Api {
       output_peak_db: this.playing ? [-9.5, -10.2] : [-120, -120],
       clipped: false,
       device_starved: 0,
+      key_mode: this.o.keyMode,
+      key_heard: this.keyHeard,
+      key_requested: cur?.settings.semitones ?? 0,
+      key_pending: this.keyPending ? { ...this.keyPending } : null,
+      key_segment: this.keySegment,
+      key_heard_label: cur ? keyLabel(cur.demo.summary.key, this.keyHeard, "->") : null,
+      key_spelling: spellingFor(cur?.demo.summary.key ?? null, this.keyHeard),
+      key_pending_spelling: this.keyPending ? spellingFor(cur?.demo.summary.key ?? null, this.keyPending.semitones) : null,
     };
+  }
+
+  // --- the key heard (D-239), simulated -----------------------------------------
+  // Real time: a change is heard about 0.28 s after the request (the engine's render
+  // lead), from a song time given in key_pending.at_s. Render ahead (?keymode=prerender):
+  // at_s stays null while the key is "rendered" (1.5 s), then it is scheduled. While
+  // paused a change is heard at once, in a new segment (the engine re-renders).
+
+  /** The key heard at song time t (the engine's key_at for the current segment). */
+  private keyAtSong(t: number): number {
+    const p = this.keyPending;
+    return p && p.at_s !== null && t >= p.at_s ? p.semitones : this.keyHeard;
+  }
+
+  /** A pending change whose song time has come is now heard. */
+  private settleKey(): boolean {
+    const p = this.keyPending;
+    if (!p || p.at_s === null || this.position() < p.at_s) return false;
+    this.keyHeard = p.semitones;
+    this.keyPending = null;
+    return true;
+  }
+
+  private requestKey(semitones: number): void {
+    if (this.pendingTimer) clearTimeout(this.pendingTimer);
+    this.pendingTimer = null;
+    if (semitones === (this.keyPending?.semitones ?? this.keyHeard)) return;
+    if (!this.playing) {
+      this.keyHeard = semitones;
+      this.keyPending = null;
+      this.keySegment += 1;
+      return;
+    }
+    if (this.o.keyMode === "prerender") {
+      this.keyPending = { semitones, at_s: null };
+      this.pendingTimer = setTimeout(() => {
+        this.pendingTimer = null;
+        if (this.keyPending?.semitones !== semitones) return;
+        if (!this.playing) {
+          this.keyHeard = semitones;
+          this.keyPending = null;
+          this.keySegment += 1;
+        } else this.keyPending = { semitones, at_s: Math.round((this.position() + 0.25) * 1000) / 1000 };
+        this.emitState();
+      }, 1500);
+    } else {
+      this.keyPending = { semitones, at_s: Math.round((this.position() + 0.28) * 1000) / 1000 };
+    }
   }
 
   private emitClock(): void {
     this.seq += 1;
-    this.emit("playback://clock", { position_s: this.position(), playing: this.playing, seq: this.seq });
+    if (this.settleKey()) this.emit("playback://state", this.fullState());
+    this.emit("playback://clock", {
+      position_s: this.position(),
+      playing: this.playing,
+      seq: this.seq,
+      key_heard: this.keyHeard,
+      key_pending: this.keyPending ? { ...this.keyPending } : null,
+      segment: this.keySegment,
+    });
   }
   private emitState(): void {
     this.emit("playback://state", this.fullState());
     this.emitClock();
+    this.practice?.onPlayer();
   }
 
   private startTicker(): void {
@@ -841,6 +1010,10 @@ export class MockApi implements Api {
     this.ended = false;
     this.anchorPos = 0;
     this.anchorT = this.o.now();
+    if (this.practice.state().active && this.practice.state().song_id !== songId) this.practice.stop(true);
+    this.keyHeard = s.settings.semitones;
+    this.keyPending = null;
+    this.keySegment += 1;
     const lyrics = s.lyricsOverride ?? s.demo.lyrics;
     const detail: SongDetail = {
       summary: this.summaryOf(s),
@@ -850,6 +1023,7 @@ export class MockApi implements Api {
       stems: s.demo.stems,
       sample_rate: s.demo.sample_rate,
       channels: s.demo.channels,
+      guide: { ...s.guide },
     };
     setTimeout(() => this.emitState(), 0);
     return this.reply(detail);
@@ -894,6 +1068,13 @@ export class MockApi implements Api {
     this.anchorPos = Math.max(0, Math.min(this.current.demo.summary.duration_s, positionS));
     this.anchorT = this.o.now();
     this.ended = false;
+    // A seek starts a new segment in the key last asked for (a change still rendering keeps waiting).
+    if (this.keyPending?.at_s !== null && this.keyPending) {
+      this.keyHeard = this.keyPending.semitones;
+      this.keyPending = null;
+    }
+    this.keySegment += 1;
+    this.practice.onSeek();
     this.emitState();
     return this.reply(undefined);
   }
@@ -903,7 +1084,9 @@ export class MockApi implements Api {
       return this.reject<void>(fail("bad_request", "The key can move at most 12 semitones up or down."));
     }
     this.current.settings = deepMerge(this.current.settings, changes);
+    if (changes.semitones !== undefined) this.requestKey(changes.semitones);
     this.emit("playback://state", this.fullState());
+    this.emitClock();
     return this.reply(undefined);
   }
   playerSetMaster(volume: number) {
@@ -1423,9 +1606,79 @@ export class MockApi implements Api {
     return names.map((n) => `C:\\Users\\you\\Music\\${n}`);
   }
 
+  // --- 12. practice mode (WO2; mock-practice.ts) ------------------------------------
+
+  private practiceCall<T>(f: () => T): Promise<T> {
+    try {
+      return this.reply(f());
+    } catch (e) {
+      return this.reject(e as ApiError);
+    }
+  }
+  micPermission(): Promise<MicPermission> {
+    return this.reply(this.practice.micPermission());
+  }
+  micRequestPermission(): Promise<MicPermission> {
+    return this.reply(this.practice.micRequestPermission());
+  }
+  micOpenSettings(): Promise<void> {
+    return this.reply(undefined);
+  }
+  micList(): Promise<MicList> {
+    return this.reply(this.practice.micList());
+  }
+  micChoose(choice: InputChoice): Promise<InputChoice> {
+    const c = this.practice.micChoose(choice);
+    const pr = this.settings.practice;
+    if (pr) pr.inputs = { ...pr.inputs, "mock-computer": { ...c } };
+    return this.reply(c);
+  }
+  micMeter(deviceId: string | null): Promise<{ device: MicInput | null; error: InputError | null }> {
+    return this.reply(this.practice.micMeter(deviceId));
+  }
+  practiceStart(options: PracticeStartOptions = {}): Promise<PracticeState> {
+    return this.practiceCall(() => this.practice.start(options));
+  }
+  practiceStop(keepResult = true): Promise<{ result: PracticeResult | null }> {
+    return this.practiceCall(() => this.practice.stop(keepResult));
+  }
+  practiceState(): Promise<PracticeState> {
+    return this.reply(this.practice.state());
+  }
+  practiceGuide(songId?: string): Promise<PracticeGuide> {
+    return this.practiceCall(() => this.practice.guide(songId));
+  }
+  practiceSuspendInput(suspended: boolean): Promise<void> {
+    return this.practiceCall(() => this.practice.suspend(suspended));
+  }
+  practiceFinish(): Promise<{ result: PracticeResult | null }> {
+    return this.practiceCall(() => this.practice.finish());
+  }
+  practiceAgain(): Promise<PracticeState> {
+    return this.practiceCall(() => this.practice.again());
+  }
+  practiceSongSet(songId: string, changes: { octave?: { mode: OctaveMode; shift?: number }; strictness?: Strictness | null }): Promise<PracticeState> {
+    return this.practiceCall(() => this.practice.songSet(songId, changes));
+  }
+  practiceExclude(songId: string, span: ExcludedSpan, excluded: boolean): Promise<{ excluded: ExcludedSpan[] }> {
+    return this.practiceCall(() => this.practice.exclude(songId, span, excluded));
+  }
+  practiceHistory(songId: string): Promise<PracticeHistory> {
+    return this.reply(this.practice.history(songId));
+  }
+  practiceLatencySet(manualMs: number): Promise<{ manual_ms: number }> {
+    return this.reply(this.practice.latencySet(manualMs));
+  }
+  practiceTargetAt(positionS: number): Promise<PracticeTarget> {
+    return this.reply(this.practice.targetAt(positionS));
+  }
+  playerKeyAt(positionS: number): Promise<{ semitones: number | null }> {
+    return this.reply({ semitones: this.current ? this.keyAtSong(positionS) : null });
+  }
+
   // --- 10. self-check -------------------------------------------------------
 
-  selfcheckRun(userAgent: string, silent = false): Promise<SelfCheckResult> {
+  selfcheckRun(userAgent: string, silent = false, lane: LaneCost | null = null): Promise<SelfCheckResult> {
     const mac = this.o.platform === "macos";
     const items = [
       { name: "Test tone", ok: true, detail: silent ? "Played 1 s of digital silence on Speakers (48000 Hz, 2 ch, f32); 0 underruns." : "Played 1 s of 440 Hz at -60 dBFS on Speakers (48000 Hz, 2 ch, f32); 0 underruns." },
@@ -1440,6 +1693,14 @@ export class MockApi implements Api {
             : 'macOS has not allowed "Screen Recording" yet. Open System Settings > Privacy & Security > Screen Recording, turn the app on, then run the self-check again.',
       },
       { name: "System", ok: true, detail: `${mac ? "macOS 13.6.9, 8 GB memory" : "Windows 11 26200, 32 GB memory"}; web engine: ${userAgent}` },
+      // WO2 (APP_API 10.1): the lane's drawing cost as this web view measured it.
+      {
+        name: "Practice lane",
+        ok: !lane || lane.avg_ms <= 4,
+        detail: lane
+          ? `${lane.frames} frames at ${lane.width}x${lane.height} (x${lane.dpr}): ${lane.avg_ms.toFixed(2)} ms average, ${lane.p95_ms.toFixed(2)} ms 95th percentile; simple lane ${lane.simple_avg_ms.toFixed(2)} ms (budget 4 ms with the lyrics).`
+          : "not measured",
+      },
     ];
     return new Promise((resolve) =>
       setTimeout(

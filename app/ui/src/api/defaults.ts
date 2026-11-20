@@ -2,7 +2,21 @@
 // Default app settings as the UI understands them (the core owns the saved copy;
 // app/src-tauri/src/settings.rs has the same values). Used by "reset" buttons and
 // by the browser mock. Master volume 1.0: unity, no hidden attenuation (WORK_ORDER 5).
-import type { AppSettings } from "./types";
+import type { AppSettings, PracticeAppSettings } from "./types";
+
+/** Practice mode's per-computer settings (docs/APP_API.md 12.7; owner decisions 1, 2, 4, 5). */
+export const DEFAULT_PRACTICE_SETTINGS: PracticeAppSettings = {
+  piano_side: "left",
+  simple_lane: false,
+  words_under_notes: true,
+  lyrics_below: true,
+  strictness: "standard",
+  octave_mode: "auto",
+  auto_latency: true,
+  inputs: {},
+  latency_offsets_ms: {},
+  measured_latency_ms: {},
+};
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   ui: {
@@ -22,4 +36,5 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
     fullscreen_stage: false,
   },
   audio: { device_id: null, exclusive: false, master_volume: 1.0, device_offsets_ms: {}, key_mode: "auto", key_cache_mb: 1024, key_benchmarks: {} },
+  practice: DEFAULT_PRACTICE_SETTINGS,
 };

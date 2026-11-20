@@ -28,6 +28,23 @@ import type {
   ExportFormat,
   GuideQueue,
   GuideStatus,
+  ExcludedSpan,
+  InputChoice,
+  InputError,
+  LaneCost,
+  MicInput,
+  MicList,
+  MicPermission,
+  OctaveMode,
+  PracticeGuide,
+  PracticeHistory,
+  PracticeResult,
+  PracticeStartOptions,
+  PracticeState,
+  PracticeTarget,
+  RigCheckOptions,
+  RigCheckReport,
+  Strictness,
   InspectResult,
   LibraryList,
   MediaPlayers,
@@ -122,7 +139,8 @@ export interface Api {
   studioModelsDownload(preset: StudioPreset): Promise<void>;
   pickFiles(): Promise<string[]>;
   // 10. Self-check (`silent`: digital silence instead of the -60 dBFS tone; a core addition)
-  selfcheckRun(userAgent: string, silent?: boolean): Promise<SelfCheckResult>;
+  /** `lane` (added WO2, APP_API 10.1): the practice lane's drawing cost measured by this web view. */
+  selfcheckRun(userAgent: string, silent?: boolean, lane?: LaneCost | null): Promise<SelfCheckResult>;
 
   // Additions the app core implements beyond APP_API v1 (optional here).
   /** macOS translocation: native folder picker for the stick's main folder, then restart. */
@@ -157,6 +175,37 @@ export interface Api {
   /** One song's build, or every one (no id). */
   guideCancel?(songId?: string): Promise<void>;
   guideQueue?(): Promise<GuideQueue>;
+  // 3 (added WO2): the key heard at a song time (screen checks and tests).
+  playerKeyAt?(positionS: number, segment?: number): Promise<{ semitones: number | null }>;
+  // 12.4 Microphone (added WO2). Optional so older fakes still type-check; the UI degrades without them.
+  micPermission?(): Promise<MicPermission>;
+  /** macOS asks the system (only after the app's own explanation); the answer comes as `mic://permission`. */
+  micRequestPermission?(): Promise<MicPermission>;
+  micOpenSettings?(): Promise<void>;
+  micList?(): Promise<MicList>;
+  micChoose?(choice: InputChoice): Promise<InputChoice>;
+  /** Opens a device for the input picker's per-channel meters only; null closes it. */
+  micMeter?(deviceId: string | null): Promise<{ device: MicInput | null; error: InputError | null }>;
+  // 12.5 / 12.6 Practice session (added WO2).
+  practiceStart?(options?: PracticeStartOptions): Promise<PracticeState>;
+  practiceStop?(keepResult?: boolean): Promise<{ result: PracticeResult | null }>;
+  practiceState?(): Promise<PracticeState>;
+  practiceGuide?(songId?: string): Promise<PracticeGuide>;
+  practiceSuspendInput?(suspended: boolean): Promise<void>;
+  practiceFinish?(): Promise<{ result: PracticeResult | null }>;
+  practiceAgain?(): Promise<PracticeState>;
+  practiceSongSet?(songId: string, changes: { octave?: { mode: OctaveMode; shift?: number }; strictness?: Strictness | null }): Promise<PracticeState>;
+  practiceExclude?(songId: string, span: ExcludedSpan, excluded: boolean): Promise<{ excluded: ExcludedSpan[] }>;
+  practiceHistory?(songId: string): Promise<PracticeHistory>;
+  practiceLatencySet?(manualMs: number, deviceId?: string | null): Promise<{ manual_ms: number }>;
+  /** Internal (screen checks): the scorer's target at a song time. */
+  practiceTargetAt?(positionS: number, segment?: number): Promise<PracticeTarget>;
+  /** Self-check: the lane's drawing cost measured by this web view (APP_API 10.1). */
+  selfcheckLane?(lane: LaneCost): Promise<void>;
+  /** 10.2 The practice rig check: MAKES A SOUND; only after the owner confirmed (audible_confirmed). */
+  practiceRigCheck?(options: RigCheckOptions): Promise<RigCheckReport>;
+  /** Internal (test modes only): generated sound instead of the microphone for the next practice_start. */
+  practiceTestInput?(source: Record<string, unknown> | null): Promise<{ ok: boolean }>;
 
   /** Subscribe to a core event. */
   on<E extends ApiEventName>(event: E, handler: (payload: ApiEvents[E]) => void): Unsubscribe;
@@ -269,7 +318,8 @@ export class TauriApi implements Api {
   pickFiles = () => call<string[]>("pick_files");
   pickCoverImage = () => call<string | null>("pick_cover_image");
   studioCoverPreview = (path: string, max_px: number) => call<CoverResult>("studio_cover_preview", { path, max_px });
-  selfcheckRun = (user_agent: string, silent = false) => call<SelfCheckResult>("selfcheck_run", { user_agent, silent });
+  selfcheckRun = (user_agent: string, silent = false, lane: LaneCost | null = null) =>
+    call<SelfCheckResult>("selfcheck_run", lane ? { user_agent, silent, lane } : { user_agent, silent });
   rootChoose = () => call<{ ok: boolean; root: string | null; message: string }>("root_choose");
   guideStatus = (song_id: string) => call<GuideStatus>("guide_status", { song_id });
   guideBuild = (song_id: string, force = false) => call<GuideStatus>("guide_build", { song_id, force });
@@ -277,6 +327,34 @@ export class TauriApi implements Api {
     call<{ queued: number; skipped: number }>("guide_build_all", { options: { include_outdated } });
   guideCancel = (song_id?: string) => call<void>("guide_cancel", song_id === undefined ? {} : { song_id });
   guideQueue = () => call<GuideQueue>("guide_queue");
+  // WO2 (APP_API 3, 12): argument names as in the contract.
+  playerKeyAt = (position_s: number, segment?: number) =>
+    call<{ semitones: number | null }>("player_key_at", segment === undefined ? { position_s } : { position_s, segment });
+  micPermission = () => call<MicPermission>("mic_permission");
+  micRequestPermission = () => call<MicPermission>("mic_request_permission");
+  micOpenSettings = () => call<void>("mic_open_settings");
+  micList = () => call<MicList>("mic_list");
+  micChoose = (choice: InputChoice) => call<InputChoice>("mic_choose", { choice });
+  micMeter = (device_id: string | null) => call<{ device: MicInput | null; error: InputError | null }>("mic_meter", { device_id });
+  practiceStart = (options: PracticeStartOptions = {}) => call<PracticeState>("practice_start", { options });
+  practiceStop = (keep_result = true) => call<{ result: PracticeResult | null }>("practice_stop", { options: { keep_result } });
+  practiceState = () => call<PracticeState>("practice_state");
+  practiceGuide = (song_id?: string) => call<PracticeGuide>("practice_guide", song_id === undefined ? {} : { song_id });
+  practiceSuspendInput = (suspended: boolean) => call<void>("practice_suspend_input", { suspended });
+  practiceFinish = () => call<{ result: PracticeResult | null }>("practice_finish");
+  practiceAgain = () => call<PracticeState>("practice_again");
+  practiceSongSet = (song_id: string, changes: { octave?: { mode: OctaveMode; shift?: number }; strictness?: Strictness | null }) =>
+    call<PracticeState>("practice_song_set", { song_id, changes });
+  practiceExclude = (song_id: string, span: ExcludedSpan, excluded: boolean) =>
+    call<{ excluded: ExcludedSpan[] }>("practice_exclude", { song_id, span, excluded });
+  practiceHistory = (song_id: string) => call<PracticeHistory>("practice_history", { song_id });
+  practiceLatencySet = (manual_ms: number, device_id?: string | null) =>
+    call<{ manual_ms: number }>("practice_latency_set", device_id === undefined ? { manual_ms } : { manual_ms, device_id });
+  practiceTargetAt = (position_s: number, segment?: number) =>
+    call<PracticeTarget>("practice_target_at", segment === undefined ? { position_s } : { position_s, segment });
+  selfcheckLane = (lane: LaneCost) => call<void>("selfcheck_lane", { lane });
+  practiceRigCheck = (options: RigCheckOptions) => call<RigCheckReport>("practice_rig_check", { options });
+  practiceTestInput = (source: Record<string, unknown> | null) => call<{ ok: boolean }>("practice_test_input", { source });
   selfcheckUserAgent = (user_agent: string) => call<void>("selfcheck_user_agent", { user_agent });
 
   on<E extends ApiEventName>(event: E, handler: (payload: ApiEvents[E]) => void): Unsubscribe {

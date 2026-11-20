@@ -19,6 +19,7 @@ use crate::guide::{BatchQueued, GuideQueue, GuideService, GuideStatus};
 use crate::library::{Library, LibraryList, Watcher};
 use crate::playback::{Player, SongDetail};
 use crate::portable::{DataLayout, DataMode, Paths};
+use crate::practice::{MicCapability, PracticeCapability, PracticeService};
 use crate::recorder::RecorderCtl;
 use crate::settings::{AppSettings, SettingsStore};
 use crate::studio::{Studio, StudioConfig};
@@ -50,7 +51,7 @@ pub struct Core {
     pub version: String,
     pub identifier: String,
     pub sink: Arc<dyn EventSink>,
-    pub settings: SettingsStore,
+    pub settings: Arc<SettingsStore>,
     pub library: Arc<Library>,
     /// Deleted songs, `<root>/Deleted` (src/deleted.rs).
     pub deleted: DeletedSongs,
@@ -60,6 +61,8 @@ pub struct Core {
     pub studio: Arc<Studio>,
     /// (WO2) The melody guide queue (src/guide.rs).
     pub guide: Arc<GuideService>,
+    /// (WO2) Practice mode: microphone, analysis, results (src/practice/).
+    pub practice: Arc<PracticeService>,
     pub renderer: Arc<dyn Renderer>,
     pub demo_song: Option<PathBuf>,
     pub webview_env_ignored: Option<String>,
@@ -107,6 +110,10 @@ pub struct Capabilities {
     pub studio: crate::studio::StudioCapability,
     pub recorder: RecorderCapability,
     pub exclusive_mode: bool,
+    /// (added WO2) Practice mode's input (APP_API 12.4).
+    pub microphone: MicCapability,
+    /// (added WO2) This app's guide builder.
+    pub practice: PracticeCapability,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -156,7 +163,7 @@ impl Core {
                 crate::applog::warn(&format!("cannot create {}: {e}", d.display()));
             }
         }
-        let settings = SettingsStore::load(&paths.settings);
+        let settings = Arc::new(SettingsStore::load(&paths.settings));
         let library = Arc::new(Library::new(paths.library.clone()));
         let deleted = DeletedSongs::new(paths.deleted.clone(), paths.library.clone());
         let player = Arc::new(Player::new(
@@ -213,6 +220,18 @@ impl Core {
                 }
             }));
         }
+        // (WO2) Practice mode, on the same player, guide queue and settings.
+        let practice = PracticeService::new(
+            Arc::clone(&library),
+            Arc::clone(&player),
+            Arc::clone(&guide),
+            Arc::clone(&settings),
+            Arc::clone(&o.sink),
+            &paths.settings,
+            &paths.tmp,
+            &o.name,
+            &o.version,
+        );
         Arc::new(Core {
             layout: o.layout,
             paths,
@@ -229,6 +248,7 @@ impl Core {
             recorder,
             studio,
             guide,
+            practice,
             renderer: o.renderer,
             demo_song: o.demo_song,
             webview_env_ignored: o.webview_env_ignored,
@@ -280,6 +300,8 @@ impl Core {
     /// Writes everything pending and stops background work (on exit).
     pub fn shutdown(&self) {
         crate::applog::info("shutting down");
+        // (WO2) A running take is graded and saved, the microphone closes, before the song.
+        self.practice.shutdown();
         self.player.shutdown();
         // (WO2) After the song is closed: guides that waited for it to stop are written.
         self.guide.shutdown();
@@ -324,6 +346,8 @@ impl Core {
                     backend: backend.name(),
                 },
                 exclusive_mode: cfg!(windows),
+                microphone: self.practice.capability(),
+                practice: PracticeService::practice_capability(),
             },
             identifier: self.identifier.clone(),
             mode: l.mode,
@@ -425,6 +449,10 @@ impl Core {
             }
         }
         let paths: Vec<PathBuf> = targets.iter().map(|(_, p)| p.clone()).collect();
+        // (WO2) Practice on a song that moves away ends first (its take is graded and saved
+        // while the file is still there).
+        let ids: Vec<String> = targets.iter().map(|(id, _)| id.clone()).collect();
+        self.practice.songs_leaving(&ids);
         // (WO2) A guide being made for a song that moves away is cancelled first.
         for (id, _) in &targets {
             self.guide.forget(id);
@@ -595,8 +623,12 @@ impl Core {
 
     /// `song_load`: the player's load, with the guide's live state in the summary.
     pub fn song_load(&self, song_id: &str) -> ApiResult<SongDetail> {
+        // (WO2) Practice belongs to the song it was started on: loading another song ends it
+        // (a running take ends as by practice_stop, APP_API 12.2).
+        self.practice.song_changing(song_id);
         let mut d = self.player.load(song_id)?;
         d.summary.guide = self.guide.overlay(song_id, d.summary.guide.clone());
+        d.guide = d.summary.guide.clone();
         Ok(d)
     }
 

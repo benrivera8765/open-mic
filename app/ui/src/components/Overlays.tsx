@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import type { SelfCheckResult } from "../api/types";
 import { errorMessage } from "../api/client";
 import { getApiSync, setOverlay } from "../state/app";
+import { measureLaneCost } from "../practice/lanecost";
 
 function Dialog({ title, onClose, children, class: cls }: { title: string; onClose: () => void; children: ComponentChildren; class?: string }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -41,6 +42,7 @@ export const SHORTCUTS: [keys: string[], what: string][] = [
   [["[", "]"], "Key down / up one semitone"],
   [["−", "+"], "Key down / up one semitone"],
   [["F"], "Full screen stage"],
+  [["P"], "Practice mode on / off (sing and see your pitch)"],
   [["Esc"], "Leave full screen, close a window"],
   [["Ctrl / ⌘", "F"], "Search the library"],
   [["Delete"], "Library: delete the focused or current song, or the ticked ones (asks first; ⌘ + Backspace on a Mac)"],
@@ -87,7 +89,9 @@ export function SelfCheckOverlay() {
     setError(null);
     setResult(null);
     try {
-      setResult(await getApiSync().selfcheckRun(navigator.userAgent, quiet));
+      // WO2 4.8: the practice lane's drawing cost in this web view goes into the report.
+      const lane = await measureLaneCost().catch(() => null);
+      setResult(await getApiSync().selfcheckRun(navigator.userAgent, quiet, lane));
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -97,7 +101,7 @@ export function SelfCheckOverlay() {
   useEffect(() => void run(), []);
   return (
     <Dialog title="Self-check" onClose={() => setOverlay(null)} class="selfcheck">
-      <p class="hint">Plays a very quiet test tone, renders and key-shifts the bundled test song, checks the recorder, and writes a plain-text report you can bring back.</p>
+      <p class="hint">Plays a very quiet test tone, renders and key-shifts the bundled test song, checks the recorder, measures how fast this computer draws the practice lane, and writes a plain-text report you can bring back.</p>
       {running && <p role="status">Running the checks… (this takes a few seconds)</p>}
       {error && <p class="note note--error">{error}</p>}
       {result && (

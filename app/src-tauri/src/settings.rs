@@ -152,10 +152,118 @@ pub struct AudioSettings {
     pub extra: Map<String, Value>,
 }
 
+/// Where the practice lane's piano keys sit (WO2 owner decision 1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PianoSide {
+    #[default]
+    Left,
+    Right,
+}
+
+/// How strict the grade is (docs/APP_API.md 12.6; owner decision 4: standard).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StrictnessSetting {
+    Relaxed,
+    #[default]
+    Standard,
+    Strict,
+}
+
+/// The lane's octave for songs never practised (owner decision 5: auto).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OctaveModeSetting {
+    #[default]
+    Auto,
+    Fixed,
+    Strict,
+}
+
+/// One computer's input choice (docs/APP_API.md 12.4 `InputChoice`; channel 0-based,
+/// `None` = the suggested voice channel).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct InputChoice {
+    #[serde(default)]
+    pub device_id: Option<String>,
+    #[serde(default)]
+    pub device_name: Option<String>,
+    #[serde(default)]
+    pub channel: Option<u32>,
+}
+
+/// A measured delay of the returned sound (APP_API 12.7 `measured_latency_ms`): the
+/// residual beyond the declared device latencies, how it was measured and when.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MeasuredLatency {
+    pub ms: f64,
+    /// "returned_music" | "rig_check".
+    pub how: String,
+    #[serde(default)]
+    pub utc: String,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// Practice mode's per-computer settings (docs/APP_API.md 12.7 `PracticeAppSettings`).
+/// Per-song choices (octave, strictness override, exclusions, results) live in the
+/// song's slot, never here. The input and the latency belong to the computer and are
+/// keyed by a hash of it (src/keymode.rs `machine_id`), because settings.json travels on
+/// the stick between the PC and the Mac.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PracticeSettings {
+    pub piano_side: PianoSide,
+    /// No tail, no glow (reduce-motion also gives a plain marker).
+    pub simple_lane: bool,
+    pub words_under_notes: bool,
+    /// The usual lyrics display under the lane.
+    pub lyrics_below: bool,
+    /// For songs without their own (slot strictness null).
+    pub strictness: StrictnessSetting,
+    /// For songs never practised.
+    pub octave_mode: OctaveModeSetting,
+    /// Use a measured delay (returned music, rig check).
+    pub auto_latency: bool,
+    /// Per computer: key = computer hash.
+    pub inputs: BTreeMap<String, InputChoice>,
+    /// Manual offset per "<computer>|<input device id>", -500..500 ms.
+    pub latency_offsets_ms: BTreeMap<String, f64>,
+    /// Last measurement per "<computer>|<input id>|<output id>".
+    pub measured_latency_ms: BTreeMap<String, MeasuredLatency>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl Default for PracticeSettings {
+    /// APP_API 12.7 defaults.
+    fn default() -> Self {
+        PracticeSettings {
+            piano_side: PianoSide::Left,
+            simple_lane: false,
+            words_under_notes: true,
+            lyrics_below: true,
+            strictness: StrictnessSetting::Standard,
+            octave_mode: OctaveModeSetting::Auto,
+            auto_latency: true,
+            inputs: BTreeMap::new(),
+            latency_offsets_ms: BTreeMap::new(),
+            measured_latency_ms: BTreeMap::new(),
+            extra: Map::new(),
+        }
+    }
+}
+
+/// Largest manual practice latency offset (APP_API 12.7: -500..500 ms).
+pub const MAX_PRACTICE_OFFSET_MS: f64 = 500.0;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
     pub ui: UiSettings,
     pub audio: AudioSettings,
+    /// (added WO2) Practice mode (APP_API 12.7). A file without it reads the defaults.
+    #[serde(default)]
+    pub practice: PracticeSettings,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -199,6 +307,7 @@ impl Default for AppSettings {
                 key_benchmarks: BTreeMap::new(),
                 extra: Map::new(),
             },
+            practice: PracticeSettings::default(),
             extra: Map::new(),
         }
     }
@@ -231,6 +340,32 @@ impl AppSettings {
             let first = a.key_benchmarks.keys().next().cloned();
             if let Some(k) = first {
                 a.key_benchmarks.remove(&k);
+            }
+        }
+        // (WO2) Practice: offsets clamped, maps kept small (a stick visits a few computers).
+        let p = &mut self.practice;
+        p.latency_offsets_ms.retain(|k, v| !k.is_empty() && k.len() <= 512 && v.is_finite());
+        for v in p.latency_offsets_ms.values_mut() {
+            *v = v.clamp(-MAX_PRACTICE_OFFSET_MS, MAX_PRACTICE_OFFSET_MS);
+        }
+        p.measured_latency_ms.retain(|k, m| !k.is_empty() && k.len() <= 1024 && m.ms.is_finite() && m.ms.abs() <= 2000.0);
+        p.inputs.retain(|k, c| !k.is_empty() && k.len() <= 64 && c.channel.is_none_or(|ch| ch < 256));
+        while p.inputs.len() > 32 {
+            let first = p.inputs.keys().next().cloned();
+            if let Some(k) = first {
+                p.inputs.remove(&k);
+            }
+        }
+        while p.latency_offsets_ms.len() > 64 {
+            let first = p.latency_offsets_ms.keys().next().cloned();
+            if let Some(k) = first {
+                p.latency_offsets_ms.remove(&k);
+            }
+        }
+        while p.measured_latency_ms.len() > 64 {
+            let first = p.measured_latency_ms.keys().next().cloned();
+            if let Some(k) = first {
+                p.measured_latency_ms.remove(&k);
             }
         }
     }
@@ -318,6 +453,18 @@ fn typed_ok(path: &str, v: &Value) -> bool {
         "audio.key_mode" => serde_json::from_value::<KeyModeSetting>(v.clone()).is_ok(),
         _ if path.starts_with("audio.device_offsets_ms.") => v.is_number(),
         _ if path.starts_with("audio.key_benchmarks.") => v.is_number(),
+        // (WO2) Practice settings: enum names and map entries one by one, so one bad
+        // value falls back alone instead of making the whole file unreadable.
+        "practice.piano_side" => serde_json::from_value::<PianoSide>(v.clone()).is_ok(),
+        "practice.strictness" => serde_json::from_value::<StrictnessSetting>(v.clone()).is_ok(),
+        "practice.octave_mode" => serde_json::from_value::<OctaveModeSetting>(v.clone()).is_ok(),
+        _ if path.starts_with("practice.latency_offsets_ms.") => v.is_number(),
+        // Map entries (the defaults' maps are empty, so each entry is checked whole; keys
+        // may contain dots: Windows endpoint ids do).
+        _ if path.starts_with("practice.inputs.") => serde_json::from_value::<InputChoice>(v.clone()).is_ok(),
+        _ if path.starts_with("practice.measured_latency_ms.") => {
+            serde_json::from_value::<MeasuredLatency>(v.clone()).is_ok()
+        }
         _ => true,
     }
 }
@@ -789,6 +936,55 @@ mod tests {
         assert_eq!(s.audio.master_volume, 0.4);
         assert_eq!(s.audio.device_offsets_ms.get("bt"), Some(&180.0));
         assert!(!s.audio.device_offsets_ms.contains_key("bad"));
+    }
+
+    #[test]
+    fn practice_settings_default_per_contract_and_bad_values_reset_alone() {
+        // APP_API 12.7 defaults.
+        let v = serde_json::to_value(AppSettings::default()).unwrap();
+        let p = &v["practice"];
+        assert_eq!(p["piano_side"], json!("left"));
+        assert_eq!(p["simple_lane"], json!(false));
+        assert_eq!(p["words_under_notes"], json!(true));
+        assert_eq!(p["lyrics_below"], json!(true));
+        assert_eq!(p["strictness"], json!("standard"));
+        assert_eq!(p["octave_mode"], json!("auto"));
+        assert_eq!(p["auto_latency"], json!(true));
+        for k in ["inputs", "latency_offsets_ms", "measured_latency_ms"] {
+            assert_eq!(p[k], json!({}), "{k}");
+        }
+        // A file from before practice mode (the owner's): defaults, no warning.
+        let (s, warnings) = AppSettings::from_json_lenient(r#"{"ui": {"bubbles": false}}"#);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(s.practice, PracticeSettings::default());
+        // Unknown names, bad map entries and wild offsets fall back one by one; the rest stays.
+        let text = r#"{"practice": {"piano_side": "top", "strictness": "relaxed", "octave_mode": 3,
+            "inputs": {"pc-1": {"device_id": "{0.0.1}.{abc}", "device_name": "Mic (AME2)", "channel": 1}, "pc-2": "bad"},
+            "latency_offsets_ms": {"pc-1|{0.0.1}.{abc}": 900, "pc-1|x": "late"},
+            "measured_latency_ms": {"pc-1|a|b": {"ms": 23.5, "how": "returned_music", "utc": "2026-11-20T00:00:00Z"}, "pc-1|c|d": {"ms": "x"}},
+            "future": {"knob": 1}}}"#;
+        let (s, warnings) = AppSettings::from_json_lenient(text);
+        assert!(warnings.iter().all(|w| !w.contains("using defaults")), "{warnings:?}");
+        let p = &s.practice;
+        assert_eq!(p.piano_side, PianoSide::Left);
+        assert_eq!(p.strictness, StrictnessSetting::Relaxed);
+        assert_eq!(p.octave_mode, OctaveModeSetting::Auto);
+        assert_eq!(p.inputs.len(), 1);
+        assert_eq!(p.inputs["pc-1"].channel, Some(1));
+        assert_eq!(p.latency_offsets_ms.len(), 1);
+        assert_eq!(p.latency_offsets_ms["pc-1|{0.0.1}.{abc}"], MAX_PRACTICE_OFFSET_MS, "clamped to 500 ms");
+        assert_eq!(p.measured_latency_ms.len(), 1);
+        assert_eq!(p.measured_latency_ms["pc-1|a|b"].ms, 23.5);
+        assert_eq!(p.extra["future"], json!({"knob": 1}), "unknown keys kept");
+        // settings_set refuses an unknown name without changing anything.
+        let dir = scratch("practice-settings");
+        let store = SettingsStore::load_with_delay(&dir, Duration::from_millis(50));
+        assert!(store.set(&json!({"practice": {"piano_side": "right", "simple_lane": true}})).is_ok());
+        assert!(store.set(&json!({"practice": {"strictness": "brutal"}})).is_err());
+        let g = store.get();
+        assert_eq!((g.practice.piano_side, g.practice.simple_lane, g.practice.strictness), (PianoSide::Right, true, StrictnessSetting::Standard));
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

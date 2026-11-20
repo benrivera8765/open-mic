@@ -135,6 +135,102 @@ lead-in block); on a two-row line it moves to the second row when the gold does;
 change it moves up with the next line; it is gone while the countdown is shown. Settings >
 Lyrics > "Show the progress bar" turns it off; "Marker" sets its colour.
 
+## Practice mode (Work Order 2, 19 Nov 2026)
+
+Practice is a mode of the singing screen, not a second screen: the **Practice** plate in
+the stage's tool row (or the `P` key) turns it on and lights the plate gold; transport, key
+dial and mixer stay where they are and keep working. With it off the singing screen is
+exactly as before (the plate is the only addition). Built from the owner's two reference
+pictures (`reference-images/05`, `06`): the idea and layout of a singing game's note lane
+and the keyboard and key rows of a pitch monitor, in the jukebox look, with no artwork,
+lettering, colours or names taken from either. Code: `app/ui/src/practice/` (layout and
+frame `lane.ts`, drawing `lanerenderer.ts`, the whole-song check `laneverify.ts`).
+
+**Layout.** The lyrics area is split: the lane on top (about two thirds: 1220x318 at
+1440x900, 1085x282 at 1280x800, 3261x776 at 4K with the frame on) and the usual lyrics
+display below it, in whichever display Settings chose (static lines with the gold wipe by
+default, or the ticker). Settings > Practice switches off the words under the notes and
+the lyrics below separately; with the lyrics off the lane takes the whole area.
+
+**The lane** (a dark glass panel, Canvas 2D). Time runs right to left: notes arrive from
+the right and pass a fixed **chrome needle** 30 % of the way in (the WO2 range is a quarter
+to a third), with 3 s of notes ahead of it (WO2: at least 2). A faint row runs across the
+lane for every key, darker for the black keys, a hairline at B|C and E|F, so the eye
+follows a bar to its key. Bars are **light tubes** in the palette's pink (`#ff3d8b`): a
+glass capsule 72 % of a row tall, dark at the edges, a white-hot filament that follows the
+guide's own pitch curve (vibrato and slides show inside the tube), a specular line on top
+and a soft glow. Slides between notes are a thinner tube; "speak" parts (owner decision
+10) are hollow violet hatched capsules and a dashed violet line over their words; notes
+the guide is unsure of are drawn at a third of the brightness; ungraded notes at about
+half. Long rests: "SINGING IN 0:08" in the display face, centred in the lane, as the lyrics
+show it, until the next notes come into view.
+
+**The piano keys** run down the lane's left edge (owner decision 1; Settings moves them to
+the right): cream glass white keys with real keyboard shapes, black glass black keys from
+the outer edge at 60 % width with a highlight, a chrome edge towards the lane, every key's
+name and octave written on it ("A3", "C♯4", "D♭4": a black key's name inside it when the
+rows are tall enough, the C keys in deep red as octave marks). The key of the note to sing
+now lights **gold** (the "sung" colour) and its name is always written; the key the
+singer is on lights **mint** (the "marker" colour); on the same key both show, mint on the
+lane side. Names follow the key heard and the octave shift and are spelled as the app's
+key name is (a C4 at -3 is an A3; sharps or flats with the key heard).
+
+**The marker** (never a thin line): a bold mint arrow head on the needle at the sung
+pitch, 1.8 bar heights tall (at least 22 px at 1440x900), dark outline, white-hot core and
+a glow that breathes slowly while the singer is on the note; behind it a short thick tail
+of the last second of pitch (a soft wide stroke under a bright one, fading to the left,
+broken where the voice stopped). It disappears when nobody sings (and in watch only); a
+pitch above or below the lane pins it to that edge as a glowing mint triangle pointing out.
+
+**Hits and misses.** While the singer is on the note, the bar lights **gold** from the
+needle onward (a gold tube inside the pink one, with its own glow) and the lit part stays
+lit as it moves left, so the sung parts can be read afterwards. Off the note by more than
+half a semitone (octaves forgiven unless strict), a black-glass pill with a mint rim next
+to the marker says **HIGHER** or **LOWER** with a drawn arrow: never colour alone.
+
+**Words** ride under their notes in a strip below the bars, each starting where its note
+starts, in the lyrics face; upcoming words white, sung words gold (left of the needle); a
+second row takes a word that would touch the previous one.
+
+**Range.** The rows cover the melody's range in the current key and octave plus a
+semitone and a half above and below, never fewer than 13 rows; when that does not fit at
+a readable row (12 px at 1440x900) the view follows the melody up and down smoothly (at
+most 7 semitones a second, starting early before a jump). A key change heard (not the dial)
+slides the bars to their new height in 0.18 s and the view re-fits in 0.45 s; under
+reduce-motion both are instant. The octave control in the tool row (Auto, as written, one
+or two octaves down or up, Strict) moves the bars and names the same way and never the
+sound. Bars sung before a key change keep the key they were sung in.
+
+**Panels** over the practice area are black-glass boxes with a chrome rim and plates,
+like the delete question: the microphone explanation before the system asks (Continue /
+Watch only / Not now); watch only with the reason and the exact steps (Windows' privacy
+switch named as such; "Open the privacy settings"); the input picker (every input with its
+kind tag, Recommended / System default / Also the output tags, the Bluetooth warning in
+amber, one level meter per channel with a marked good band and a peak tick, "Voice?" on
+the suggested channel, plain advice when too quiet or clipping, watch only); "The mixer is
+sending the music back" in amber with what it does to the marker and the grade and three
+plain steps; "Getting practice ready" with a gold progress bar, and "Practice is not ready
+for this song" with Add practice data / Try again. Small status pills sit over the lane's
+top right corner: the input channel with a tiny meter (amber when too quiet or clipping),
+Watch only, Music in input, and the running score.
+
+**The result screen** replaces the lane and lyrics until closed: a chrome dial with the
+percentage in gold on black glass and the letter grade on a red-enamel lozenge; "graded on
+X of Y notes", whether the singer tends sharp or flat and by about how much, the key
+("A major → F♯ major (−3)") and octave, how much of the song was sung; the trust notes in
+an amber-ruled list when the result cannot be fully trusted; the line-by-line breakdown
+(one row per lyric line: the line, a gold bar, the score, ♯ sharp / ♭ flat, "Guide wrong?")
+with weak lines (under 60) in red with a WEAK tag; the song's best and recent results; Sing
+again, Back to the lane, Leave practice.
+
+**Motion and cost.** Reduce-motion: no tail, no breathing glow, a plain marker, instant
+slides. The "Simple lane" setting (for the MacBook Air until the self-check has measured
+it) drops the tail and every glow. Bars, words, key rows, piano keys, needle, marker and
+glows (the lit keys too) are drawn once into cached bitmaps and copied onto whole device
+pixels each frame; only the tail, the lit parts and the cue are drawn per frame, and
+nothing is blurred per frame. Measured
+in headless Chromium: docs/benchmarks/practice-screen.md.
+
 ## Badge
 
 An original badge for "Jukeoke": a rounded shield or lozenge (not a winged shape),

@@ -1,0 +1,779 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Practice mode on the singing screen (WO2 4.5, docs/DESIGN.md "Practice"). The lane and
+   the lyrics share the stage's lyrics area; panels sit over it. Works in both looks: the
+   plain one (skin off) gets the same dark stage, the jukebox look adds chrome and glass.
+   Browser baseline: Safari 16.4 / Chrome 120 (scripts/check-dist-css.mjs): no :has(), no
+   nesting, no color-mix(). */
+
+.practice {
+  /* Drawn by the lane's canvas (read with getComputedStyle by PracticeLane.tsx). */
+  --lane-bar: #ff3d8b;
+  --lane-word-weight: 700;
+  --lane-label-font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(4px, 0.9vh, 20px);
+  /* Grows into the stage's lyrics area like the plain lyrics box (stage__lane) does. */
+  min-height: clamp(240px, 42vh, 2000px);
+}
+
+.app-skin .practice {
+  --lane-label-font: var(--jk-font-display);
+}
+
+.practice__lane {
+  position: relative;
+  flex: 2.1 1 0;
+  min-height: clamp(150px, 29vh, 1300px);
+}
+
+.practice__lyrics {
+  position: relative;
+  flex: 1 1 0;
+  min-height: clamp(84px, 15vh, 700px);
+}
+
+.practice--lane-only .practice__lane {
+  flex: 1 1 auto;
+}
+
+.practice-lane {
+  position: absolute;
+  inset: 0;
+}
+
+.practice-lane__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* The stage keeps its plain lyrics box when practice is off; while on, the lyrics area
+   below the lane is a normal ticker box sized by flex. */
+.practice__lyrics .ticker {
+  position: absolute;
+  inset: 0;
+}
+
+/* ---------- the tool row (stage__tools) ---------- */
+
+/* The Practice plate lights gold while practice is on (both looks). */
+.stage .stage__practice[aria-pressed="true"],
+:root[data-skin="on"] .stage .stage__practice[aria-pressed="true"] {
+  background: linear-gradient(180deg, #ffe08a 0%, #ffc21a 55%, #c98f00 100%);
+  color: #1a1206;
+  text-shadow: none;
+  box-shadow:
+    0 0 0 1.5px #f0f2f6,
+    0 0 0 2.5px #232428,
+    0 0 0.9em rgba(255, 194, 26, 0.55);
+}
+
+/* Hovered while on: stays gold (a little brighter). Without this, `.stage .button:hover`
+   (style.css) won and painted the dark hover background under the dark label, so the
+   plate looked switched off and unreadable while the mouse rested on it after a click
+   (seen in the Stage 3b real-app screenshots). */
+.stage .stage__practice[aria-pressed="true"]:hover:not(:disabled),
+:root[data-skin="on"] .stage .stage__practice[aria-pressed="true"]:hover:not(:disabled) {
+  background: linear-gradient(180deg, #fff0b8 0%, #ffd04a 55%, #d99c0a 100%);
+  color: #1a1206;
+}
+
+.practice-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.practice-tools__octave {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  font-size: 0.85rem;
+}
+
+.practice-tools__octave select {
+  font: inherit;
+  padding: 0.15em 0.4em;
+  background: #1b1622;
+  color: var(--stage-fg);
+  border: 1px solid #4b4258;
+  border-radius: 0.35rem;
+}
+
+/* ---------- chips over the lane ---------- */
+
+.practice__chips {
+  position: absolute;
+  top: clamp(6px, 1vh, 22px);
+  right: clamp(10px, 1.2vw, 40px);
+  display: flex;
+  gap: 0.4em;
+  z-index: 2;
+}
+
+.practice-lane--piano-right ~ .practice__chips {
+  right: auto;
+  left: clamp(10px, 1.2vw, 40px);
+}
+
+.practice-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.18em 0.7em;
+  border: 1px solid rgba(220, 226, 236, 0.45);
+  border-radius: 999px;
+  background: rgba(10, 8, 16, 0.78);
+  color: var(--stage-fg);
+  font: 600 clamp(11px, 1.35vh, 28px) / 1.3 var(--lane-label-font);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.practice-chip--warn {
+  border-color: #ffd23f;
+  color: #ffd23f;
+}
+
+.practice-chip--watch {
+  border-color: #b08cff;
+  color: #d9c8ff;
+}
+
+.practice-chip--score {
+  cursor: default;
+  border-color: var(--sung);
+  color: var(--sung);
+}
+
+.practice-chip__meter {
+  display: inline-block;
+  width: 0.45em;
+  height: 1em;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+
+.practice-chip__meter span {
+  position: absolute;
+  inset: 0;
+  background: var(--marker-color);
+  transform-origin: bottom;
+}
+
+/* A plain note over the lane's bottom (watch only for a reason the singer can fix). */
+.practice-note {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(30px, 6vh, 140px);
+  transform: translateX(-50%);
+  width: min(46rem, 80%);
+  padding: 0.6em 0.9em;
+  border: 1px solid rgba(255, 210, 63, 0.7);
+  border-radius: 0.6rem;
+  background: rgba(14, 10, 20, 0.92);
+  color: var(--stage-fg);
+  font-size: 0.9rem;
+  z-index: 3;
+}
+
+.practice-note p {
+  margin: 0 0 0.45em;
+}
+
+.practice-note--inline {
+  position: static;
+  transform: none;
+  width: auto;
+  margin: 0 0 0.8em;
+}
+
+.practice-note__actions {
+  display: flex;
+  gap: 0.4em;
+  flex-wrap: wrap;
+}
+
+/* ---------- panels over the practice area ---------- */
+
+.practice-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(6px, 1vh, 24px);
+  background: rgba(8, 5, 12, 0.66);
+}
+
+.practice-panel__wait {
+  color: var(--stage-fg);
+  font-size: 1.05rem;
+}
+
+.practice-panel__box {
+  position: relative;
+  width: min(40rem, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: clamp(14px, 2vh, 44px) clamp(16px, 1.8vw, 56px);
+  border-radius: 0.8rem;
+  background: #16111e;
+  border: 1px solid #4b4258;
+  color: var(--stage-fg);
+  box-shadow: 0 1.2rem 3rem rgba(0, 0, 0, 0.7);
+}
+
+.practice-panel__box--wide {
+  width: min(62rem, 100%);
+}
+
+.practice-panel__box--warn {
+  border-color: rgba(255, 210, 63, 0.7);
+}
+
+.practice-panel__title {
+  margin: 0 0 0.5em;
+  font-size: 1.15rem;
+}
+
+.practice-panel__text {
+  margin: 0 0 0.7em;
+  line-height: 1.45;
+}
+
+.practice-panel__hint {
+  margin: 0.4em 0 0.6em;
+  color: #c9c0d6;
+  font-size: 0.88rem;
+}
+
+.practice-panel__steps {
+  margin: 0 0 0.9em;
+  padding-left: 1.3em;
+  line-height: 1.45;
+}
+
+.practice-panel__steps li {
+  margin: 0.2em 0;
+}
+
+.practice-panel__actions {
+  display: flex;
+  gap: 0.5em;
+  flex-wrap: wrap;
+  margin-top: 0.6em;
+}
+
+.practice-progress {
+  height: 0.55rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.practice-progress span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #ff3d8b, #ffc21a);
+}
+
+/* ---------- the input picker ---------- */
+
+.practice-picker__cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: clamp(10px, 1.4vw, 40px);
+}
+
+.practice-picker fieldset {
+  margin: 0;
+  padding: 0.4em 0 0;
+  border: 0;
+  min-width: 0;
+}
+
+.practice-picker legend {
+  font-weight: 700;
+  margin-bottom: 0.3em;
+}
+
+.practice-picker__device,
+.practice-picker__channel {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.15em 0.55em;
+  align-items: center;
+  padding: 0.45em 0.6em;
+  margin: 0 0 0.35em;
+  border: 1px solid #3d3447;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.practice-picker__device--on,
+.practice-picker__channel--on {
+  border-color: var(--marker-color);
+  background: rgba(125, 255, 216, 0.06);
+}
+
+.practice-picker__device--bt .practice-picker__name {
+  color: #d9c8ff;
+}
+
+.practice-picker__name {
+  font-weight: 700;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.practice-picker__tags {
+  grid-column: 2;
+  display: flex;
+  gap: 0.35em;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 0.82rem;
+  color: #c9c0d6;
+}
+
+.practice-picker__warning {
+  grid-column: 2;
+  font-size: 0.82rem;
+  color: #ffd23f;
+}
+
+.practice-tag {
+  display: inline-block;
+  padding: 0 0.45em;
+  border: 1px solid #5b5068;
+  border-radius: 0.3rem;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.practice-tag--ok {
+  border-color: var(--marker-color);
+  color: var(--marker-color);
+}
+
+.practice-tag--bluetooth {
+  border-color: #b08cff;
+  color: #d9c8ff;
+}
+
+.practice-picker__channel {
+  grid-template-columns: auto 8.6em 1fr 3.6em;
+}
+
+.practice-picker__chname {
+  display: inline-flex;
+  gap: 0.35em;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.practice-picker__db {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+}
+
+.practice-meter {
+  position: relative;
+  height: 0.7em;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.practice-meter__fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, #4dff6a 0%, #7dffd8 70%, #ffd23f 88%, #ff2a2a 100%);
+  border-radius: inherit;
+}
+
+.practice-meter__peak {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #f6efd9;
+}
+
+/* The band a singing voice should reach: about -24..-9 dBFS. */
+.practice-meter__good {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 60%;
+  width: 25%;
+  border-left: 1px dashed rgba(255, 255, 255, 0.4);
+  border-right: 1px dashed rgba(255, 255, 255, 0.4);
+}
+
+.practice-meter--clip {
+  box-shadow: 0 0 0 1px #ff2a2a;
+}
+
+.practice-picker__advice {
+  margin: 0.4em 0;
+  font-weight: 700;
+}
+
+.practice-picker__advice--too_quiet,
+.practice-picker__advice--clipping {
+  color: #ffd23f;
+}
+
+/* ---------- the result screen ---------- */
+
+.practice-result {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(6px, 1vh, 22px);
+  padding: clamp(10px, 1.5vh, 34px) clamp(12px, 1.4vw, 48px);
+  border-radius: 0.9rem;
+  background: #120e19;
+  color: var(--stage-fg);
+  overflow: hidden;
+  /* The breakdown goes to two columns when the result itself is wide (see below). */
+  container-type: inline-size;
+}
+
+.practice-result__head {
+  display: flex;
+  align-items: baseline;
+  gap: 1em;
+  flex-wrap: wrap;
+}
+
+.practice-result__head h3 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.practice-result__best {
+  color: var(--sung);
+  font-weight: 700;
+}
+
+.practice-result__unsaved {
+  color: #c9c0d6;
+  font-size: 0.88rem;
+}
+
+.practice-result__top {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: clamp(10px, 1.6vw, 56px);
+  align-items: center;
+}
+
+.practice-result__dial {
+  position: relative;
+  width: clamp(96px, 17vh, 380px);
+  aspect-ratio: 1;
+}
+
+.practice-result__dial svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.practice-result__pct {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-bottom: 14%;
+  font: 700 clamp(28px, 5.4vh, 120px) / 1 var(--lane-label-font);
+  color: var(--sung);
+  text-shadow: 0 0 0.35em rgba(255, 194, 26, 0.45);
+}
+
+.practice-result__pct small {
+  font-size: 0.45em;
+  margin-left: 0.05em;
+}
+
+.practice-result__grade {
+  position: absolute;
+  left: 50%;
+  bottom: 13%;
+  transform: translateX(-50%);
+  padding: 0.05em 0.6em;
+  border-radius: 0.5em;
+  background: linear-gradient(180deg, #e8203f, #a40d26);
+  box-shadow: 0 0 0 2px #e8ebf0, 0 0 0 3px #3a3f47;
+  color: #fff6e6;
+  font: 700 clamp(13px, 2.3vh, 52px) / 1.2 var(--lane-label-font);
+  letter-spacing: 0.04em;
+}
+
+.practice-result__facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.2em 0.9em;
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.practice-result__facts dt {
+  color: #c9c0d6;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  align-self: center;
+}
+
+.practice-result__facts dd {
+  margin: 0;
+}
+
+.practice-result__history h4 {
+  margin: 0 0 0.25em;
+  font-size: 0.82rem;
+  color: #c9c0d6;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.practice-result__hbest {
+  margin: 0 0 0.3em;
+}
+
+.practice-result__hbest strong {
+  color: var(--sung);
+}
+
+.practice-result__recent {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.85rem;
+  color: #d8d0e2;
+}
+
+.practice-result__recent li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.8em;
+  padding: 0.05em 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.practice-result__hscore {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.practice-result__trust {
+  margin: 0;
+  padding: 0.4em 0.8em 0.4em 1.8em;
+  border: 1px solid rgba(255, 210, 63, 0.55);
+  border-radius: 0.5rem;
+  color: #f3e3b0;
+  font-size: 0.86rem;
+}
+
+.practice-result__trust--warn {
+  color: #ffd23f;
+  font-weight: 700;
+}
+
+.practice-result__lines {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.practice-result__row {
+  display: grid;
+  grid-template-columns: minmax(0, 2.2fr) minmax(4rem, 1fr) 5.8em 4.3em auto;
+  gap: 0.75em;
+  align-items: center;
+  padding: 0.2em 0.4em;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 0.9rem;
+  break-inside: avoid;
+}
+
+/* A wide result (1280x800 and up with the frame on): the lines in two balanced
+   columns, top to bottom then the second column, so twice as many show without scrolling. */
+@container (min-width: 1000px) {
+  .practice-result__cols {
+    columns: 2;
+    column-gap: clamp(20px, 2.4vw, 90px);
+  }
+
+  /* Narrower rows: the sharp / flat sign alone (its cents in the tooltip). */
+  .practice-result__row {
+    grid-template-columns: minmax(0, 2.4fr) minmax(3rem, 0.8fr) 5.4em 1.1em auto;
+    gap: 0.7em;
+  }
+
+  .practice-result__ltword {
+    display: none;
+  }
+}
+
+.practice-result__jump {
+  font: inherit;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #ff8a8a;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  cursor: pointer;
+}
+
+.practice-result__ltext {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.practice-result__lbar {
+  height: 0.5em;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.practice-result__lbar span {
+  display: block;
+  height: 100%;
+  background: var(--sung);
+  border-radius: inherit;
+}
+
+.practice-result__lscore {
+  display: inline-flex;
+  gap: 0.4em;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.practice-result__ltend {
+  color: #c9c0d6;
+  font-size: 0.82rem;
+}
+
+/* Weak lines: a red tab, a red bar and the word "weak" (never colour alone). */
+.practice-result__row--weak {
+  background: rgba(255, 42, 42, 0.09);
+  box-shadow: inset 4px 0 0 #ff2a2a;
+}
+
+.practice-result__row--weak .practice-result__lbar span {
+  background: #ff5a5a;
+}
+
+.practice-result__weak {
+  padding: 0 0.4em;
+  border-radius: 0.3em;
+  background: #ff2a2a;
+  color: #fff;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.practice-result__row--excluded {
+  opacity: 0.55;
+}
+
+.practice-result__exclude {
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.05em 0.5em;
+  border: 1px solid #4b4258;
+  border-radius: 0.3rem;
+  background: transparent;
+  color: #c9c0d6;
+  cursor: pointer;
+}
+
+.practice-result__actions {
+  display: flex;
+  gap: 0.5em;
+  flex-wrap: wrap;
+}
+
+/* ---------- the jukebox look: chrome-framed black glass ---------- */
+
+.app-skin .practice-panel__box,
+.app-skin .practice-result {
+  border: 0;
+  background:
+    radial-gradient(ellipse 70% 45% at 50% 0%, rgba(255, 61, 139, 0.12), rgba(255, 61, 139, 0) 70%),
+    linear-gradient(180deg, #17121f, #0c0a11);
+  box-shadow:
+    0 0 0 2px #0b0910,
+    0 0 0 4px #c9ced6,
+    0 0 0 5px #4a4f57,
+    0 1.2rem 3rem rgba(0, 0, 0, 0.75);
+}
+
+.app-skin .practice-result {
+  inset: 5px;
+}
+
+.app-skin .practice-panel__title,
+.app-skin .practice-result__head h3 {
+  font-family: var(--jk-font-display);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.app-skin .practice-result__facts,
+.app-skin .practice-result__row,
+.app-skin .practice-panel__text,
+.app-skin .practice-panel__steps {
+  font-family: var(--jk-font-lyrics);
+}
+
+.app-skin .practice-panel__box--warn .practice-panel__title {
+  color: #ffd23f;
+  text-shadow: 0 0 0.5em rgba(255, 210, 63, 0.35);
+}
+
+.app-skin .practice-chip {
+  border-color: rgba(220, 226, 236, 0.6);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.app-skin .practice-tools__octave {
+  font-family: var(--jk-font-display);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-motion="full"] .practice-result__arc {
+    transition: stroke-dasharray 0.8s ease-out;
+  }
+}

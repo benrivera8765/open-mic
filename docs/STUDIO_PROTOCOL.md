@@ -439,8 +439,8 @@ it, but would need the builder in Python; not worth a second implementation.
    `stage: "guide"` (`overall` goes
    from 0.95 to 1.0; the Studio's own stages fill 0..0.95), and the Library lists the
    song at once with its guide status `building` (`library://changed`).
-2. The app's guide builder (one build at a time, below-normal priority, never on an
-   audio thread) reads the song's `lead_vocal` stem and lyrics from the file, builds the
+2. The app's guide builder (one build at a time, below-normal priority for new songs,
+   never on an audio thread) reads the song's `lead_vocal` stem and lyrics from the file, builds the
    guide and adds it with the atomic rewrite of SONG_FORMAT 7.1. If the user has loaded
    the new song meanwhile, it is released for the rename and reloaded at the same
    position when it is not playing (the delete feature's release path, D-231/D-233);

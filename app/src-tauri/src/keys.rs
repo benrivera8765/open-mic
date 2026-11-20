@@ -122,6 +122,19 @@ pub fn key_label(key: Option<Key>, semitones: i32) -> String {
     }
 }
 
+/// (WO2, APP_API 3 `key_spelling`) How to name notes in the key `semitones` from the
+/// song's key: flats in keys whose signature has flats (F, Bb, Eb, Ab, Db major; D, G,
+/// C, F, Bb, Eb minor), sharps in every other key and when the song has no detected key.
+/// Agrees with [`Key::display_tonic`] (Db, Eb, Ab, Bb major and Eb, Bb minor are flat;
+/// F# major and C#, F#, G# minor are sharp).
+pub fn note_spelling(key: Option<Key>, semitones: i32) -> &'static str {
+    match key.map(|k| k.shifted(semitones)) {
+        Some(Key { tonic, mode: Mode::Major }) if matches!(tonic, 5 | 10 | 3 | 8 | 1) => "flats",
+        Some(Key { tonic, mode: Mode::Minor }) if matches!(tonic, 2 | 7 | 0 | 5 | 10 | 3) => "flats",
+        _ => "sharps",
+    }
+}
+
 /// The key part of an export file name: "B major" or "+2 semitones"; with the shift
 /// appended when there is one, e.g. "B major, +2".
 pub fn export_key_text(key: Option<Key>, semitones: i32) -> String {
@@ -167,6 +180,26 @@ mod tests {
         assert_eq!(Key::parse("C", "dorian"), None);
         assert_eq!(Key::parse("C", "minor").unwrap().view().tonic, "C");
         assert_eq!(Key::parse("C#", "major").unwrap().view().name, "Db major");
+    }
+
+    #[test]
+    fn note_spelling_follows_the_key_heard() {
+        let a = Key::parse("A", "major");
+        // A major (sharps); -4 = F major (flats); +1 = Bb major (flats); -3 = F# major.
+        assert_eq!(note_spelling(a, 0), "sharps");
+        assert_eq!(note_spelling(a, -4), "flats");
+        assert_eq!(note_spelling(a, 1), "flats");
+        assert_eq!(note_spelling(a, -3), "sharps");
+        // Every key -12..12: flats exactly where the displayed tonic is a flat-signature key.
+        for k in -12..=12 {
+            let shifted = a.unwrap().shifted(k);
+            let flat_tonic = matches!(shifted.display_tonic(), "Db" | "Eb" | "Ab" | "Bb" | "F");
+            assert_eq!(note_spelling(a, k) == "flats", flat_tonic, "key {k}: {}", shifted.name());
+        }
+        let am = Key::parse("A", "minor");
+        assert_eq!(note_spelling(am, 0), "sharps");
+        assert_eq!(note_spelling(am, -7), "flats", "D minor");
+        assert_eq!(note_spelling(None, -3), "sharps");
     }
 
     #[test]

@@ -37,6 +37,7 @@ import { dismissToast, focusSearch, go, init, loadSong, play, type Screen, seek,
 import { reportSmoke } from "./lib/smoke";
 import { errorMessage } from "./api/client";
 import { Badge, bubbleStats, JukeboxFrame, PlateButton, useResolvedMotion } from "./skin";
+import { openPicker, startPractice, togglePractice, watchOnly as practiceWatchOnly } from "./state/practice";
 
 const NAV: { screen: Screen; label: string; needsSong?: boolean }[] = [
   { screen: "library", label: "Library" },
@@ -113,6 +114,14 @@ export function handleShortcut(e: KeyboardEvent): void {
       e.preventDefault();
       setOverlay("help");
       return;
+    case "p":
+    case "P":
+      // WO2 4.5: practice mode on the singing screen.
+      if (!s.song) return;
+      e.preventDefault();
+      if (s.screen !== "stage" && !s.fullscreen) go("stage");
+      togglePractice();
+      return;
   }
 }
 
@@ -164,6 +173,14 @@ async function mockStartup(search: string): Promise<void> {
   if (q.get("fullscreen") === "1") store.set({ fullscreen: true });
   const overlay = q.get("overlay");
   if (overlay === "help" || overlay === "selfcheck") setOverlay(overlay);
+  // WO2: practice mode (screenshots, manual checks).
+  const pr = q.get("practice");
+  if (store.get().song && (pr === "1" || pr === "watch" || pr === "result")) {
+    go("stage");
+    if (pr === "watch") await practiceWatchOnly();
+    else await startPractice();
+    if (q.get("picker") === "1") await openPicker();
+  }
 }
 
 /** macOS App Translocation (WORK_ORDER trap 2): explain, and offer to pick the stick's folder. */

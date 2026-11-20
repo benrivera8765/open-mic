@@ -50,8 +50,16 @@ pub async fn selfcheck_run(
     state: State<'_, AppState>,
     user_agent: Option<String>,
     silent: Option<bool>,
+    lane: Option<crate::practice::checks::LaneCost>,
 ) -> ApiResult<SelfcheckResult> {
     let core = state.core.clone();
+    // (WO2) Not during a practice take (APP_API 12.8 `practising`).
+    if core.practice.take_running() {
+        return Err(ApiError::new("practising", "Finish or stop the practice take first, then run the self-check."));
+    }
+    if let Some(l) = &lane {
+        *core.practice.lane_cost.lock().unwrap_or_else(|e| e.into_inner()) = Some(l.clone());
+    }
     if let Some(ua) = &user_agent {
         *core.user_agent.lock().unwrap_or_else(|e| e.into_inner()) = Some(ua.clone());
     }
@@ -62,10 +70,19 @@ pub async fn selfcheck_run(
             &selfcheck::Options {
                 user_agent: ua,
                 silent: silent.unwrap_or(false),
+                lane,
             },
         ))
     })
     .await
+}
+
+/// Internal (WO2, APP_API 10.1): the page reports the practice lane's drawing cost in
+/// `--selfcheck` runs (the core asks it with `window.__jkSelfcheckLane()`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn selfcheck_lane(state: State<'_, AppState>, lane: crate::practice::checks::LaneCost) -> ApiResult<()> {
+    *state.core.practice.lane_cost.lock().unwrap_or_else(|e| e.into_inner()) = Some(lane);
+    Ok(())
 }
 
 /// Internal: the page reports `navigator.userAgent` in `--selfcheck` runs (injected
