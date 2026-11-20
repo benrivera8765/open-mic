@@ -332,6 +332,10 @@ fn run(s: &Scenario, rate: u32, music: &[f32], lead: &[f32]) -> Outcome {
     let blk = (rate / 100) as usize;
     let mut out = vec![0.0f32; frames];
     let mut first_present: Option<f64> = None;
+    // Reasons behind the verdicts of the pitch frames shown where nobody sang (diagnostics).
+    let mut false_why = [0u32; 8];
+    // The detector's peak-to-floor ratio when the return was first declared present.
+    let mut z_found: Option<f64> = None;
     let mut settled_present: Option<f64> = None;
     let mut first_absent: Option<f64> = None;
     let mut first_quality: Option<f64> = None;
@@ -346,6 +350,11 @@ fn run(s: &Scenario, rate: u32, music: &[f32], lead: &[f32]) -> Outcome {
     let mut proc_s = 0.0f64;
     let steady_from = 15.0f64.min(secs * 0.5);
     let trace = std::env::var("JK_ECHO_TRACE").is_ok_and(|v| s.name == v);
+    // Trace interval in input samples (`JK_ECHO_TRACE_HOP` seconds, default 1).
+    let trace_hop = std::env::var("JK_ECHO_TRACE_HOP")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map_or(rate as usize, |h| ((h * fs).round() as usize).max(1));
     let mut i = 0;
     while i < frames {
         let n = blk.min(frames - i);
@@ -360,6 +369,9 @@ fn run(s: &Scenario, rate: u32, music: &[f32], lead: &[f32]) -> Outcome {
         let t = (i + n) as f64 / fs;
         match r.presence {
             Presence::Present => {
+                if first_present.is_none() {
+                    z_found = Some(f64::from(r.z));
+                }
                 first_present.get_or_insert(t);
                 settled_present.get_or_insert(t);
             }
@@ -375,7 +387,7 @@ fn run(s: &Scenario, rate: u32, music: &[f32], lead: &[f32]) -> Outcome {
         ) {
             first_quality.get_or_insert(t);
         }
-        if trace && (i + n).is_multiple_of(rate as usize) {
+        if trace && (i + n) % trace_hop < n {
             // Per-second diagnostics: true suppression over the last second.
             let (mut a, mut b) = (0.0f64, 0.0f64);
             let l = lat as usize;
@@ -397,7 +409,7 @@ fn run(s: &Scenario, rate: u32, music: &[f32], lead: &[f32]) -> Outcome {
                 r.drift_ppm,
                 r.stability
             );
-            eprintln!("      detfit {:?} z {:.1}", ec.detector_fit(), r.z);
+            eprintln!("      detfit {:?} z {:.1} {}", ec.detector_fit(), r.z, ec.debug_line());
         }
         tr.process(&out[i..i + n], |e| {
             let ti = e.time - lat;
@@ -411,6 +423,9 @@ fn run(s: &Scenario, rate: u32, music: &[f32], lead: &[f32]) -> Outcome {
             let resting = !s.singer || truth(tt) == Err(true);
             if trusted && e.hz.is_some() && resting && false_times.len() < 400 {
                 false_times.push((tt * 100.0).round() / 100.0);
+                for (a, b) in false_why.iter_mut().zip(ec.debug_trust_reasons(ti - hop / 2, ti + hop / 2)) {
+                    *a += b;
+                }
             }
             out_all.add(tt, e.hz, s.singer);
             out_trusted.add(tt, if trusted { e.hz } else { None }, s.singer);
@@ -431,11 +446,30 @@ fn run(s: &Scenario, rate: u32, music: &[f32], lead: &[f32]) -> Outcome {
         *v = (na * rng2.bipolar()) as f32;
     }
     let from = (steady_from * fs) as usize;
+    // The same left-over through a 60 Hz high-pass (2nd-order Butterworth), the band the
+    // tracker and the canceller's spectral look work in (the tracker high-passes at 55 Hz).
+    let (hb, ha) = {
+        let w0 = 2.0 * std::f64::consts::PI * 60.0 / fs;
+        let (c, sn) = (w0.cos(), w0.sin());
+        let al = sn / std::f64::consts::SQRT_2;
+        let a0 = 1.0 + al;
+        (
+            [(1.0 + c) / 2.0 / a0, -(1.0 + c) / a0, (1.0 + c) / 2.0 / a0],
+            [1.0, -2.0 * c / a0, (1.0 - al) / a0],
+        )
+    };
+    let (mut x1, mut x2, mut y1, mut y2, mut pr_hp) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
     for j in from + lat as usize..frames {
         let k = j - lat as usize;
         let res = f64::from(out[j]) - f64::from(voice[k]) - f64::from(noise[k]);
         pe += f64::from(echo[k]).powi(2);
         pr += res * res;
+        let y = hb[0] * res + hb[1] * x1 + hb[2] * x2 - ha[1] * y1 - ha[2] * y2;
+        x2 = x1;
+        x1 = res;
+        y2 = y1;
+        y1 = y;
+        pr_hp += y * y;
     }
     let erle = if pe > 0.0 {
         Some(db(pe / pr.max(1e-30)))
@@ -444,6 +478,7 @@ fn run(s: &Scenario, rate: u32, music: &[f32], lead: &[f32]) -> Outcome {
     };
     let n_res = (frames - from - lat as usize).max(1) as f64;
     let residual_dbfs = (pe > 0.0).then(|| db(pr / n_res));
+    let residual_hp_dbfs = (pe > 0.0).then(|| db(pr_hp / n_res));
     // The tracker on the singer alone and on the raw input (no removal), for comparison.
     let clean = track_all(rate, &voice, s.singer, 0.0);
     let raw = track_all(rate, &input, s.singer, 0.0);
@@ -481,7 +516,8 @@ fn run(s: &Scenario, rate: u32, music: &[f32], lead: &[f32]) -> Outcome {
     );
     let _ = write!(
         json,
-        "\"level_db\":{},\"delay_ms\":{},\"drift_ppm\":{},\"wander_ms\":{},\"stability\":\"{}\",\"confidence\":{:.3},\"quality\":\"{}\",\"relocks\":{},\"filter_resets\":{},\"est_suppression_db\":{},\"true_suppression_db\":{},\"residual_dbfs\":{},\"est_residual_dbfs\":{},",
+        "\"z_found\":{},\"level_db\":{},\"delay_ms\":{},\"drift_ppm\":{},\"wander_ms\":{},\"stability\":\"{}\",\"confidence\":{:.3},\"quality\":\"{}\",\"relocks\":{},\"filter_resets\":{},\"est_suppression_db\":{},\"true_suppression_db\":{},\"residual_dbfs\":{},\"residual_hp_dbfs\":{},\"est_residual_dbfs\":{},",
+        opt(z_found),
         opt(rep.level_db.map(f64::from)),
         opt(rep.delay_ms),
         opt(rep.drift_ppm),
@@ -494,6 +530,7 @@ fn run(s: &Scenario, rate: u32, music: &[f32], lead: &[f32]) -> Outcome {
         opt(rep.suppression_db.map(f64::from)),
         opt(erle),
         opt(residual_dbfs),
+        opt(residual_hp_dbfs),
         opt(rep.residual_dbfs.map(f64::from))
     );
     let _ = write!(
@@ -510,7 +547,8 @@ fn run(s: &Scenario, rate: u32, music: &[f32], lead: &[f32]) -> Outcome {
     );
     let _ = write!(
         json,
-        "\"false_marker_times\":{:?},\"pitch_raw\":{:.4},\"pitch_raw_steady\":{:.4},\"pitch_out\":{:.4},\"pitch_out_trusted\":{:.4},\"pitch_out_steady\":{:.4},\"pitch_out_steady_trusted\":{:.4},\"trust_clean\":{},\"trust_singer\":{},\"trust_music\":{},\"trust_unknown\":{},\"cpu_s_per_s\":{:.5}}}",
+        "\"false_why\":{:?},\"false_marker_times\":{:?},\"pitch_raw\":{:.4},\"pitch_raw_steady\":{:.4},\"pitch_out\":{:.4},\"pitch_out_trusted\":{:.4},\"pitch_out_steady\":{:.4},\"pitch_out_steady_trusted\":{:.4},\"trust_clean\":{},\"trust_singer\":{},\"trust_music\":{},\"trust_unknown\":{},\"cpu_s_per_s\":{:.5}}}",
+        false_why,
         false_times,
         raw.pitch_rate(),
         raw_steady.pitch_rate(),
@@ -677,19 +715,39 @@ fn main() {
     let secs: f64 = get("--secs").and_then(|v| v.parse().ok()).unwrap_or(45.0);
     let start: f64 = get("--start").and_then(|v| v.parse().ok()).unwrap_or(30.0);
     let quick = has("--quick");
+    // Only the scenarios whose name contains this (diagnostics).
+    let only = get("--only");
     let threads: usize = get("--threads").and_then(|v| v.parse().ok()).unwrap_or(8);
     let mut jobs: Vec<(Scenario, u32, Vec<f32>, Vec<f32>)> = Vec::new();
     let mut tracks = vec![(main_track.clone(), !quick)];
     tracks.extend(others.iter().map(|t| (t.clone(), false)));
     for (t, full) in tracks {
         let dir = format!("{tracks_dir}/{t}");
-        let inst = read_wav(&format!("{dir}/instrumental.wav")).expect("instrumental");
-        let back = read_wav(&format!("{dir}/backing.wav")).expect("backing");
-        let lead = read_wav(&format!("{dir}/lead.wav")).expect("lead");
-        let rate = inst.rate;
-        let mut music = excerpt(&inst, start, secs);
-        for (m, b) in music.iter_mut().zip(excerpt(&back, start, secs)) {
-            *m += b;
+        // A ccMixter folder (backing [+ instrumental], lead) or a MUSDB18-HQ song folder
+        // (bass + drums + other, vocals as the guide). Some ccMixter folders have no
+        // instrumental stem: their backing stem is the whole accompaniment.
+        let musdb = std::path::Path::new(&format!("{dir}/vocals.wav")).exists();
+        let (parts, lead_file): (&[&str], &str) = if musdb {
+            (&["bass.wav", "drums.wav", "other.wav"], "vocals.wav")
+        } else {
+            (&["backing.wav", "instrumental.wav"], "lead.wav")
+        };
+        let lead = read_wav(&format!("{dir}/{lead_file}")).expect("lead");
+        let rate = lead.rate;
+        let mut music: Vec<f32> = Vec::new();
+        for f in parts {
+            if !std::path::Path::new(&format!("{dir}/{f}")).exists() {
+                continue;
+            }
+            let w = read_wav(&format!("{dir}/{f}")).expect("accompaniment");
+            let e = excerpt(&w, start, secs);
+            if music.is_empty() {
+                music = e;
+            } else {
+                for (m, b) in music.iter_mut().zip(e) {
+                    *m += b;
+                }
+            }
         }
         let mut guide = excerpt(&lead, start, secs);
         // The backing track at -14 dBFS RMS (mono mix), the guide at its level in the song.
@@ -698,6 +756,9 @@ fn main() {
             *v = (f64::from(*v) * g) as f32;
         }
         for s in scenarios(&t, full) {
+            if only.as_ref().is_some_and(|o| !s.name.contains(o.as_str())) {
+                continue;
+            }
             jobs.push((s, rate, music.clone(), guide.clone()));
         }
     }

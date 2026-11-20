@@ -71,16 +71,35 @@
 //! canceller knows (the first quarter second of music, the start-up of the filter) the
 //! verdict is [`Trust::Unknown`].
 //!
-//! The report's suppression and [`RemovalQuality`] use the plain mean of the same ratio
-//! (conservative: it counts bursts of left-over music), the residual compared with the
-//! singer's level once somebody has sung, else with the tracker's level gate.
+//! The report's suppression and [`RemovalQuality`] use the lower of two cautious left-over
+//! figures: the plain mean of the same ratio (it counts bursts of left-over music, but a
+//! singer quieter than the returned music slips into its "music only" blocks and inflates
+//! it), and the spectral look's regression (below), which a singer does not bias. The
+//! residual is compared with the singer's level once somebody has sung, else with the
+//! tracker's level gate. However well the music is removed, the verdict is no better than
+//! the gate's grip on the singer: the share of the singer's blocks (by the regression's
+//! plain left-over) that the gate finally rejects caps it at marginal above 4 % and makes
+//! it unusable above 10 % (a voice under a return louder than itself, in unison with the
+//! returned guide vocal).
 //!
 //! A second, spectral look at the output ([`spectral`], "tier 2") recognises the singer by
-//! energy standing above the most music there can be in each frequency bin, which needs no
-//! measured left-overs: it keeps a high note quieter than the music it sits in, and works
-//! with continuous singing from the first second (whose left-over share comes from the
-//! spectral regression until the singer pauses). With a wandering delay the gate compares
-//! with the loudest the echo can be within +-40 ms of the filter's position.
+//! energy standing above the most music there can be in each frequency bin: the whole echo
+//! there, or, once its regression of the output's power fluctuations on the reference's
+//! has seen 8 s of music, the left-over it measured in the bin's third-octave band (with
+//! its standard error and margins, never under -12 dB of the whole echo, and the whole echo
+//! in a bin the music has just lit). So it keeps a high note quieter than the music it sits
+//! in, and works with continuous singing from the first second. The same regression gives
+//! the left-over during singing to the gate and the report. With a wandering delay the
+//! gate compares with the loudest the echo can be within +-40 ms of the filter's position.
+//!
+//! # Detection under a singer
+//!
+//! A singer who holds a note in tune with a note of the music makes a correlation peak
+//! that lasts about as long as the note. A detection weaker than a returned song gives with
+//! nobody singing is therefore a candidate until it has stood out at its lag for about 3 s
+//! of 4 ([`detect`]); the delay line's fit ignores scattered false peaks, so they make a
+//! fixed delay neither move nor "wander", and the filter is not restarted at a false peak
+//! while the correlation still stands out where the filter has the echo.
 //!
 //! # Changes of the echo path
 //!
@@ -119,7 +138,7 @@ mod tests;
 use detect::{Detector, Fit, Thresholds, fit_history};
 use filter::{BlockStats, Pbfdaf};
 use refline::{HALF, RefLine};
-use spectral::Spectral;
+use spectral::{MinFloor, REG_Z, Spectral};
 
 /// Whether the app's own playback is in the input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -336,10 +355,48 @@ const RATIO_MIN_S: f64 = 0.3;
 /// Margin on the measured ratio for its fluctuation from moment to moment (3 dB; see
 /// docs/benchmarks/practice-echo.md for the calibration).
 const RATIO_BIAS: f32 = 2.0;
-/// Margin on the share of the echo left measured by the spectral look's regression during
-/// singing (6 dB): noisier than the measurement on music without singing; measured on
-/// continuous singing it was up to 7 dB under the true left-overs without a margin.
+/// The left-over measured by the spectral look's regression is used as a cautious figure:
+/// the estimate (never below zero) plus [`REG_Z`] standard errors. For the per-block gate
+/// it gets this margin on top (6 dB): a block's left-over swings around the average
+/// left-over with the music (a bass note in a band removal does worse), and with nobody
+/// singing such a swing must not pass for the singer. The report and the quality verdict
+/// use the cautious figure as it is.
 const REGRESSION_BIAS: f32 = 4.0;
+/// Margin on the regression's cautious left-over (already the estimate plus 2 standard
+/// errors) in the report and the quality verdict: none. Over the development cases with a
+/// singer the cautious figure was a median 1.4 dB over the true left-over (held out: 0.7 dB
+/// under), under it by more than 3 dB in 12 of 130 (16 of 104). A 1.5 or 3 dB margin made a
+/// singer 6 dB under a 0 dB USB return, with the true left-over 20 dB under the singer,
+/// gradable only 61 % or 30 % of the time instead of 81 %; the grades of the takes graded
+/// with no margin stay within 2 points of the clean grade on the held-out songs
+/// (docs/benchmarks/practice-echo.md section 13).
+const REPORT_BIAS: f32 = 1.0;
+/// Averaging time (s of the singer's blocks) of the share of the singer's blocks the gate
+/// rejects (see [`EchoCanceller::doubt_share`]).
+const DOUBT_S: f64 = 10.0;
+/// That share above which removal counts as at most marginal, and as unusable: the singer
+/// is there and removal took the music well under him, but beside a return louder than the
+/// voice the gate cannot tell enough of the voice from the music, and the marker loses that
+/// share of the singer. Measured: a high "ee" or "oo" under a return as loud as the music
+/// lost 10-24 % of its frames to the gate while the left-overs alone said "marginal"
+/// (docs/benchmarks/practice-echo.md section 13).
+const DOUBT_MARGINAL: f64 = 0.04;
+const DOUBT_UNUSABLE: f64 = 0.10;
+/// A block counts as the singer's for that share when its output (10 ms) is at least this
+/// many times the left-over the regression measures there (its plain estimate, no margin:
+/// the voice at least 5 dB above the left-overs) ...
+const SINGER_OVER_LEFTOVER: f32 = 4.0;
+/// ... and within this much of the singer's level (-15 dB), so that a burst of left-over
+/// music with nobody singing is not taken for a voice the gate missed.
+const SINGER_NEAR_LEVEL: f32 = 0.03;
+/// Singer's blocks needed in that share before it is used.
+const DOUBT_MIN_BLOCKS: u32 = 400;
+/// A path gain this far from 1 (beyond 2 standard errors) counts as a change of the echo
+/// path for the regression's left-over.
+const PATH_CHANGE: f64 = 0.1;
+/// After a change of the echo path, the regression's left-over is not used for this long
+/// (s): it averages over about 3 s and still holds the old path.
+const LEAK_PATH_HOLD_S: f64 = 4.0;
 /// Echo path gain tracker: chunks of about this length (s) of input x echo estimate and
 /// echo estimate x echo estimate, and how many are kept (about 0.5 s).
 const PG_CHUNK_S: f64 = 0.021;
@@ -355,6 +412,9 @@ const PG_FAST: usize = 4;
 /// singing in the 5 s after). The spectral look, whose bound holds for a path up to about
 /// 9 dB louder, still recognises the singer meanwhile.
 const LOUDER_HOLD_S: f64 = 0.5;
+/// The half-second path gain counts as "louder" only beyond this (+1 dB), see
+/// [`EchoCanceller::louder`].
+const LOUDER_GAIN: f64 = 1.12;
 /// The returned playback is gone when the path gain (amplitude, relative to what the
 /// filter learnt) is below this with 3 standard errors to spare (-12 dB), or when the
 /// input holds less than [`GONE_POWER`] of the echo the detector expects (-25 dB), or less
@@ -480,6 +540,17 @@ pub struct EchoCanceller {
     hint_r: f32,
     /// The same over about 10 ms, for the gate.
     hint_s: f32,
+    /// Mono reference power per block over about 10 ms, for the gate's coherence bound.
+    px_s: f32,
+    /// Share of the singer's blocks (see [`SINGER_OVER_LEFTOVER`]) the gate finally rejected,
+    /// averaged over [`DOUBT_S`] of such blocks; its averaging weight per block; such blocks
+    /// counted; per block of `trust`, whether it is one; and how many blocks back a verdict
+    /// is final (the spectral look may still change it before that).
+    doubt: f64,
+    a_doubt: f64,
+    doubt_n: u32,
+    trust_sd: Vec<bool>,
+    final_lag: usize,
     /// The delay is judged to wander (updated every detector hop).
     wandering: bool,
     ratio_avg: f32,
@@ -487,10 +558,8 @@ pub struct EchoCanceller {
     a_ratio_mean: f32,
     ratio_blocks: u32,
     ratio_min_blocks: u32,
-    nf_cur: f32,
-    nf_prev: f32,
-    nf_blocks: u32,
-    nf_window: u32,
+    /// Noise floor of the smoothed output power (minimum statistics over about 8 s).
+    nf: MinFloor,
     gate_k: f32,
     // Long-term powers for the level and suppression measured on echo-only blocks.
     a_long: f64,
@@ -516,6 +585,19 @@ pub struct EchoCanceller {
     /// Spectral look at the output (voice evidence that does not need the left-overs
     /// measured, and the left-over share during singing; see [`spectral`]).
     spec: Spectral,
+
+    /// Diagnostics: blocks the per-block comparison called music because the input was
+    /// explained by the echo, the output was under the left-overs, or a louder path held it.
+    dbg_music: [u32; 3],
+    /// Diagnostics: why the block being judged got its verdict (0 other, 1 explained by the
+    /// echo, 2 under the left-overs, 3 louder path held, 4 explained or held although the
+    /// output stood above the left-overs (doubted), 5 singer by level, 6 singer by the
+    /// spectral look), per block of `trust`.
+    why: u8,
+    trust_why: Vec<u8>,
+    /// Whether the block being judged is the singer's (see [`SINGER_OVER_LEFTOVER`]).
+    blk_sd: bool,
+    dbg_under: [f32; 6],
     /// Mono aligned reference of the block being finished.
     blk_xm: Vec<f32>,
     /// Echo path gain tracker (see `path_update`): blocks per chunk, the current chunk's
@@ -537,6 +619,9 @@ pub struct EchoCanceller {
     /// Input time (s) until which the per-block comparison may not trust a block (see
     /// [`LOUDER_HOLD_S`]).
     louder_hold: f64,
+    /// Input time (s) until which the regression's left-over is not used (see
+    /// [`LEAK_PATH_HOLD_S`]).
+    coh_hold: f64,
     /// The path gain is so low that the input passes through untouched.
     bypass: bool,
     /// Input time (s) the filter last started.
@@ -638,16 +723,22 @@ impl EchoCanceller {
             py_r: 0.0,
             hint_r: 0.0,
             hint_s: 0.0,
+            px_s: 0.0,
+            doubt: 0.0,
+            a_doubt: 1.0 - (-blk_s / DOUBT_S).exp(),
+            doubt_n: 0,
+            trust_sd: vec![false; TRUST_RING],
+            final_lag: {
+                let n = spectral::frame_len(rate, b);
+                n / (2 * b) + 4 / 2 + 1
+            },
             wandering: false,
             ratio_avg: 1.0,
             ratio_mean: 1.0,
             a_ratio_mean: (1.0 - (-blk_s / RATIO_MEAN_S).exp()) as f32,
             ratio_blocks: 0,
             ratio_min_blocks: (RATIO_MIN_S / blk_s).round() as u32,
-            nf_cur: f32::MAX,
-            nf_prev: f32::MAX,
-            nf_blocks: 0,
-            nf_window: (1.0 / blk_s).round() as u32,
+            nf: MinFloor::new((1.0 / blk_s).round() as u32),
             gate_k: 10f32.powf(cfg.gate_margin_db / 10.0),
             a_long: 1.0 - (-blk_s / 4.0).exp(),
             py_long: 0.0,
@@ -663,6 +754,11 @@ impl EchoCanceller {
             trust_count: 0,
             imp: vec![0.0; p * b],
             spec: Spectral::new(rate, b),
+            dbg_music: [0; 3],
+            why: 0,
+            trust_why: vec![0; TRUST_RING],
+            blk_sd: false,
+            dbg_under: [0.0; 6],
             blk_xm: vec![0.0; b],
             pg_chunk_blocks: ((PG_CHUNK_S / blk_s).round() as u32).max(1),
             pg_blocks: 0,
@@ -675,6 +771,7 @@ impl EchoCanceller {
             path: None,
             path_fast: None,
             louder_hold: 0.0,
+            coh_hold: 0.0,
             bypass: false,
             lock_t: 0.0,
             lost: 0,
@@ -730,9 +827,7 @@ impl EchoCanceller {
         self.blk_ref = 0.0;
         self.ref_env = 0.0;
         self.clear_ratio();
-        self.nf_cur = f32::MAX;
-        self.nf_prev = f32::MAX;
-        self.nf_blocks = 0;
+        self.nf.reset();
         self.py_long = 0.0;
         self.px_long = 0.0;
         self.hint_long = 0.0;
@@ -746,6 +841,12 @@ impl EchoCanceller {
         self.trust_count = 0;
         self.spec.reset(true);
         self.clear_path();
+        self.louder_hold = 0.0;
+        self.coh_hold = 0.0;
+        self.doubt = 0.0;
+        self.doubt_n = 0;
+        self.trust_sd.fill(false);
+        self.px_s = 0.0;
         self.lock_t = 0.0;
         self.lost = 0;
         self.grace_until = None;
@@ -865,15 +966,38 @@ impl EchoCanceller {
         let start = self.n_in as i64 - self.b as i64 - self.in_delay as i64;
         self.ref_env = self.blk_ref.max(self.ref_env * self.ref_decay);
         self.blk_ref = 0.0;
+        self.why = 0;
+        self.blk_sd = false;
         let t = self.block_trust(st);
         let slot = (self.trust_count as usize) % TRUST_RING;
         self.trust[slot] = t;
+        self.trust_why[slot] = self.why;
+        self.trust_sd[slot] = self.blk_sd;
         self.trust_pe[slot] = st.map_or(0.0, |s| s.pe);
         self.trust_last_start = start;
         self.trust_count += 1;
         if let Some(s) = st {
-            self.spectral_block(s.px > 1e-9 * self.b as f32);
+            let music = s.px > 1e-9 * self.b as f32;
+            self.spectral_block(music);
         }
+        self.finalise_doubt();
+    }
+
+    /// The block [`EchoCanceller::final_lag`] back now has its final verdict: if it was the
+    /// singer's, count whether the gate let it through (the share the marker loses).
+    fn finalise_doubt(&mut self) {
+        if self.trust_count <= self.final_lag as u64 {
+            return;
+        }
+        let idx = ((self.trust_count - 1 - self.final_lag as u64) as usize) % TRUST_RING;
+        if !self.trust_sd[idx] {
+            return;
+        }
+        self.trust_sd[idx] = false;
+        let lost = matches!(self.trust[idx], Trust::Music | Trust::Unknown);
+        self.doubt_n = self.doubt_n.saturating_add(1);
+        let a = self.a_doubt.max(1.0 / f64::from(self.doubt_n));
+        self.doubt += a * (f64::from(u8::from(lost)) - self.doubt);
     }
 
     /// Feed the finished (locked) block to the spectral look; when a frame is analysed and
@@ -892,6 +1016,9 @@ impl EchoCanceller {
             };
         }
         let gain = self.det.state().level.unwrap_or(0.0) as f32;
+        // The measured left-over per bin bounds what music can be left, while it can be
+        // believed (not just after the path got louder: that left-over is not measured yet).
+        let use_leak = self.leak_trusted() && self.now_s() >= self.louder_hold;
         let Some(f) = self.spec.push(
             &self.out_buf,
             self.filt.fore_estimate(),
@@ -899,6 +1026,7 @@ impl EchoCanceller {
             gain,
             self.wandering,
             music,
+            use_leak,
         ) else {
             return;
         };
@@ -925,6 +1053,7 @@ impl EchoCanceller {
             let idx = ((self.trust_count - 1 - j as u64) as usize) % TRUST_RING;
             if matches!(self.trust[idx], Trust::Music | Trust::Unknown) {
                 self.trust[idx] = Trust::Singer;
+                self.trust_why[idx] = 6;
                 let pe = f64::from(self.trust_pe[idx]);
                 if self.voice_blocks == 0 {
                     self.pe_voice = pe;
@@ -973,7 +1102,7 @@ impl EchoCanceller {
         // can make it say "gone".
         let hint = self.det.state().level.unwrap_or(0.0) * f64::from(st.px) / self.ch as f64;
         let expected = if adapted && yy > 0.0 { yy } else { hint };
-        let noise = f64::from(self.nf_cur.min(self.nf_prev));
+        let noise = f64::from(self.nf.floor());
         if noise < 1e30 && expected.min(hint) > 10.0 * noise {
             self.pg_acc[2] += f64::from(st.pd);
             self.pg_acc[3] += expected;
@@ -1044,6 +1173,16 @@ impl EchoCanceller {
         if self.louder().is_some() {
             self.louder_hold = self.now_s() + LOUDER_HOLD_S;
         }
+        // The echo path changed (louder, or quieter than the filter learnt): the left-over
+        // measured before holds the old path. Measured with an earlier left-over
+        // measurement: kept, a return turned down 6-12 dB showed 1.4-4.4 % pitch frames with
+        // nobody singing in the 5 s after (the filter's over-subtraction passed for the
+        // singer under the old, small left-over).
+        let changed_path = self.louder().is_some()
+            || self.path.is_some_and(|(g, se)| (1.0 - g).abs() - 2.0 * se > PATH_CHANGE);
+        if changed_path {
+            self.coh_hold = self.now_s() + LEAK_PATH_HOLD_S;
+        }
         self.bypass = self
             .path
             .is_some_and(|(g, se)| g + 2.0 * se < BYPASS_GAIN);
@@ -1059,7 +1198,7 @@ impl EchoCanceller {
         // Gone: far under the echo expected, or 10 dB under it and down at the noise floor
         // (a weak return switched off leaves the floor, which is not 25 dB under it; a loud
         // return turned down 20 dB is still far above the floor).
-        let floor = f64::from(self.nf_cur.min(self.nf_prev));
+        let floor = f64::from(self.nf.floor());
         let at_floor = floor < 1e30 && spd < 4.0 * floor * f64::from(counted);
         let gone_power = f64::from(counted) * blk_s >= 0.25
             && (spd < GONE_POWER * sexp || (spd < 0.1 * sexp && at_floor));
@@ -1073,11 +1212,16 @@ impl EchoCanceller {
     }
 
     /// The echo path's gain when it is significantly louder than what the filter learnt
-    /// (the half-second gain 2 standard errors over 1, or the fast gain 3 standard errors
-    /// over 1.4: four chunks give a rough error, and a singer makes them noisy), else
-    /// `None`.
+    /// (the half-second gain 2 standard errors over [`LOUDER_GAIN`], or the fast gain 3
+    /// standard errors over 1.4: four chunks give a rough error, and a singer makes them
+    /// noisy), else `None`. A gain a few per cent over 1 is no change of the path: a filter
+    /// that has learnt most but not all of the echo, or that a singer has nudged, sees
+    /// 1.01-1.04 for most of a song, and that held the left-over measurement for 4 s at a
+    /// time (measured: on "Feel" with a return as loud as the music, half of the song).
+    /// Such small gains are covered by the left-over the gate adds for them,
+    /// `(|1 - g| - 2 se)^2` of the echo estimate.
     fn louder(&self) -> Option<f64> {
-        let slow = self.path.filter(|&(g, se)| g - 2.0 * se > 1.0).map(|p| p.0);
+        let slow = self.path.filter(|&(g, se)| g - 2.0 * se > LOUDER_GAIN).map(|p| p.0);
         let fast = self.path_fast.filter(|&(g, se)| g - 3.0 * se > 1.4).map(|p| p.0);
         match (slow, fast) {
             (Some(a), Some(b)) => Some(a.max(b)),
@@ -1108,6 +1252,7 @@ impl EchoCanceller {
         self.lost += 1;
         self.grace_until = None;
         self.det.forget_echo(false);
+        self.det.watch(None);
         self.locked = false;
         self.filt.reset(true);
         self.drift = 0.0;
@@ -1128,10 +1273,12 @@ impl EchoCanceller {
             None => {
                 let pd: f32 = self.blk_d.iter().map(|v| v * v).sum();
                 return match presence {
-                    Presence::Absent => Trust::Clean,
-                    // Searching, or found but not yet locked: unknown while music plays (or
-                    // just played) and the input is not silent. From the very first block:
-                    // the detector's first analysis comes only after a quarter of a second.
+                    // Absent, unless a detection is on probation (`Detector::pending`).
+                    Presence::Absent if !self.det.pending() => Trust::Clean,
+                    // Searching, a detection on probation, or found but not yet locked:
+                    // unknown while music plays (or just played) and the input is not
+                    // silent. From the very first block: the detector's first analysis comes
+                    // only after a quarter of a second.
                     _ => {
                         let floor = 10f64.powf(self.cfg.music_floor_dbfs / 10.0) as f32;
                         let music = self.ref_env > floor * self.b as f32;
@@ -1148,15 +1295,9 @@ impl EchoCanceller {
         self.pd_s += a * (st.pd - self.pd_s);
         self.pe_s += a * (st.pe - self.pe_s);
         self.py_s += a * (st.py - self.py_s);
-        // Noise floor: minimum of the smoothed output power over two one-second windows.
-        self.nf_cur = self.nf_cur.min(self.pe_s);
-        self.nf_blocks += 1;
-        if self.nf_blocks >= self.nf_window {
-            self.nf_prev = self.nf_cur;
-            self.nf_cur = f32::MAX;
-            self.nf_blocks = 0;
-        }
-        let noise = self.nf_cur.min(self.nf_prev).min(self.pe_s);
+        // Noise floor: minimum of the smoothed output power over about 8 s.
+        self.nf.push(self.pe_s);
+        let noise = self.nf.floor().min(self.pe_s);
         let al = self.a_long;
         self.py_long += al * (f64::from(st.py) - self.py_long);
         self.px_long += al * (f64::from(st.px) - self.px_long);
@@ -1175,6 +1316,7 @@ impl EchoCanceller {
         let px_mono = st.px / self.ch as f32;
         self.hint_r += ar * (hint * px_mono - self.hint_r);
         self.hint_s += self.a_gate * (hint * px_mono - self.hint_s);
+        self.px_s += self.a_gate * (px_mono - self.px_s);
         if self.filt.adapted()
             && !self.bypass
             && ref_active
@@ -1230,8 +1372,20 @@ impl EchoCanceller {
             // Nothing is subtracted: the output holds whatever echo is still there.
             expected
         } else {
+            // The left-over measured by the spectral look's regression (independent of the
+            // singer, who adds noise to it but no bias), per unit of reference power,
+            // applied to this block's reference.
+            let coh = self
+                .reg_leak()
+                .map(|leak| (change * self.py_s).max(REGRESSION_BIAS * leak * self.px_s));
             let mut residual = if let Some(ratio) = self.residual_ratio() {
-                ratio.max(change) * self.py_s
+                // Measured on music without singing: a singer quieter than the music who
+                // slips into those blocks inflates it, so the coherence measurement may
+                // only lower it.
+                let r = ratio.max(change) * self.py_s;
+                coh.map_or(r, |c| r.min(c))
+            } else if let Some(c) = coh {
+                c
             } else if let Some(share) = self.regression_share() {
                 // No stretch of music without singing yet: the share of the echo left in
                 // the output from the spectral look's regression, applied to the echo the
@@ -1259,9 +1413,29 @@ impl EchoCanceller {
         // is recognised by the spectral look instead (tier 2), which compares the output
         // with the most music there can be in each frequency bin.
         let explained = self.pd_s <= ECHO_ONLY * expected;
-        let voice = !explained
-            && self.pe_s > self.gate_k * residual.max(noise) + 1e-12
-            && self.now_s() >= self.louder_hold;
+        let above = self.pe_s > self.gate_k * residual.max(noise) + 1e-12;
+        let held = self.now_s() < self.louder_hold;
+        let voice = !explained && above && !held;
+        let doubted = above && !voice;
+        // Is this the singer's block, by the plain left-over the regression measures (no
+        // margins) and the singer's level? Counted for the gate's grip once the verdict is
+        // final (see `finalise_doubt`).
+        self.blk_sd = self.reg_best().is_some_and(|leak| {
+            let level_ok = self
+                .voice_dbfs()
+                .is_none_or(|v| self.pe_s >= SINGER_NEAR_LEVEL * 10f32.powf(v / 10.0) * self.b as f32);
+            self.pe_s >= SINGER_OVER_LEFTOVER * (leak * self.px_s).max(noise) && level_ok
+        });
+        if !voice {
+            let i = if explained { 0 } else if !above { 1 } else { 2 };
+            self.dbg_music[i] = self.dbg_music[i].saturating_add(1);
+            self.why = if doubted { 4 } else { 1 + i as u8 };
+            if i == 1 {
+                self.dbg_under = [self.pe_s, residual, noise, self.py_s, self.hint_s, self.px_s];
+            }
+        } else {
+            self.why = 5;
+        }
         if voice {
             if self.voice_blocks == 0 {
                 self.pe_voice = f64::from(st.pe);
@@ -1402,7 +1576,45 @@ impl EchoCanceller {
         }
         self.spec
             .leak_slope()
-            .map(|s| (s / g * REGRESSION_BIAS).clamp(1e-6, 1.0))
+            .map(|(l, se)| ((l.max(0.0) + REG_Z as f32 * se) / g * REGRESSION_BIAS).clamp(1e-6, 1.0))
+    }
+
+    /// Whether the regression's left-over can be believed: removal running and adapted on
+    /// an echo path that stands still (a wandering delay smears the left-over across
+    /// bins, and right after a change of the path the regression still holds the old one).
+    fn leak_trusted(&self) -> bool {
+        self.locked
+            && !self.wandering
+            && !self.bypass
+            && self.grace_until.is_none()
+            && self.filt.adapted()
+            && self.now_s() >= self.coh_hold
+    }
+
+    /// The regression's plain left-over per unit of mono reference power (no margin), when
+    /// it can be believed: for telling the singer's blocks (see [`EchoCanceller::doubt_share`]).
+    fn reg_best(&self) -> Option<f32> {
+        if !self.leak_trusted() {
+            return None;
+        }
+        self.spec.leak_slope().map(|(l, _)| l.clamp(1e-7, 1.0))
+    }
+
+    /// Left-over echo power per unit of mono reference power, from the spectral look's
+    /// regression of the output's power fluctuations on the reference's, as a cautious
+    /// figure (the estimate, never below zero, plus [`REG_Z`] standard errors), when it can
+    /// be believed. Used by the per-block gate (with [`REGRESSION_BIAS`] on top) and by the
+    /// report and the quality verdict alongside the left-overs measured on music without
+    /// singing, which a singer quieter than the music inflates (measured: 20 dB too
+    /// pessimistic with a singer over a return as loud as the music,
+    /// docs/benchmarks/practice-echo.md section 13).
+    fn reg_leak(&self) -> Option<f32> {
+        if !self.leak_trusted() {
+            return None;
+        }
+        self.spec
+            .leak_slope()
+            .map(|(l, se)| (l.max(0.0) + REG_Z as f32 * se).clamp(1e-7, 1.0))
     }
 
     /// A detector hop finished: lock, measure the delay from the filter, follow the drift,
@@ -1412,7 +1624,7 @@ impl EchoCanceller {
         self.wandering = ds.presence == Presence::Present
             && (self.recent_relocks() >= 2
                 || ds.fit.is_some_and(|f| {
-                    f.span_s >= 4.0 && f.n >= 10 && f.rms_s > self.cfg.wander_ms * 1e-3
+                    f.span_s >= 4.0 && f.n >= 10 && f.wanders(self.cfg.wander_ms * 1e-3)
                 }));
         let fs = f64::from(self.rate);
         if let Some(until) = self.grace_until {
@@ -1505,18 +1717,23 @@ impl EchoCanceller {
                 } else if let Some(f) = ds.fit
                     && f.span_s >= 6.0
                     && f.n >= 30
-                    && f.rms_s < self.cfg.wander_ms * 1e-3
+                    && !f.wanders(self.cfg.wander_ms * 1e-3)
                 {
                     self.drift = f.slope;
                 }
                 // 2. A jump (Bluetooth, a device that re-buffered): the coarse delay from
                 //    the correlation disagrees with where the filter is, several hops running.
+                let expected = match self.ffit {
+                    Some(f) if f.n >= 8 => f.delay_now_s,
+                    _ => self.lock_delay_s + self.tau / fs,
+                };
                 if let Some(d) = ds.delay_s {
-                    let expected = match self.ffit {
-                        Some(f) if f.n >= 8 => f.delay_now_s,
-                        _ => self.lock_delay_s + self.tau / fs,
-                    };
-                    if (d - expected).abs() > self.cfg.relock_ms * 1e-3 {
+                    // Only if the correlation no longer stands out where the filter has the
+                    // echo: a singer holding a note in tune with the music can put the
+                    // highest peak elsewhere for longer than three hops while the echo
+                    // stays put (measured: restarts at a false delay of USB returns 30-40
+                    // dB under a singer, which then counted as a wandering delay).
+                    if (d - expected).abs() > self.cfg.relock_ms * 1e-3 && !ds.watch_held {
                         self.off_count += 1;
                         if self.off_count >= 3 {
                             self.relock(d, now);
@@ -1525,10 +1742,12 @@ impl EchoCanceller {
                         self.off_count = 0;
                     }
                 }
+                self.det.watch(Some(expected));
             }
             Presence::Absent => {
                 if self.locked {
                     self.locked = false;
+                    self.det.watch(None);
                     self.filt.reset(true);
                     self.drift = 0.0;
                     self.tau = 0.0;
@@ -1577,6 +1796,7 @@ impl EchoCanceller {
         self.grace_until = None;
         self.lock_t = self.now_s();
         self.locked = true;
+        self.det.watch(Some(delay_s));
     }
 
     /// The verdict for input samples `start..end` (input sample indices counted from the
@@ -1623,6 +1843,25 @@ impl EchoCanceller {
         best
     }
 
+    /// Diagnostics for benchmark traces: counts of the reasons behind the verdicts of the
+    /// blocks in input samples `start..end` (see the `why` field).
+    #[doc(hidden)]
+    pub fn debug_trust_reasons(&self, start: i64, end: i64) -> [u32; 8] {
+        let mut c = [0u32; 8];
+        if self.trust_count == 0 || end <= start {
+            return c;
+        }
+        let b = self.b as i64;
+        let newest = self.trust_count as i64 - 1;
+        let oldest = (newest - TRUST_RING as i64 + 1).max(0);
+        let k0 = newest - (self.trust_last_start - start).div_euclid(b);
+        let k1 = newest - (self.trust_last_start - (end - 1)).div_euclid(b);
+        for k in k0.max(oldest)..=k1.min(newest) {
+            c[usize::from(self.trust_why[(k as usize) % TRUST_RING]).min(7)] += 1;
+        }
+        c
+    }
+
     /// The measured delay of the returned playback in seconds, for the scorer's device
     /// delay (WO2 4.10 "The delay comes for free"), when it is present: from the adapted
     /// filter when it has measured it (a small fraction of a sample), else from the
@@ -1640,7 +1879,7 @@ impl EchoCanceller {
             }
         }
         match ds.fit {
-            Some(f) if f.span_s >= 2.0 && f.rms_s < self.cfg.wander_ms * 1e-3 => {
+            Some(f) if f.span_s >= 2.0 && !f.wanders(self.cfg.wander_ms * 1e-3) => {
                 Some(f.delay_now_s)
             }
             _ => ds.delay_s,
@@ -1704,7 +1943,7 @@ impl EchoCanceller {
         } else {
             match fit {
                 Some(f) if f.span_s >= 4.0 && f.n >= 10 => {
-                    if f.rms_s > self.cfg.wander_ms * 1e-3 {
+                    if f.wanders(self.cfg.wander_ms * 1e-3) {
                         DelayStability::Wandering
                     } else {
                         DelayStability::Stable
@@ -1713,14 +1952,44 @@ impl EchoCanceller {
                 _ => DelayStability::Unknown,
             }
         };
-        let suppression_db = if adapted {
+        let ratio_sup = if adapted {
             self.mean_residual_ratio().map(|r| -db(f64::from(r)) as f32)
         } else {
             None
         };
-        let residual_dbfs = match (echo_dbfs, suppression_db) {
+        let ratio_residual = match (echo_dbfs, ratio_sup) {
             (Some(e), Some(s)) => Some(e - s),
             _ => None,
+        };
+        // The left-over from the spectral look's regression (with its margin): unaffected
+        // by a singer who never pauses long enough for the left-overs to be measured
+        // alone, where the share measured on "music only" blocks counts the singer's
+        // quieter moments as left-overs (measured: 20 dB too pessimistic with a singer
+        // over a return as loud as the music, docs/benchmarks/practice-echo.md section 13).
+        // Both are cautious estimates, so the lower left-over is used.
+        // Until somebody has sung, the left-over measured on music without singing is clean
+        // and direct (it counts all that removal leaves, an echo path longer than the
+        // filter included), and the regression, which can miss some of that, is not used
+        // (measured with it: the reported left-over with nobody singing a median 5.5 dB
+        // under the truth over the cases, 10 dB on the held-out songs). Once a singer has
+        // been heard (who inflates the other measurement), the regression's cautious figure
+        // with [`REPORT_BIAS`] may lower it.
+        let sung = self.voice_dbfs().is_some_and(|v| v > self.cfg.good_residual_dbfs);
+        let reg = if present && adapted && sung {
+            self.reg_leak().map(|l| (l * REPORT_BIAS).min(1.0))
+        } else {
+            None
+        };
+        let (suppression_db, residual_dbfs) = match (reg, level) {
+            (Some(l), Some(lv)) if lv > 0.0 => {
+                let r_res = (db(f64::from(l)) + db(ds.ref_ms)) as f32;
+                let r_sup = (db(lv) - db(f64::from(l))) as f32;
+                (
+                    Some(ratio_sup.map_or(r_sup, |r| r.max(r_sup))),
+                    Some(ratio_residual.map_or(r_res, |r| r.min(r_res))),
+                )
+            }
+            _ => (ratio_sup, ratio_residual),
         };
         let quality = if !present {
             RemovalQuality::NotNeeded
@@ -1730,19 +1999,33 @@ impl EchoCanceller {
             RemovalQuality::Checking
         } else {
             let r = residual_dbfs.unwrap_or(0.0);
-            let (good, usable) = match self.voice_dbfs() {
+            // A "singer" under the tracker's reach (blocks the gate let through in a quiet
+            // passage with nobody singing) is no reference: measured, such a level of -70 to
+            // -80 dBFS made six fixed USB returns with nobody singing "unusable". The
+            // thresholds without a singer apply until a voice above them has been heard.
+            let voice = self.voice_dbfs().filter(|&v| v > self.cfg.good_residual_dbfs);
+            let (good, usable) = match voice {
                 Some(v) => (
                     v - self.cfg.good_below_voice_db,
                     v - self.cfg.usable_below_voice_db,
                 ),
                 None => (self.cfg.good_residual_dbfs, self.cfg.usable_residual_dbfs),
             };
-            if r <= good {
+            let by_level = if r <= good {
                 RemovalQuality::Good
             } else if r <= usable {
                 RemovalQuality::Marginal
             } else {
                 RemovalQuality::Unusable
+            };
+            // However well the music was removed, the verdict may not be better than the
+            // gate's grip on the singer (see [`DOUBT_MARGINAL`]).
+            match self.doubt_share() {
+                Some(d) if d > DOUBT_UNUSABLE => RemovalQuality::Unusable,
+                Some(d) if d > DOUBT_MARGINAL && by_level == RemovalQuality::Good => {
+                    RemovalQuality::Marginal
+                }
+                _ => by_level,
             }
         };
         let delay_ms = if present {
@@ -1777,6 +2060,23 @@ impl EchoCanceller {
         }
     }
 
+    /// Share of the singer's blocks the gate finally rejected (judged music or unknown even
+    /// after the spectral look), over the last [`DOUBT_S`] of the singer's blocks, once the
+    /// singer has been heard for a while: what the marker loses of the singer. A block is
+    /// the singer's when its output stands [`SINGER_OVER_LEFTOVER`] above the left-over the
+    /// regression measures (its plain estimate) and within [`SINGER_NEAR_LEVEL`] of the
+    /// singer's level. See [`DOUBT_MARGINAL`].
+    fn doubt_share(&self) -> Option<f64> {
+        (self.voice_dbfs().is_some() && self.doubt_n >= DOUBT_MIN_BLOCKS).then_some(self.doubt)
+    }
+
+    /// Diagnostics: the share of the singer's moments the gate takes away, as the canceller
+    /// estimates it (see `doubt_share`).
+    #[doc(hidden)]
+    pub fn debug_doubt(&self) -> Option<f64> {
+        self.doubt_share()
+    }
+
     /// The singer's level at the output (dBFS RMS), after at least half a second judged to be
     /// the singer.
     fn voice_dbfs(&self) -> Option<f32> {
@@ -1797,7 +2097,13 @@ impl EchoCanceller {
     #[doc(hidden)]
     pub fn debug_line(&self) -> String {
         format!(
-            "ratio_blocks {} ratio_avg {:.4} ratio_mean {:.4} regression {:?} captured {:.3} path {:?} bypass {} upd {} voice_blocks {}",
+            "frozen {} | det z {:.1}/{:.1}/{:.1} share {:?} cand {:?} | ratio_blocks {} ratio_avg {:.4} ratio_mean {:.4} regression {:?} captured {:.3} path {:?} bypass {} upd {} voice_blocks {} music(expl/under/held) {:?} last-under(pe,res,noise,py,hint,px dB) {:?} coh {} reg {} trust(locked,wand,bypass,grace,adapted,cohhold-now,louderhold-now,louder,fast) {:?}",
+            self.filt.is_frozen(),
+            self.det.state().z_fast,
+            self.det.state().z_short,
+            self.det.state().z_long,
+            self.det.state().echo_share.map(|x| (x * 1000.0).round() / 1000.0),
+            self.det.candidate(),
             self.ratio_blocks,
             self.ratio_avg,
             self.ratio_mean,
@@ -1806,7 +2112,12 @@ impl EchoCanceller {
             self.path.map(|(g, se)| ((g * 1000.0).round() / 1000.0, (se * 1000.0).round() / 1000.0)),
             self.bypass,
             self.filt.updates(),
-            self.voice_blocks
+            self.voice_blocks,
+            self.dbg_music,
+            self.dbg_under.map(|v| (db(f64::from(v) / self.b as f64) * 10.0).round() / 10.0),
+            self.reg_leak().map_or("-".to_string(), |l| format!("leak {:.1} dB", db(f64::from(l)))),
+            self.spec.leak_slope().map_or("-".to_string(), |(l, se)| format!("{:.1} dB +- {:.1} dB", db(f64::from(l)), db(f64::from(se)))),
+            (self.locked, self.wandering, self.bypass, self.grace_until.is_some(), self.filt.adapted(), ((self.coh_hold - self.now_s()) * 10.0).round() / 10.0, ((self.louder_hold - self.now_s()) * 10.0).round() / 10.0, self.louder().map(|g| (g * 100.0).round() / 100.0), self.path_fast.map(|(g, se)| ((g * 100.0).round() / 100.0, (se * 100.0).round() / 100.0)))
         )
     }
 

@@ -19,6 +19,12 @@ engine got its output tap: sections 10 (what changed), 11 (results, with the ben
 the held-out songs re-run) and 12 (the output tap). Rows marked "Stage 3" in the summary
 below come from there; sections 2-9 and the appendix are the Stage 2 run.
 
+**Quality round (2026-11-20).** The four findings of the Stage 3 checks (loud returns with a
+singer never graded, false "present" with only a singer, fixed delays called "wandering", high
+notes losing frames while quality said "marginal") were worked on: section 13, with the final
+numbers on held-out material run once after every choice was made (set H3). Rows marked
+"Quality round" below come from there.
+
 ## 1. Summary
 
 WO2 4.4 "Music in the input", 4.10 "two ways to give the app a clean voice" and "The delay
@@ -46,6 +52,11 @@ owner's rig".
 | Stage 3: the echo path changes (OS / mixer volume -20 to +6 dB) or the app's master volume | No pitch shown with nobody singing in any case (5 songs); "present" kept, no restart; master volume -12 dB costs nothing (41-50 dB still removed), because the output tap is after the master volume | Pass |
 | Stage 3: benchmark and held-out songs re-run | Detection 118 of 118 and 166 of 166, no false "present", delay, drift, stability and removal without a singer unchanged; worst gated accuracy with a singer from 15 s: USB 62 -> 97 % (held out 37 -> 68 %), cable 45 -> 82 % (37 -> 76 %); Bluetooth with nobody singing 0.27 % / held out 1.80 % pitch frames (Stage 2: 0.27 / 2.02 %) | Pass; Bluetooth marker open |
 | Stage 3: engine output tap | Bit-identical copy of the device output (180,480 frames), DAC stamps within 0.1 ms of the playback clock on a real device, 0 allocations on the callback and the worker (`rt_alloc`), 0.65 us per callback block, nothing copied without a reader; end to end with the recorder's capture of the same device: delay steady to 0.2 ms over 3 runs | Pass |
+| Quality round: a loud return (-3 / 0 dB) with a singer is gradable when removed well | Through the whole chain: "Feel" 0 -> 12 of 12 takes graded (guide vocal off) and 0 -> 12 of 12 (on), the owner's song 0 -> 11 of 12 (off); held out (H3, 5 songs): 41 -> 50 of 72 (off), 39 -> 46 of 60 (on); grades within 3.5 points of the clean take (H3: 1.3). Scenario benchmark at 0 dB with a singer, H3: unusable 20 of 20 -> marginal 20 of 20 | Pass for scripted singers with the guide vocal off. **Open for real voices** (verifier, 13.10): the original singer at -3 / 0 dB is graded in 0 of 12 H3 takes (committed code: 1) and 6 of 16 on four fresh songs (5; at 0 dB 1 of 8, as before), mostly because the "doubt" share reads 10-19 % or more where the gate loses 4-8 % of a real voice's frames. With the guide vocal on and a singer in unison, often not graded (13.8) |
+| Quality round: no false "present" with only a singer | Benchmark scenarios with nothing returned: 1 of 12 -> 0 (ccm-34740), 0 of 22 on each held-out set; takes with nothing returned flagged: 12 -> 2 of 65 (development; the 2 are the demo's own synthetic harmony), 5 -> 0 of 78 (H3); every return still found (174 of 174 on H3) | Pass |
+| Quality round: fixed delays no longer "wandering" | 6 of 106 -> 0 (verifier's songs), 0 of 136 on H3; Bluetooth still "wandering" and "unusable" in every run of the builder's sets (verifier's fresh ccMixter songs: 3 of 100 -> 0 wandering, but 2 of 26 Bluetooth runs with a singer now end "absent" and are treated as clean, 13.10) | Pass for USB / cable; Bluetooth regression open |
+| Quality round: high "ee"/"oo" and continuous singing | Cases losing more than 10 points of the singer's frames while quality says good or marginal: 16 -> 3 (development, at most 11.2), 5 -> 0 (H2), 0 -> 1 on H3 (14.9, continuous singing over a -30 dB return) | Improved; not closed |
+| Quality round: nobody singing, music returned | Pitch shown, worst USB / cable run: 0.02 % (development), 0.02 % (H3); **1.29 % on one held-out song with a 0 dB cable return** (0.33 % before; quality "unusable", no grade) (13.8) | Open on one song |
 
 ## 2. The returns, the songs and the singer
 
@@ -711,6 +722,374 @@ describes the plan; the tap is in the device callback instead, because only ther
 fades and the master volume applied and the DAC time known, and frames the worker renders
 ahead may be discarded by a seek.
 
+## 13. Quality round (2026-11-20): loud returns with a singer, false alarms, the delay verdict, an honest verdict
+
+The four echo findings the independent checks left open (section 11.8, practice-score.md
+sections 4.6 and 5):
+
+1. A loud return (-3 and 0 dB, USB or cable) **with a singer** gave `untrusted` and no grade
+   on "Feel" and the owner's song (0 of 48 such takes graded), although the same return with
+   nobody singing was removed well. For the owner's likely wiring (full loopback) there would
+   never be a grade.
+2. False "present" with only a singer and nothing returned (ccm-34740 at 32.88 s; 12 of 65
+   scripted takes with nothing returned flagged `music_in_input`, mostly "Feel").
+3. Fixed-delay USB returns at -30/-40 dB under a singer called "wandering" (6 runs on
+   ccm-34740), which also made them "unusable".
+4. High "ee"/"oo" and continuous singing lost 14-20 points of the singer's frames to the gate
+   on 3 of the 5 new songs while quality said "marginal".
+
+The earlier proposal to hide the marker while the delay is "wandering" (11.7) was **not**
+adopted; finding 3 was fixed in the verdict instead.
+
+### 13.1 Material: what was used for what
+
+| Set | Material | Role |
+|---|---|---|
+| D (development) | the benchmark's 3 songs (ccm-22364, -31416, -55540); the verifier's 5 songs (ccm-30483, -33628, -34740, -60767, -68853) through `echo_eval` and `echo_cases`; "Feel (Stripped)" with 5 synthetic singers through `echo_song`; `jukeoke-cli practice run` on copies of the demo, "Feel" and the owner's song (returns -10/-3/0 dB USB, -3/0 dB cable, guide vocal off and on, 4 scripted singers) and 65 scripted takes with nothing returned | every choice below |
+| H1 (held out, seen) | 10 ccMixter songs never used for echo work (ccm-68717, -28307, -28305, -67666, -68814, -68868, -68897, -68902, -69040, -69131) through `echo_eval`, 4 of them through `echo_cases`; real lead vocals of 6 MUSDB18-HQ test songs through `echo_song`; "Crowdpleaser" and "The Homeless Man" through `practice run`; 50 new scripted takes with nothing returned | run on intermediate code by the round's second attempt, and looked at: two choices were made after seeing it (a detection on probation keeps the input "unknown"; the report uses the regression only once a singer has been heard), and this attempt's three dropped experiments (13.8) were measured on one of its runs. Not an independent measurement |
+| H2 (held out, seen once) | 10 MUSDB18-HQ test songs through `echo_eval`, 3 through `echo_cases` | first run after the probation change, looked at, nothing changed because of it |
+| **H3 (held out, fresh)** | 10 other MUSDB18-HQ test songs through `echo_eval` (Moosmusic, Motor Tapes, Mu, Nerve 9, PR "Happy Daze", Punkdisco, Raft Monk, Secretariat "Borderline", Side Effects Project, Signe Jakobsen); 4 other ccMixter songs through `echo_cases` (ccm-26900, -35429, -62096, -39574); real lead vocals of those 4 and of 6 other MUSDB18-HQ songs through `echo_song` (Skelpolu, Speak Softly "Broken Man", The Doppler Shift, The Long Wait, Timboz, Zeno); 5 songs packed for this round (`q/make_heldout3.py`: ccm-68869, MUSDB "Tom McKenzie - Directions", "We Fell From The Sky - Not You", plus the score round's ccm-55541 and musdb_06 copies), each given its guide by `jukeoke-cli guide add`, through `practice run` with returns (the original singer through the engine and 4 scripted singers, 250 takes) and with nothing returned (80 takes) | **run once, on the frozen final code and on the committed code, after every choice was made. The final numbers.** |
+
+All audio is generated or Creative Commons / research material kept outside the repository; no
+lyrics were read or printed; nothing touched a microphone.
+
+**Frozen tracker and scorer.** The tracker and the scorer were being changed by their own
+workstreams at the same time, so every figure here comes from a copy of the committed
+workspace (8abc0b4) with only this round's echo files copied in
+(`../jukeoke-build/practice-echo/q/ws-after`, `sync-after.sh`), against the same copy with the
+committed echo code (`ws-base`, "before"). The echo unit tests, `echo_alloc`, the chain's tests
+and `practice_alloc` were also run in the working tree with the other workstreams' current
+tracker and scorer (13.9).
+
+**A data fault found on the way.** Several ccMixter folders whose backing stem is the whole
+accompaniment carry the **lead vocal itself, sample-locked, inside the accompaniment** (lead
+bleed): whitened cross-correlation of lead and accompaniment (`q/gcc_check.py`, 30 s pieces)
+peaks at 0.0 ms with a peak-to-floor ratio of 28-55 for ccm-67666, -68897, -69131, -69040,
+-68814 and -68869, 15-21 for ccm-28305, 11-19 for ccm-55541 (clean songs: 3.4-5.9 at a random
+lag; ccm-69131's lead correlates with its accompaniment at 0.64). With those, the "singer" is
+partly the app's own playback, which a real singer never is: the canceller rightly finds and
+removes it, and a "nothing returned" run with that lead as the singer is rightly "present".
+Real-vocal figures below leave these songs out (the previous attempt's real-vocal held-out
+figures included five of them); runs with a synthetic singer are not affected.
+
+Results: `../jukeoke-build/practice-echo/q/r/` - `b0` / `a8` (D, committed / final code),
+`hb0` / `h5` (H1 and H2), `hb6` / `h6` (H3), `a9` (the final build again: the benchmark is
+identical to `a8` in all 126 rows but the CPU column), `calib-a8`, `dbg2` (the experiments of
+13.8), `final` (unit tests, clippy, CPU). Scripts beside them: `run-final.sh` (D, H1, H2),
+`run-h3.sh` (H3), `doc_tables.py` / `doc_tables3.py` (every table here), `stemcheck.py`,
+`gcc_check.py`, `make_heldout3.py`. This round ran in three attempts (the first two were cut
+off by the usage limit); the third kept the second's code, re-measured all of it, tried three
+more changes and dropped them (13.8), and ran H3.
+
+### 13.2 What changed
+
+| Change | Measured before | What it does |
+|---|---|---|
+| **The left-over during singing from an unbiased regression** (`spectral.rs`) | The left-over during singing came from blocks of "music only", into which a singer quieter than the return slips, and from the spectral regression with each bin's slope clipped at zero: both several times too pessimistic beside a loud return (on "Feel" with a 0 dB USB return the reported left-over was -26 to -41 dBFS for a true -47 to -56 dBFS), so the verdict was "unusable" for most of the song | The per-bin slopes are averaged as they are (a singer adds noise to them; clipping turned that noise into a bias), each with its standard error from the bin's unexplained fluctuation; the cautious figure is the estimate (never below zero) plus 2 standard errors. A second regressor, the reference's fluctuation 32 ms earlier, catches an echo path longer than the filter (with the frame's fluctuation alone, cable left-overs with nobody singing came out 4-14 dB under the truth). The quality verdict and the report compare this left-over with the singer's level; the per-block gate adds 6 dB |
+| **The report uses it only once a singer has been heard** | With the regression always used, the reported left-over with nobody singing was a median 5.5 dB under the truth (D cases), 10 dB (H1) | Until a singer above -60 dBFS has been heard the direct measurement on music alone is used; after that the lower of the two cautious figures |
+| **A sub-audible "singer" is no reference** | Blocks the gate let through in a quiet passage with nobody singing set a "singer's level" of -70 to -80 dBFS, against which six fixed USB returns with nobody singing were "unusable" | The thresholds without a singer apply until a voice above -60 dBFS has been heard |
+| **A path gain of a few per cent is no change of the path** (`louder`) | 1.01-1.04 ("louder" by 2 standard errors) held the left-over measurement for 4 s at a time, half of "Feel" | "Louder" needs +1 dB (1.12) beyond 2 standard errors; smaller differences stay covered by the `(|1-g|-2se)^2` the gate adds. A real change of the path (louder, or 0.1 away from 1 beyond 2 standard errors) holds the regression's left-over for 4 s |
+| **The spectral look's bound from the measured left-over** (tier 2) | With the whole echo as the bound, a voice quieter than the music in its own bins is never recognised: a high "ee" under a 0 dB return lost 24-48 % of its frames | Once the regression has seen 8 s of music, the bound in a bin is the cautious left-over of its third-octave band (with 6 dB margin) instead of the whole echo, never under -12 dB of the whole echo, and the whole echo in a bin the music has just lit (its last 0.25 s 6 dB over its 10 s mean). From 4 s, 0.07 % of the frames showed pitch with nobody singing over a cable return with the guide vocal on; without the -12 dB floor up to 1.3 %; without the "lit" rule the guide's new notes passed |
+| **The gate's grip on the singer, measured and used** ("doubt") | A first estimate (blocks above the left-over still called music) ranged 5-12 % both where the gate lost 24 % of the singer and where it lost under 3 % | The share of the singer's blocks (output 5 dB or more over the regression's plain left-over and within 15 dB of the singer's level) whose *final* verdict, after the spectral look, is music or unknown, over 10 s of such blocks. Above 4 % the quality is at most "marginal", above 10 % "unusable" (the app warns instead of grading): however well the music was removed, the verdict is no better than what the marker can show of the singer |
+| **Detection on probation** (`detect.rs`) | A singer holding a note in tune with a note of the music makes a correlation peak for as long as the note: "present" with nothing returned (ccm-34740 from 32.88 s; "Feel" for up to 92 s) | A detection weaker than z = 24 (returned music with nobody singing is found at 24 or more) is a candidate until the short correlation has stood out at its lag (within 3 ms, following it) in 24 of the last 32 hops (about 3 s of 4); a delay already confirmed in the session is believed at once. While a candidate is pending the input is "unknown", not "clean", and "absent" waits (H1 without this: a Bluetooth return declared absent 3 s into its probation, 12 % of the frames showing the returned music as pitch with nobody singing) |
+| **A delay line robust to false peaks** (`fit_history`, `watch`) | Scattered false peaks under a weak return widened the line's spread past 0.25 ms ("wandering"), and could restart the filter at a false delay | The line is fitted to the densest group of measurements (within 2.5 ms), then refitted; its spread counts only the measurements on it; it wanders when that spread is over 0.25 ms or the delay jumped (a second group that agrees within 1 ms, or fewer than half on the line). The filter is not restarted while the correlation still stands out at the filter's delay. No allocation (working arrays on the stack) |
+| **Noise floor over 8 s** (minimum statistics) | Over 2 s, a singer who sang for longer became the "floor" himself and his quieter moments were judged music | As said |
+
+Public API of `jk_pitch::echo`: unchanged (no type, field or signature changed; two hidden
+diagnostics, `debug_trust_reasons` and `debug_doubt`, were added). What the app core sees
+differently through the same fields (section 8 still holds): `trust_window` can say `Unknown`
+while `presence` is still `Absent` or `Searching` (a detection on probation: each candidate for at most about 6 s);
+`quality` can now be `Good` or `Marginal` with a singer over a return as loud as the music, and
+is `Unusable` when the gate loses more than 10 % of the singer even if the music is removed well;
+`stability` is `Wandering` only for a delay that really wanders.
+
+### 13.3 Finding 1: a loud return with a singer is gradable when it is removed well
+
+Through the whole chain (`jukeoke-cli practice run`: echo stage, tracker, scorer), returns at
+-3 and 0 dB, USB (12 ms) and cable (25 ms, 60 ppm), 3 or 4 singers each (perfect, 70 cents
+sharp, an octave low, and on H3 the original singer through the engine; "silent" counted
+apart). "Graded" = the result has a grade; "change" = the largest difference from the same
+singer's grade with nothing returned, where graded.
+
+| Song (set) | Guide vocal | Loud-return takes graded: before | after | Largest change, after (points) |
+|---|---|---|---|---|
+| "Feel" (D) | off | 0 of 12 | **12 of 12** | 1.1 |
+| "Feel" (D) | on | 0 of 12 | **12 of 12** | 3.5 |
+| owner's song (D) | off | 0 of 12 | **11 of 12** | 0.4 |
+| owner's song (D) | on | 0 of 12 | 2 of 12 | 0.2 |
+| demo (D) | off / on | 9 / 0 of 12 | 9 / 1 of 12 | 0.6 / 0.1 |
+| "Crowdpleaser" (H1) | off / on | 12 / 6 of 12 | 12 / **3** of 12 | 1.9 / 1.2 |
+| "The Homeless Man" (H1) | off / on | 6 / 0 of 12 | 10 / 6 of 12 | 1.9 / 2.4 |
+| ccm-55541 (H3) | off / on | 0 / 0 of 12 | 4 / 4 of 12 | 0.8 / 0.8 |
+| ccm-68869 (H3) | off / on | 12 / 12 of 12 | 12 / **9** of 12 | 0.9 / 1.1 |
+| musdb_06 (H3) | off / on | 13 of 16 / 12 of 12 | 12 of 16 / 12 of 12 | 0.9 / 1.3 |
+| musdb_44 (H3) | off / on | 6 of 16 / 6 of 12 | **12 of 16 / 11 of 12** | 0.2 / 0.9 |
+| musdb_48 (H3) | off / on | 10 of 16 / 9 of 12 | 10 of 16 / 10 of 12 | 0.2 / 0.4 |
+
+(H3 "off" counts include the original singer, 4 returns; his takes on ccm-55541 and ccm-68869,
+whose accompaniment carries his own voice, are left out.) Where graded, the grade stayed
+within 3.5 points of the same singer with nothing returned (D), 2.4 (H1) and 1.3 (H3). ccm-55541's
+lead sits 16 dB under its accompaniment, so a return as loud as the music is louder than the
+singer there: "unusable" is the honest verdict.
+
+**Silence still scores nothing**: every silent take with music returned has grade 0 or no
+grade (`untrusted`), and the marker showed no value in any of them (D 33, H1 22, H3 55 takes;
+not graded: 1 / 4 / 13, all cable returns at -3/0 dB; the committed code: 1 / 4 / 12).
+
+The same with real lead vocals and with synthetic singers over whole songs (`echo_song`, 120 s;
+"gradable" = quality good or marginal for at least half the song; the truth is the tracker on
+the voice alone):
+
+| Material | Returns | Runs | Gradable: before | after | of those, true left-over less than 15 dB under the voice | Right pitch shown, share of what removal leaves right, median (worst): before | after |
+|---|---|---|---|---|---|---|---|
+| D: "Feel", 5 synthetic singers | -3, 0 dB | 20 | 0 | **20** | 0 | 91.7 (89.7) % | 100.0 (99.9) % |
+| D: "Feel" | -20, -10 dB | 15 | 15 | 15 | 0 | 94.1 (91.5) % | 100.0 (100.0) % |
+| H1: 6 MUSDB18-HQ real vocals | -3, 0 dB | 24 | 3 | **13** | 0 | 79.5 (54.0) % | 93.8 (88.2) % |
+| H1 | -20, -10 dB | 18 | 16 | 18 | 0 | 93.9 (71.3) % | 98.2 (93.7) % |
+| H3: 4 ccMixter + 6 MUSDB18-HQ real vocals | -3, 0 dB | 40 | 12 | 14 | 5 (+4 on a song whose singer is silent in the excerpt) | 72.3 % | 91.9 % |
+| H3 | -20, -10 dB | 30 | 22 | 25 | 1 (+3 on that song) | 85.1 % | 96.3 % |
+
+In no run was a return the truth puts 25 dB or more under the voice left ungradable. The six
+optimistic H3 runs (ccm-35429 at -10, -3 and 0 dB, ccm-39574 with a 0 dB cable: true left-over
+9-13 dB under the voice, quality good or marginal for 54-74 % of the song) show 69-90 % of the
+right pitch frames against 86-98 % after removal; the committed code judged four of them
+gradable too (13.8).
+
+In the scenario benchmark (synthetic singer, 45 s), the final quality of USB and cable returns
+**at 0 dB with a singer**: D 3 songs: unusable 13 of 13 -> marginal 6, unusable 7; D verifier's 5
+songs: unusable 15 -> good 5, marginal 7, unusable 3; H1: unusable 20 -> marginal 17, unusable
+3; H2: unusable 20 -> marginal 20; **H3: unusable 20 -> marginal 20**. At -10 dB, H3: marginal
+18 -> good 10, marginal 8.
+
+### 13.4 Finding 2: no false "present" with only a singer
+
+| | before | after |
+|---|---|---|
+| Benchmark scenarios with nothing returned declared "present" (D 3 + 5 songs, H1, H2, H3) | 1 of 12 (ccm-34740) on D, 0 elsewhere | **0 of 12, 0 of 8, 0 of 22, 0 of 22, 0 of 22** |
+| D: 65 scripted takes with nothing returned flagged `music_in_input` | 12 (longest presence 92.5 s) | **2** (demo "steady" 14.9 s and "one note" 2.4 s) |
+| H1: 50 new scripted takes (other vowels, levels, offsets, timings) | 5 (longest 15.9 s) | **0** |
+| **H3: 78 takes, 5 songs (the original singer where his voice is not in the accompaniment, 13 scripted singers, "ee" and "oo")** | 5 (longest 11.5 s) | **0** |
+| Returns found (benchmark) | D 118 / 134, H1 174, H2 174, H3 174 of as many | the same, every one |
+
+The two remaining D takes: the demo song's harmony is made by the same synthesis as the
+scripted singers, so a singer holding one of its notes is a filtered copy of the playback; a
+real voice is never sample-locked to a stem (the lead-bleed songs of 13.1 show what happens
+when it is). The price is time: a return the detector finds weakly waits for its probation.
+Returns at -40 dB under a singer (26 dB under the voice, they cannot move the marker) are found
+after up to 4.7 s on D (was 4.6), 4.2 s on H1 (2.5), 9.5 s on H2 (4.3), 4.5 s on H3 (4.5); a
+cable return under a singer after up to 3.9 s on H3 (0.84); a Bluetooth return after up to
+7.7 s on D and H1 (was 3.8), 7.3 s on H2 (3.9), 7.1 s on H3 (3.8): the wandering delay smears
+the correlation under the probation's "sure" level. Bluetooth is never removed or graded
+anyway. USB and cable returns with nobody singing: unchanged (at most 1.40 s). With nothing
+returned, a pending candidate makes the input "unknown" for moments: the grades of the takes
+with nothing returned moved by at most 1.3 points (D), 0.1 (H1) and 0.8 (H3), and the singer's
+frames shown in the benchmark's nothing-returned scenarios by at most 3.6 points (ccm-34740,
+the run that was falsely "present" before; 0.0 on every other song of every set).
+
+### 13.5 Finding 3: fixed delays are no longer "wandering"
+
+USB or cable returns (fixed delay) judged "wandering": D verifier's 5 songs **6 of 106 -> 0**,
+H2 1 of 136 -> 0, D 3 songs, H1 and H3 0 -> 0 (94, 136, 136 runs). Bluetooth: "wandering" and
+"unusable" in every run (D 52, H1 38, H2 38, H3 38). Delay error of USB and cable returns
+(median / worst): D 5 songs 0.0020 / 0.940 -> 0.0028 / 0.189 ms; H3 0.0044 / 0.196 ->
+0.0044 / 0.185 ms; elsewhere unchanged within 0.01 ms. Unit test
+`fixed_delay_with_scattered_false_peaks_does_not_wander`: a fixed 12.3 ms line with a third of
+the measurements scattered stays stable (spread 0.15 ms, 109 of 156 on the line); a real jump
+(77 of 156 on a second line) wanders.
+
+### 13.6 Finding 4: high "ee"/"oo" and continuous singing, and an honest verdict
+
+`echo_cases` (generated voices over each song: high "ee"/"oo", male "ee", continuous singing,
+loopback off/on, path changes; 49 cases per song). Gate loss = right pitch frames after removal
+minus right pitch frames shown, from 15 s, in points.
+
+| Material | Cases | Worst gate loss while quality is good or marginal, per song: before | after | Cases losing more than 10 points while good or marginal | High / continuous verdicts good / marginal / unusable |
+|---|---|---|---|---|---|
+| D: the verifier's 5 songs | 245 | 14.5, 20.3, 6.2, 18.1, 8.3 | **11.2, 5.1, 2.1, 10.4, 9.3** | 16 -> **3** | 36/55/39 -> 73/37/20 |
+| H1: 4 ccMixter | 196 | 12.7, 3.4, 8.3, 8.8 | 5.8, 4.0, 8.4, 10.4 | 1 -> 1 | 26/39/39 -> 39/43/22 |
+| H2: 3 MUSDB18-HQ | 147 | 20.4, 7.8, 4.0 | 7.0, 2.3, 8.4 | 5 -> **0** | 23/26/29 -> 33/28/17 |
+| **H3: 4 ccMixter** | 196 | 4.4, 0.0, 2.4 | 4.4, 0.0, **14.9** | 0 -> **1** | 23/8/37 -> 31/13/29 |
+
+Both halves of the finding moved: the gate keeps more of a quiet voice (more "good", fewer
+"unusable"), and where it cannot, the verdict says so (the doubt share). The three D cases still
+over 10 points (10.4-11.2: a high "ee"/"oo" at 0 dB on ccm-30483, a high "ee" at -10 dB on
+ccm-60767) sit at the doubt share's threshold; before they lost 18-40 points (two of them were
+then "unusable"). On H3 one case got worse: continuous
+singing over a -30 dB USB return on ccm-39574 loses 14.9 points while "marginal" (committed
+code: 2.4), and the doubt share saw only 0.4 % there: the estimate misses some losses (13.8).
+Frames the gate takes away are neither credited nor charged by the scorer, so this costs the
+marker, not the grade.
+
+### 13.7 The benchmark kept green
+
+Scenario benchmark, committed -> final code (synthetic singer, 45 s excerpts, 126 / 146 / 196
+scenarios per set):
+
+| Figure | D, 3 songs | D, verifier's 5 | H1, 10 ccMixter | H2, 10 MUSDB | **H3, 10 MUSDB** |
+|---|---|---|---|---|---|
+| returns found | 118 -> 118 of 118 | 134 -> 134 | 174 -> 174 | 174 -> 174 | **174 -> 174** |
+| false "present" | 0 -> 0 of 8 | 1 -> 0 of 12 | 0 -> 0 of 22 | 0 -> 0 of 22 | **0 -> 0 of 22** |
+| true suppression, USB, nobody singing (min / median dB) | 29.9 / 45.7 -> the same | 23.6 / 40.5 -> 23.7 / 40.5 | 21.5 / 43.4 -> the same | 33.8 / 49.5 -> the same | **31.8 / 48.8 -> the same** |
+| the same, cable | 29.0 / 33.2 -> 29.0 / 33.0 | 22.1 / 29.1 -> 22.1 / 29.7 | 24.1 / 32.2 -> **18.9** / 32.1 | 28.7 / 32.6 -> the same | **28.1 / 32.0 -> the same** |
+| true suppression with a singer, USB / cable (min dB) | 14.3 / 12.8 -> 11.7 / 13.7 | 3.5 / 5.1 -> **-6.6** / 16.2 | 17.5 / 21.8 -> 18.2 / 16.6 | 9.1 / 19.8 -> 9.4 / 24.2 | **18.7 / 22.5 -> 20.6 / 24.5** |
+| nobody singing: pitch shown, worst USB / cable run | 0.02 -> 0.02 % | 0.00 -> 0.02 % | 0.33 -> **1.29 %** | 0.00 -> 0.00 % | **0.00 -> 0.02 %** |
+| nobody singing: pitch shown, worst Bluetooth run | 0.27 -> 0.00 % | 0.40 -> 0.40 % | 15.08 -> 4.96 % | 0.02 -> 0.16 % | **0.22 -> 0.22 %** |
+| singer: right pitch shown from 15 s, worst USB / cable | 96.5 / 81.9 -> 95.6 / 95.6 % | 82.0 / 81.8 -> 99.1 / 90.7 % | 84.5 / 88.7 -> 97.1 / 91.9 % | 85.8 / 90.4 -> 95.7 / 95.8 % | **80.2 / 84.8 -> 98.4 / 95.9 %** |
+| singer: pitch shown in the rests, worst USB / cable run | 2.52 -> 0.09 % | 0.00 -> 0.28 % | 0.47 -> 1.96 % | 0.00 -> 0.00 % | **0.28 -> 0.28 %** |
+| Bluetooth judged unusable | 24 / 24 | 28 / 28 | 38 / 38 | 38 / 38 | **38 / 38** |
+
+The bold regressions in H1 are one song (13.8). The -6.6 dB on D is a return 40 dB under the
+music beneath a singer 26 dB louder (ccm-34740): the filter, learning beside the singer, leaves
+more of that music than came in, still 29 dB under the singer, every frame right, quality good.
+
+### 13.8 What the quality round does not fix
+
+- **A cable return as loud as the music on one H1 song (ccm-28307), nobody singing: 1.29 % of
+  the frames show a pitch (committed code: 0.33 %), removal 18.9 dB instead of 26.9; quality
+  "unusable" all along (the app warns and does not grade).** At an instrument entrance (40.6 s)
+  the left-over jumps 14 dB in 0.2 s in both versions; the final code's tighter bounds then take
+  part of it for the singer, the learning filter is held on that evidence for moments, the
+  output filter falls behind and removal drops to 7 dB for about a second. Three fixes were
+  tried and dropped (`r/dbg2`): holding the learning filter only on evidence against the whole
+  echo brought this run to 0.42 % and 26.9 dB, but made the unit test's singer 6 dB under a 0 dB
+  return gradable only 24 % of the time instead of 81 % (the learning filter then learns the
+  singer); on top of that, counting the echo of "just lit" bands whole in the level gate gained
+  0.13 points more (the lit share swings between 0 and 0.97 in ordinary music); keeping the
+  tight bound off below 250 Hz and holding the measured left-over after a jump changed nothing
+  on this run (the latter also cost the unit test: 58 %). The same weakness shows as 1.96 % of rest frames with pitch with a
+  singer over a 0 dB cable return on ccm-68814 (0.47 % before; quality now "marginal").
+- **Guide vocal on, returned loud, a singer in unison with it.** The singer's harmonics sit in
+  the bins of the returned guide vocal, where the spectral look cannot go under -12 dB of the
+  whole echo, so the gate loses more than 10 % of the singer and the verdict is "unusable": the
+  owner's song at -3/0 dB with the guide vocal on is graded in 2 of 12 takes, "Crowdpleaser" in
+  3 of 12 (6 before, within 0.7-5.4 points of clean), ccm-68869 in 9 of 12 (12). Honest (the
+  result says why), and the guide vocal is off by default (owner decision 7); turning the
+  loopback down or the guide vocal off gives a grade.
+- **The reported left-over with a singer is unbiased, no longer cautious.** Over the `echo_cases`
+  runs with a singer it is a median +1.4 dB from the truth on D (committed code +7.0), -0.7 dB
+  on H1 (+4.4), -0.3 dB on H2 (+6.6), +0.05 dB on H3 (+1.1); under the truth by more than 3 dB
+  in 12 of 130, 16 of 104, 16 of 78 and 25 of 78 runs (0, 1, 0, 24 before). The verdict is better
+  than the true left-over would give for more than 5 % of the time in 51 of 245 D cases (5
+  before), 53 of 196 H1 (7), 35 of 147 H2 (6), 39 of 196 H3 (27). With real voices on H3, six
+  runs were judged gradable with the true left-over 9-13 dB under the voice (13.3). Where
+  graded, the grades stayed within 1.3-3.5 points of clean (13.3).
+- **The doubt share misses some losses**: on H3 continuous singing over a -30 dB USB return
+  (ccm-39574) loses 14.9 points while "marginal"; on D three cases lose 10.0-11.2.
+- **Bluetooth is found later** (up to 7.7 s instead of 3.9 s) and, with nobody singing, showed
+  pitch in up to 4.96 % of the frames of one H1 run before it was confirmed (ccm-28307; other
+  H1 songs improved, worst before 15.08 %); 0.22 % on H3, unchanged. Practice over Bluetooth
+  is not promised (the app says it needs the cable or USB).
+- Silent takes over loud cable returns on some songs give no grade (`untrusted`) rather than 0,
+  as before (13.3).
+- Still generated or Creative Commons / research audio through modelled returns: no mixer,
+  microphone or person; the scorer and the tracker are the committed ones.
+
+### 13.9 Cost, allocation, unit tests
+
+- CPU (`echo_eval --cpu`, 60 s, cable return with a singer, best of 3, the same session):
+  final code 3.72 / 6.89 / **7.42** / 13.36 ms per second of audio at 16 / 44.1 / 48 / 96 kHz
+  (0.74 % of one core at 48 kHz); committed code 3.44 / 6.42 / 7.06 / 12.82 ms.
+- `tests/echo_alloc.rs`: 0 allocations per block at 16 / 44.1 / 48 / 96 kHz, with the
+  loopback switched off and a wandering delay (4 of 4 pass). `tests/practice_alloc.rs`: the
+  chain allocates nothing per block (1 of 1).
+- Unit tests `echo::`: 12 of 12 (3 new: `loud_return_with_a_singer_is_gradable` - USB 0 dB,
+  singer 6 dB under the music: gradable in 1,219 of the last 1,500 reports, reported left-over
+  -40.5 dBFS for a true -41.7, steady singing trusted 18 of 18;
+  `loud_return_with_nobody_singing_shows_no_pitch` - cable 0 dB: 0 trusted pitch frames of 25;
+  `fixed_delay_with_scattered_false_peaks_does_not_wander`); `bluetooth_return_is_flagged_unusable`
+  now allows 8 s for the detection (3.83 s measured). `practice::` 6 of 6 in the working tree
+  (5 of 5 in the frozen copy). All of these pass both in the frozen copy and in the working
+  tree with the other workstreams' tracker and scorer (`r/final/unit-tests*.txt`);
+  `cargo clippy -p jk-pitch --all-targets`: no warnings.
+
+### 13.10 Independent check of the quality round (verifier, 2026-11-20)
+
+Built from two copies of the **current** workspace (the tracker and scorer now in the working
+tree, not 8abc0b4): "after" with this round's echo files, "before" with the committed (HEAD)
+echo files plus the two hidden diagnostics as stubs. Results and scripts:
+`../jukeoke-build/practice-echo/qv/` (`r/base`, `r/after`, `scripts/`).
+
+**Reproduced.** `echo::` 12/12 (gradable 1,219 of 1,500; left-over -41.7 true / -40.5
+reported; 18/18), `echo_alloc` 4/4, `practice::` 6/6, `practice_alloc` 1/1, clippy 0 warnings.
+Public API: no public type, field or signature changed; two `#[doc(hidden)]` methods added; the
+new `pub` fields sit in `pub(crate)` modules. CPU at 48 kHz 7.54 vs 7.12 ms per second (after /
+before, same session). H3 was run (06:33-06:46) after the last edit of the echo code (06:29),
+and `a9` equals `a8` in all 126 rows but the CPU column. With the current tracker: "Feel" 0 -> 12
+of 12 graded (guide vocal off) and 0 -> 12 of 12 (on, within 3.4 points), the owner's song 0 ->
+11 of 12 (off) and 0 -> 2 of 12 (on), silent takes 0 with no marker; `echo_cases` on the
+verifier's 5 songs: cases over 10 points 16 -> 3, worst per song 10.9 / 5.1 / 2.1 / 10.4 / 9.3;
+ccm-28307 (cable 0 dB, nobody singing) 0.33 -> 1.29 % pitch shown, 26.9 -> 18.9 dB, exactly as
+in 13.8. Finding 2 with 50 **new** nothing-returned performances on the five development songs
+(flat 50, sharp 15, late 200, early 250, rubato, steady "oo", one-note "ee", staccato, breath
+gaps, -10 dBFS): flagged `music_in_input` **8 -> 0 of 50**; grades moved at most 0.9 points but
+for a one-note "ee" (F either way, 15.1 -> 20.1).
+
+**Fresh held-out set V** (nobody used it for echo work; lead bleed checked with `gcc_check.py`:
+the MUSDB songs 3.4-5.9 and ccm-31629 3.5-4.4 at random lags; ccm-28673, -40415, -41611 carry
+the lead in parts, 16-59 at 0.0 ms, so they serve only with the synthetic singer):
+`echo_eval` on ccm-31629 (+ ccm-28673, -40415, -41611) and on MUSDB "Buitraker" (+ 7 others);
+`echo_cases` on ccm-31629 and 3 MUSDB songs; `echo_song` with the real lead vocals of ccm-31629
+and 5 MUSDB songs; and 4 MUSDB songs packed for this check (Bobby Nobody, Carlos Gonzalez, The
+Mountaineering Club, Secretariat "Over The Top"; guides by `jukeoke-cli guide add`) through
+`practice run` from 20 s for 150 s: the original singer and 6 scripted singers (perfect, sharp
+70, an octave low, rubato 150 ms, "behind" borrowing, silent) x nothing / USB -10, -3, 0 dB /
+cable -3, 0 dB (208 takes), and 48 more takes with nothing returned.
+
+| Figure (set V) | before | after |
+|---|---|---|
+| returns found, ccMixter / MUSDB | 124 of 126 / 158 of 158 | 122 of 126 / 158 of 158 |
+| false "present" | 0 of 10 / 0 of 18 | 0 / 0 |
+| USB / cable judged "wandering" | 3 of 100 / 0 of 124 | **0 / 0** |
+| singer, USB / cable at 0 dB, final quality (MUSDB; ccMixter) | u18; g1 u13 | **g9 m9**; g1 m2 u11 |
+| nobody singing, pitch shown, worst USB / cable run | 0.04 % | 0.22 % (ccm-28673, cable -10 dB + guide) |
+| singer, pitch shown in the rests, worst USB / cable run | 0.65 % | 2.52 % (ccm-31629, cable -20 dB, marginal) |
+| `echo_cases`: cases over 10 points while good or marginal; worst per song | 4; 16.6 / 11.1 / 15.6 / 3.6 | **0**; 5.7 / 2.3 / 4.5 / 5.0 |
+| `echo_cases`: nobody singing, pitch shown, worst case | 0.00 % | 0.27 % (ccm-31629, cable -10 dB + guide, marginal) |
+| real vocals at -3 / 0 dB: gradable half the time or more | 1 of 24 | **11 of 24** |
+| real vocals: right pitch shown of the right pitch after removal, median (worst) | 72.9 (52.2) % | **95.0 (79.6) %** |
+| `practice run`, scripted singers at -3 / 0 dB: graded | 60 of 80 | **80 of 80** (within 2.6 points of clean) |
+| `practice run`, **the original singer** at -3 / 0 dB: graded | 5 of 16 | **6 of 16** (at 0 dB: 1 -> 1 of 8) |
+| silent takes with music returned | 44: grade 0, no marker | the same |
+| takes with nothing returned flagged `music_in_input` | 0 of 76 | 0 of 76 |
+
+Grades a person would expect hold (after, nothing returned): the original singer 91.3-98.6, the
+perfect singer 98.7-100, rubato 96.8-99.5 (free), "behind" 29.7-46.5 (borrowing penalised),
+silence 0; with returns the scripted singers keep these within 2.6 points.
+
+**Open, found by this check:**
+
+1. **A real voice over a loud return is still rarely graded (major).** The gains of finding 1
+   are on synthetic singers. The original singer at -3 / 0 dB: H3 (the round's own data, songs
+   without lead bleed) 1 -> **0 of 12** graded; set V 5 -> 6 of 16, at 0 dB 1 -> 1 of 8, and where
+   graded up to 6.2 points under the clean take (Carlos Gonzalez, USB -3 dB: 85.1 vs 91.3;
+   before up to 13.7). Cause: the
+   doubt share reads high on real voices. In `echo_song` on V, six runs (The Easton Ellises
+   USB / cable -3 / 0 dB, Buitraker USB / cable 0 dB) with a stable delay and an estimated
+   left-over 17-19 dB under the voice ("marginal" by level) are "unusable" for 80-99 % of the
+   song while the gate loses only **4.2-8.3 %** of the right pitch frames; traced
+   (`JK_ECHO_TRACE`, doubt printed): Easton Ellises USB 0 dB reads 10-19 % throughout (true loss
+   8.3 %), Buitraker cable 0 dB 85 % when the singer enters, 38 % 20 s later, 11 % at the end
+   (true loss 7.1 %). The 4 % / 10 % thresholds were set on synthetic singers; a real voice's
+   consonants, breaths and reverb count as "singer's blocks" by energy. An experiment that counts
+   a block as lost only when most blocks of the tracker window around it (+-21 ms) are rejected
+   changed little (1-5 s less "unusable" per run, the same gradable count), so it is the block
+   definition, not the window. Where the doubt is right (Bobby Nobody: the gate loses 22.6 %),
+   "unusable" is honest. The development songs cannot settle this: their lead stems are
+   Studio-separated and partly inside the accompaniment ("Feel" and the owner's song with
+   nothing returned are "present" for 229-237 s), and there the original singer at -3 / 0 dB
+   is graded 0 of 4 before and after.
+2. **Bluetooth can now end "absent" under a singer (major for an honest marker, not the
+   owner's wiring).** ccm-40415, Bluetooth 0 dB 200 ms with a singer: before "present" at 3.77
+   s, "wandering", "unusable" (warning, no grade); after never confirmed, "absent" at 10.87 s,
+   2,380 blocks "clean", **17.5 %** of the singer's rests show the music as pitch, quality
+   `not_needed` (the take would be graded). ccm-41611 the same ("present" 4.74 s, "absent" 11.15
+   s, 10.6 % of the rests). APP_API 12.5 promises "present" within a few seconds at any level
+   that could move the marker and `not_graded` for Bluetooth. Bluetooth is also found later on V
+   MUSDB: nobody singing 1.40 / 1.54 -> 3.49 / 4.74 s (median / slowest), singer 1.12 / 3.63 ->
+   4.46 / 6.97 s.
+3. **Small new leaks with a singer (minor):** the three 0.22-2.52 % rows above, all with quality
+   marginal and a cable return (the weakness of ccm-28307 / -68814 in 13.8).
+
 ## How to reproduce
 
 ```text
@@ -754,6 +1133,32 @@ cargo run --release -p jk-engine --example tap_loopback -- --secs 20   # real ou
 
 `JK_ECHO_TRACE=<case name>` works for `echo_cases` too (every 0.1 s, with the internal
 state line `EchoCanceller::debug_line`).
+
+Quality round (section 13). The figures come from a frozen copy of the committed workspace
+with this round's echo files copied in (`q/sync-after.sh`), built into
+`$JK_BUILD/target-wo2-q-echo-after` (and the committed copy into `-base`):
+
+```text
+Q="$JK_BUILD/practice-echo/q"
+bash "$Q/sync-after.sh"
+(cd "$Q/ws-after" && CARGO_TARGET_DIR="$JK_BUILD/target-wo2-q-echo-after" cargo build --release -p jk-pitch --examples \
+   && CARGO_TARGET_DIR="$JK_BUILD/target-wo2-q-echo-after" cargo build --release -p jk-cli)
+cd "$JK_BUILD"
+bash practice-echo/q/run-final.sh after a8 bench fbench cases feel grade nofb     # D
+bash practice-echo/q/run-final.sh after h5 hbench2 hcases2 hbench hcases hsong hgrade hnofb   # H1, H2
+bash practice-echo/q/run-h3.sh after h6 hbench3 hcases3 hsong3 hgrade3 hnofb3     # H3 (fresh)
+bash practice-echo/q/run-h3.sh base hb6 hbench3 hcases3 hsong3 hgrade3 hnofb3
+python -I practice-echo/q/doc_tables.py b0 a8 hb0 h5      # D, H1, H2 tables
+python -I practice-echo/q/doc_tables3.py hb6 h6           # H3 tables
+studio-venv/Scripts/python.exe -I practice-echo/q/gcc_check.py eval/ccmixter_voices/tracks/ccm-69131   # lead bleed
+cd ../jukeoke && export CARGO_TARGET_DIR="$JK_BUILD/target-wo2-q-echo"
+cargo test --release -p jk-pitch --lib echo::                 # 12 unit tests
+cargo test --release -p jk-pitch --test echo_alloc            # 4 tests
+cargo test --release -p jk-pitch --lib practice:: && cargo test --release -p jk-pitch --test practice_alloc
+```
+
+`JK_ECHO_TRACE_HOP=<seconds>` sets the interval of `echo_eval`'s trace (default 1 s); the
+state line now also says whether the learning filter is held (`frozen`).
 
 ## Appendix: every scenario
 

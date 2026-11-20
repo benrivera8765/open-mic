@@ -75,7 +75,12 @@ fn read_wav(path: &str) -> (u32, usize, Vec<f32>) {
 fn song(dir: &str, start: f64, secs: f64) -> (u32, Vec<f32>) {
     let mut acc: Vec<f32> = Vec::new();
     let mut rate = 0;
-    for f in ["instrumental.wav", "backing.wav"] {
+    for f in ["instrumental.wav", "backing.wav", "bass.wav", "drums.wav", "other.wav"] {
+        // Some ccMixter folders have no instrumental stem: their backing stem is the
+        // whole accompaniment.
+        if !std::path::Path::new(&format!("{dir}/{f}")).exists() {
+            continue;
+        }
         let (r, ch, s) = read_wav(&format!("{dir}/{f}"));
         rate = r;
         let f0 = (start * f64::from(r)) as usize;
@@ -201,7 +206,20 @@ fn run(c: &Case) -> String {
     // Per 10 ms block: time, presence, quality.
     let mut timeline: Vec<(f64, Presence, RemovalQuality)> = Vec::new();
     let mut ev: Vec<(f64, Option<f32>, Trust)> = Vec::new();
+    // Reasons behind each event's verdict (diagnostics, see `debug_trust_reasons`).
+    let mut why: Vec<[u32; 8]> = Vec::new();
+    // The canceller's own estimate of the singer's moments its gate takes away, averaged from
+    // 15 s (diagnostics, see `debug_doubt`).
+    let (mut doubt_sum, mut doubt_n) = (0.0f64, 0u32);
     let trace = std::env::var("JK_ECHO_TRACE").is_ok_and(|v| c.name == v);
+    // The true left-over averaged over 10 s (from the first reported left-over on), and
+    // the reported left-over minus it, every 0.1 s after 5 s (dB; negative = optimistic).
+    let a_true = 1.0 - (-(blk as f64 / fs) / 10.0f64).exp();
+    let (mut true_avg, mut true_n) = (0.0f64, 0u32);
+    let mut cal: Vec<f64> = Vec::new();
+    let (mut q_n, mut q_opt) = (0u32, 0u32);
+    let r_voice_of = |r: &jk_pitch::echo::EchoReport| r.voice_dbfs.map(f64::from);
+    let r_quality_of = |r: &jk_pitch::echo::EchoReport| r.quality;
     let mut i = 0;
     while i < n {
         let k = blk.min(n - i);
@@ -211,7 +229,41 @@ fn run(c: &Case) -> String {
             &mut out[i..i + k],
         );
         let r = ec.report();
+        if (i + k) as f64 / fs >= 15.0
+            && let Some(d) = ec.debug_doubt()
+        {
+            doubt_sum += d;
+            doubt_n += 1;
+        }
         timeline.push(((i + k) as f64 / fs, r.presence, r.quality));
+        if (true_n > 0 || r.residual_dbfs.is_some()) && c.switch_s.is_none() {
+            let l = lat as usize;
+            let mut p = 0.0f64;
+            for j in i.max(l)..i + k {
+                let m = j - l;
+                p += (f64::from(out[j]) - f64::from(c.voice[m]) - f64::from(noise[m])).powi(2);
+            }
+            true_n += 1;
+            let w = a_true.max(1.0 / f64::from(true_n));
+            true_avg += w * (p / k as f64 - true_avg);
+            if (i + k) as f64 / fs > 5.0
+                && (i + k).is_multiple_of(c.rate as usize / 10)
+                && let Some(e) = r.residual_dbfs
+            {
+                cal.push(f64::from(e) - 10.0 * true_avg.max(1e-30).log10());
+                // The verdict the true left-over would give against the reported singer
+                // level (25 / 15 dB under it), and whether the reported one is better.
+                if let Some(v) = r_voice_of(&r) {
+                    let t_db = 10.0 * true_avg.max(1e-30).log10();
+                    let q_true = if t_db <= v - 25.0 { 2 } else if t_db <= v - 15.0 { 1 } else { 0 };
+                    let q_rep = match r_quality_of(&r) { RemovalQuality::Good => 2, RemovalQuality::Marginal => 1, _ => 0 };
+                    q_n += 1;
+                    if q_rep > q_true {
+                        q_opt += 1;
+                    }
+                }
+            }
+        }
         if trace && (i + k).is_multiple_of(c.rate as usize / 10) {
             eprintln!(
                 "t {:5.1} {:?} {:?} z {:.1} sup {:?} resid {:?} voice {:?} lost {} relocks {} adapted {}",
@@ -238,10 +290,27 @@ fn run(c: &Case) -> String {
                 e.hz,
                 ec.trust_window(ti - half, ti + half),
             ));
+            why.push(ec.debug_trust_reasons(ti - half, ti + half));
         });
         i += k;
     }
     let rep = ec.report();
+    // Blocks behind the steady sung frames (from 15 s) the gate took away, by reason.
+    let mut lost_why = [0u64; 8];
+    if let Some(m) = &c.mel {
+        for (k, &(t, hz, w)) in ev.iter().enumerate() {
+            if t < 15.0 || matches!(w, Trust::Clean | Trust::Singer) {
+                continue;
+            }
+            if let (Ok(f), Some(h)) = (truth(m, t), hz)
+                && tv::cents(f64::from(h), f).abs() < 50.0
+            {
+                for (a, b) in lost_why.iter_mut().zip(why[k]) {
+                    *a += u64::from(b);
+                }
+            }
+        }
+    }
     // Frame counts over [a, b).
     let count = |a: f64, b: f64| {
         let mut ct = Count::default();
@@ -316,6 +385,10 @@ fn run(c: &Case) -> String {
     let after = count(sw, (sw + 5.0).min(secs));
     let q = |r: RemovalQuality| format!("{r:?}").to_lowercase();
     let o = |v: Option<f64>| v.map_or("null".to_string(), |x| format!("{x:.2}"));
+    cal.sort_by(f64::total_cmp);
+    let cal_min = cal.first().copied();
+    let cal_p05 = (!cal.is_empty()).then(|| cal[cal.len() / 20]);
+    let cal_med = (!cal.is_empty()).then(|| cal[cal.len() / 2]);
     let mut s = String::new();
     let _ = write!(
         s,
@@ -333,7 +406,7 @@ fn run(c: &Case) -> String {
     );
     let _ = write!(
         s,
-        "\"acc_out_steady\":{:.1},\"acc_gated_steady\":{:.1},\"acc_gated_whole\":{:.1},\"acc_out_after_switch\":{:.1},\"acc_gated_after_switch\":{:.1},\"rest_shown_steady\":{:.2},\"shown_whole\":{:.2},\"shown_after_switch\":{:.2},\"voice_dbfs\":{},\"suppression_db\":{},\"true_suppression_db\":{}}}",
+        "\"acc_out_steady\":{:.1},\"acc_gated_steady\":{:.1},\"acc_gated_whole\":{:.1},\"acc_out_after_switch\":{:.1},\"acc_gated_after_switch\":{:.1},\"rest_shown_steady\":{:.2},\"shown_whole\":{:.2},\"shown_after_switch\":{:.2},\"voice_dbfs\":{},\"suppression_db\":{},\"true_suppression_db\":{},\"lost_why\":{:?},\"resid_err_min_db\":{},\"resid_err_p05_db\":{},\"resid_err_med_db\":{},\"q_optimistic_share\":{:.3},\"doubt\":{}}}",
         Count::pct(steady.right_out, steady.voiced),
         Count::pct(steady.right_gated, steady.voiced),
         Count::pct(whole.right_gated, whole.voiced),
@@ -344,7 +417,13 @@ fn run(c: &Case) -> String {
         Count::pct(after.shown, after.all),
         o(rep.voice_dbfs.map(f64::from)),
         o(rep.suppression_db.map(f64::from)),
-        o(true_sup)
+        o(true_sup),
+        lost_why,
+        o(cal_min),
+        o(cal_p05),
+        o(cal_med),
+        f64::from(q_opt) / f64::from(q_n.max(1)),
+        o((doubt_n > 0).then(|| 100.0 * doubt_sum / f64::from(doubt_n)))
     );
     s
 }

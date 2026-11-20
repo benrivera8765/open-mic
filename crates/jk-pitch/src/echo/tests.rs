@@ -198,7 +198,12 @@ fn bluetooth_return_is_flagged_unusable() {
     let r = ec.report();
     println!("bluetooth: {r:?}");
     let t = settled_at(&reps, |r| r.presence == Presence::Present).unwrap();
-    assert!(t <= 3.0, "present after {t} s");
+    println!("bluetooth present after {t} s");
+    // A wandering delay smears the correlation, so the detection is a candidate that must
+    // stand out at its (moving) lag for about 3 s before it is believed (the quality round's
+    // guard against a singer holding a note in tune with the music): found after 0.98-1.3 s
+    // before, 3-8 s now (docs/benchmarks/practice-echo.md section 13).
+    assert!(t <= 8.0, "present after {t} s");
     assert_eq!(r.stability, DelayStability::Wandering);
     assert_eq!(r.quality, RemovalQuality::Unusable);
 }
@@ -396,4 +401,115 @@ fn reset_forgets() {
     let r = ec.report();
     assert_eq!(r.presence, Presence::Searching);
     assert!(!r.removing);
+}
+
+#[test]
+fn loud_return_with_a_singer_is_gradable() {
+    // The owner's likely wiring: the mixer's USB loopback returns the song as loud as the app
+    // plays it, and the singer sings 6 dB under it. Removal takes the music 25 dB or more
+    // under the singer, so once the singer has sung for a while the quality must let the
+    // take be graded (good or marginal) for most of the time; the left-over measured during
+    // the singing must not be optimistic; and the singer's steady notes must get through the
+    // gate. Before the quality round, the left-over was measured on the singer's quieter
+    // moments and this take came out "unusable" (not graded).
+    let secs = 30.0;
+    let music = testpath::synth_music(RATE, secs, -16.0, None, 29);
+    let path = ReturnPath::usb(0.0, 0.012);
+    let (echo, _) = testpath::apply(&path, &music, 2, RATE);
+    let voice = singer(secs, -22.0);
+    let input: Vec<f32> = echo.iter().zip(&voice).map(|(a, b)| a + b).collect();
+    let mut ec = EchoCanceller::new(RATE);
+    let (out, reps) = run(&mut ec, &music, &input);
+    let r = ec.report();
+    println!("loud return + singer: {r:?}");
+    assert_eq!(r.presence, Presence::Present);
+    assert_eq!(r.stability, DelayStability::Stable);
+    let tail = &reps[reps.len() - 1500..];
+    let usable = tail
+        .iter()
+        .filter(|r| matches!(r.quality, RemovalQuality::Good | RemovalQuality::Marginal))
+        .count();
+    println!("gradable {usable} of {} reports in the last 15 s", tail.len());
+    assert!(usable * 10 >= tail.len() * 8, "gradable {usable}/{}", tail.len());
+    // The true left-over over the last 15 s, against the reported one.
+    let lat = ec.latency();
+    let from = out.len() - 15 * 48_000;
+    let mut pr = 0.0f64;
+    for j in from..out.len() {
+        let i = j - lat;
+        pr += (f64::from(out[j]) - f64::from(voice[i])).powi(2);
+    }
+    let true_res = 10.0 * (pr / (out.len() - from) as f64).log10();
+    let est = r.residual_dbfs.expect("residual measured");
+    println!("left-over true {true_res:.1} dBFS, reported {est:.1} dBFS");
+    assert!(f64::from(est) >= true_res - 3.0, "reported left-over {est} under the truth {true_res}");
+    // Steady singing in the newest 2.5 s is let through.
+    let last = (secs * 48_000.0) as i64 - ec.latency() as i64;
+    let (mut sing, mut sing_n) = (0, 0);
+    let mut t = last as f64 / 48_000.0 - 2.5;
+    while t < last as f64 / 48_000.0 - 0.05 {
+        let w = ec.trust_window((t * 48_000.0) as i64, ((t + 0.02) * 48_000.0) as i64);
+        if [t - 0.06, t, t + 0.08].iter().all(|&u| melody(u).is_some()) {
+            sing_n += 1;
+            sing += i32::from(w == Trust::Singer);
+        }
+        t += 0.05;
+    }
+    println!("singer trusted {sing}/{sing_n}");
+    assert!(sing_n >= 10 && sing * 10 >= sing_n * 9, "singer trusted {sing}/{sing_n}");
+}
+
+#[test]
+fn loud_return_with_nobody_singing_shows_no_pitch() {
+    // The same return with nobody singing: the tracker on the cleaned output must never be
+    // trusted, now that the gate believes a smaller left-over.
+    let secs = 20.0;
+    let music = testpath::synth_music(RATE, secs, -16.0, None, 29);
+    let path = ReturnPath::cable(0.0, 0.012, 80.0);
+    let (echo, _) = testpath::apply(&path, &music, 2, RATE);
+    let mut ec = EchoCanceller::new(RATE);
+    let (out, _) = run(&mut ec, &music, &echo);
+    let lat = ec.latency() as i64;
+    let mut tr = crate::tracker::Tracker::new(RATE);
+    let mut events = Vec::new();
+    tr.process(&out, |e| events.push(e));
+    let (mut voiced, mut trusted) = (0, 0);
+    for e in events {
+        let ti = e.time - lat;
+        if ti < 0 || e.hz.is_none() {
+            continue;
+        }
+        voiced += 1;
+        if matches!(ec.trust_window(ti - 480, ti + 480), Trust::Clean | Trust::Singer) {
+            trusted += 1;
+        }
+    }
+    println!("nobody singing: pitch frames {voiced}, trusted {trusted}; {:?}", ec.report());
+    assert_eq!(trusted, 0);
+}
+
+#[test]
+fn fixed_delay_with_scattered_false_peaks_does_not_wander() {
+    // A fixed delay measured every 0.128 s over 20 s, with a third of the measurements false
+    // peaks anywhere within 50 ms (a singer holding a note in tune with the music, under a
+    // weak return): the line is the delay and it does not wander. The same with the delay
+    // jumping by 8 ms halfway (Bluetooth) wanders.
+    let mut rng = tv::Rng::new(5);
+    let (mut t, mut d, mut dj) = (Vec::new(), Vec::new(), Vec::new());
+    for k in 0..156 {
+        let tk = k as f64 * 0.128;
+        t.push(tk);
+        let base = 0.0123 + 0.000_002 * rng.bipolar();
+        let v = if k % 3 == 1 { 0.0123 + 0.025 * rng.bipolar() } else { base };
+        d.push(v);
+        dj.push(if tk >= 10.0 { base + 0.008 } else { base });
+    }
+    let now = *t.last().unwrap();
+    let f = detect::fit_history(&t, &d, now, 20.0).expect("fit");
+    println!("scattered: delay {:.5} ms rms {:.4} ms n {} of {} cluster2 {}", f.delay_now_s * 1e3, f.rms_s * 1e3, f.n, f.total, f.cluster2);
+    assert!((f.delay_now_s - 0.0123).abs() < 0.000_05);
+    assert!(!f.wanders(0.000_25));
+    let fj = detect::fit_history(&t, &dj, now, 20.0).expect("fit");
+    println!("jump: rms {:.4} ms n {} of {} cluster2 {}", fj.rms_s * 1e3, fj.n, fj.total, fj.cluster2);
+    assert!(fj.wanders(0.000_25));
 }
