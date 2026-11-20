@@ -96,6 +96,8 @@ describe("deleting songs, jukebox look (skin on)", () => {
     await until(() => !!dialog());
     expect(q(".confirm__title")!.textContent).toBe("Delete “Traditional - Frère Jacques”?");
     expect(q(".confirm__body")!.textContent).toMatch(/^It moves to Deleted songs, where you can restore it or delete it for good\./);
+    // Focus moves to Cancel in an effect after the dialog renders (later on a busy PC).
+    await until(() => !!document.activeElement?.classList.contains("confirm__cancel"));
     expect(document.activeElement?.classList.contains("confirm__cancel")).toBe(true);
     expect(q(".confirm__ok")!.classList.contains("jk-plate--danger")).toBe(true);
     expect(store.get().modal).toBe(true);

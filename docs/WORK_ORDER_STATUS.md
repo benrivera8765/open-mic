@@ -353,3 +353,65 @@ no `gh` login, so local git plus workflows plus `build-mac.sh` (DONE, D-09).
    - The Studio's licence position for distribution is unresolved.
    - HANDOFF.md has placeholders and a wrong SDR figure.
    - PROGRESS and DECISIONS are out of date for the packaging pass.
+
+## 18. Work Order 2: practice mode (20 November 2026)
+
+Each requirement of `../WORK_ORDER-2-practice-mode.md`, checked at the lean finish (DECISIONS
+D-249). Statuses: **VERIFIED** (a test or measurement on the Windows build PC is cited),
+**BUILT-NOT-VERIFIED**, **PARTIAL**, **NOT DONE**. **Nobody has sung into practice mode**:
+every singer is generated or a recorded vocal fed through the real capture-side path; this
+PC has no microphone. Every Mac row is BUILT-NOT-VERIFIED (no Mac has run it). Numbers:
+`docs/benchmarks/practice.md` and the files it links.
+
+| Req. | Requirement | Status | Evidence |
+|---|---|---|---|
+| 4.1 | Guide: notes with measured pitch, curve, confidence, unpitched parts, tuning, provenance | VERIFIED | SONG_FORMAT 10; practice-guide 4 (F 0.975 synthetic, 0.873 through separation) |
+| 4.1 | Notes from the audio, not lyric timings; uncertain notes dim and ungraded; octave check | VERIFIED | practice-guide 1.1, 4.4, 4.5, S2.4 (independent spectral octave check) |
+| 4.1 | "The guide is wrong here" per line, saved with the song | VERIFIED | `practice_session` test (exclusions in the slot, undo); practice-screen |
+| 4.2 | Guide in the file as optional 1.1 data; spec, Rust, Python, conformance, verify | VERIFIED | SONG_FORMAT 7.1, 10; conformance steps 8-10 PASS; `jk-format` guide tests |
+| 4.2 | An older Jukeoke opens and plays a file with a guide | VERIFIED | previous release 938742f: verify, renders byte-identical, the real app plays (practice-guide S2.2) |
+| 4.2 | Practice settings and results travel in the slot (256 KiB); nothing in web storage | VERIFIED | SONG_FORMAT 11; results survive a restart in the real app (practice-app 4) |
+| 4.3 | New songs: guide made automatically after a Studio job; a failure leaves the song playable with Try again | VERIFIED (fake Studio) | D-242; `guide_queue` tests; vitest `library-practice`; not run with a real Studio job in WO2 |
+| 4.3 | Existing songs: "Add practice data to all songs"; Practice on a song without a guide adds it with progress | VERIFIED | `guide_queue` tests; real app: "preparing", then listening after 1.2 s (practice-app 4) |
+| 4.3 | Adding a guide is safe: byte-identical by checksum, atomic, works on the loaded song | VERIFIED | practice-guide S2.2 (8 interruption points; the loaded song swapped and reloaded, 0 underruns) |
+| 4.3 | On a computer with no Studio a song becomes practicable | VERIFIED (Windows) / BUILT-NOT-VERIFIED (Mac) | the guide is built by the app core in Rust (D-236, D-242); real app with no Studio |
+| 4.3 | Every song in `dist/Library` has a guide, the owner's included | VERIFIED | 2026-11-20: both songs; every other chunk and both slots byte-identical; verify --strict --deep PASS (TEST_RESULTS 10) |
+| 4.4 | Native capture; input picker remembered per computer; external preferred; Bluetooth never automatic | VERIFIED (Windows) | practice-mic (WASAPI, device rule); `practice_session` (choice in settings.json by computer hash) |
+| 4.4 | A meter per channel, the voice channel picked, never summed | VERIFIED | practice-mic generated two-channel tests; vitest input picker |
+| 4.4 | Levels: too quiet / clipping said plainly; gain never changed | VERIFIED | practice-screen (picker); jk-recorder meters |
+| 4.4 | Permission explained first; a refusal gives the exact steps | VERIFIED (Windows, simulated refusal) / BUILT-NOT-VERIFIED (Mac) | real app (d); MAC.md 12.1 |
+| 4.4 | Microphone open only while practice is on screen; no monitoring; watch only without an input | VERIFIED | real app: hidden = suspended, leaving = closed; no path from the input to the output (0 samples differ) |
+| 4.4 | Tracker: E2-C6 (aim C2), 10 cents, no octave jumps, no pitch when not singing | VERIFIED (generated) / PARTIAL (real voices) | practice-tracker results table: C2-C6, max 2.26 cents; whisper and low-rumble probes not quite 0 |
+| 4.4 | Delay: aim 50 ms, never over 100 ms | PARTIAL | generated: median 35, max 62 ms; real voices: 6 % of onsets after 100 ms (D-250) |
+| 4.4 | Timing against the playback clock; display delay never costs points | VERIFIED | practice-score 2.2, 4.7 (100 ms late or early stays in the top band); delay measured from returned music |
+| 4.4 | Music in the input: detected, warned, marker off with nobody singing, removed where it can be | VERIFIED (modelled returns) / PARTIAL (a real voice over a loud return) | practice-echo 13; practice-score 4.6; D-250 |
+| 4.4 | Effects on the voice: the tracker copes; the docs say switch pitch correction off | PARTIAL | compression, EQ, pops within a few points; reverb -13 RPA at RT60 0.8 s (D-250); MAC.md 12.2 |
+| 4.5 | Lane, piano keys with names and rows, lit target key, marker with tail, hits lit, cues, words | VERIFIED | practice-screen 1 (0 errors over whole songs at 3 sizes and 4 keys); real-app screenshots |
+| 4.5 | Range fits and scrolls; jukebox look drawn in code; Practice plate and shortcut; screen unchanged when off | VERIFIED | practice-screen 1, 4; vitest `practice-ui` |
+| 4.5 | Fits 1440x900 / 1280x800; Canvas 2D in the frame loop within 4 ms; Safari 16.4; reduce-motion; simple lane | VERIFIED (WebView2) / BUILT-NOT-VERIFIED (M1 web view) | lane + lyrics 0.32 ms; self-check lane 1.74 ms; the build's Safari 16.4 checks |
+| 4.6 | Every key -12..+12: bars, lit key, names and target move exactly; tuning carries through | VERIFIED | practice-score 4.3 (original vocal at every key); real app at every key (practice-app 4) |
+| 4.6 | Opens in the saved key; switches when the key is HEARD; sung notes keep their key | VERIFIED | D-239; real app, final build 2026-11-20 (UI 0-1 ms from the heard moment, both key modes) |
+| 4.6 | Names spelled for the key; bars slide, instantly under reduce-motion | VERIFIED | real app (C4 -> A3 at -3, flat keys); practice-screen |
+| 4.6 | Octave: the right note in another octave counts; Auto, fixed, Strict | VERIFIED | practice-score 4.1 (octave low 100, strict 0); real app: the lane moved an octave |
+| 4.6 | The original singer at every key scores near key 0 and fails against a wrongly shifted guide | PARTIAL | most songs within 0.4-3.2 points; low male songs lose up to 34.7 at -12 (D-250); a wrong guide is always F |
+| 4.7 | Per-note share on pitch in cents; 50/100 cents by default, relaxed and strict; vibrato and scoops free | VERIFIED | practice-score 2.1, 4.1 |
+| 4.7 | Not graded: unpitched, unsure, excluded; "graded on n of N"; timing free | VERIFIED | practice-score 2.2-2.4, 4.7 |
+| 4.7 | Result screen (overall, grade, lines, tendency, key and octave, share sung, Sing again), history, stopping early, honesty | VERIFIED | practice-screen; real app (results kept over a restart; trust flags) |
+| 4.7 | Same grade everywhere: scoring in shared Rust | VERIFIED (by construction) / BUILT-NOT-VERIFIED (Mac run) | jk-pitch scorer; identical hashes for repeated takes |
+| 4.8 | Info.plist microphone text, the entitlement question, an explicit request, re-asking after a new build documented | BUILT-NOT-VERIFIED | `scripts/check-macos-infoplist.sh`, run by build-mac.sh; MAC.md 12.1 |
+| 4.8 | Nothing newer than macOS 13.0; availability check | BUILT-NOT-VERIFIED | `check-mac.sh` type-check passes; the binary check runs only on a Mac build |
+| 4.8 | The mixer as a plain USB device, any rate and channel count, unplugged mid-song | VERIFIED (Windows, generated) / BUILT-NOT-VERIFIED (Mac) | practice-score 4.5; real app, unplugged case |
+| 4.8 | Delay measured (returned music, rig check) with a manual fallback | VERIFIED (Windows) / BUILT-NOT-VERIFIED (Mac) | `practice_session` (returned music 22.9 ms; rig check 17.09 ms); Settings > Practice |
+| 4.8 | Tracking off the output path; 20 minutes without drops; 1 GB budget | VERIFIED (Windows) / BUILT-NOT-VERIFIED (M1) | practice-app 5 (576-638 MB, no underruns added) |
+| 4.8 | No Apple voice-processing mode | BUILT-NOT-VERIFIED | cpal HAL output unit (practice-mic "The Mac") |
+| 4.8 | Self-check: permission, 3 s capture, tracker speed, lane cost, demo guide and a scored run | VERIFIED (Windows) / BUILT-NOT-VERIFIED (Mac) | release app 14 of 14 (practice-app 4) |
+| 4.8 | Practice rig check, started by hand, labelled audible | VERIFIED (generated return, null device) / BUILT-NOT-VERIFIED (real rig) | `practice_session` rig test; Settings "Makes a sound" with a confirmation |
+| 4.8 | build-mac.sh, MAC.md and the MacBook checklist updated | VERIFIED (documents) | build-mac.sh step 6; MAC.md 12; HANDOFF 10.5 |
+| 4.9 | Windows: practice works; the privacy switch said plainly | VERIFIED | real app (a simulated refusal names the switch and the steps) |
+| 4.10 | AME2 manual read and written into MAC.md | VERIFIED (sources) | practice-mic AME2 section; MAC.md 12.2; facts about the unit marked unconfirmed |
+| 4.10 | Both ways to a clean voice: music over USB (recommended), removal over cable / USB; Bluetooth not promised | PARTIAL | removal measured on modelled returns; a real voice over a loud return mostly ungraded (D-250) |
+| 4.10 | Handheld thumps and pops never notes; recording chain untouched; two ports; built-in microphone fallback | VERIFIED (generated) / BUILT-NOT-VERIFIED (real rig) | practice-tracker (0 events on thumps and pops); MAC.md 12.2-12.3 |
+| 5 | Playback untouched, real-time safety, portable, size, offline and private, same code on both systems | VERIFIED (Windows) | 0 samples differ; `rt_alloc`, `echo_alloc`, `practice_alloc`; user-folder audit; no model (0 bytes) |
+| 9 | Every evidence row | VERIFIED / PARTIAL as above | docs/benchmarks/practice.md, row by row |
+| 10 | Licensing: GPL-3.0-or-later, no model, no game assets | VERIFIED | MODELS.md (practice uses no model); THIRD_PARTY_LICENSES.md regenerated |
+| 13 | Hand-back documents, dist refreshed, two owner checklists, local sweep | VERIFIED | HANDOFF 10; TEST_RESULTS 10; dist proof in `../jukeoke-build/finish-dist-proof/` |

@@ -378,7 +378,106 @@ the build if the home folder or the checkout path appears anywhere in the bundle
 `sck_probe` (any case, UTF-8 or UTF-16). The Windows build has the same check
 (`app/scripts/build-windows.sh`). Never run on a Mac.
 
-## 12. Sources
+## 12. Practice mode (Work Order 2)
+
+**Built but not verified.** Nothing of practice mode has run on a Mac. On Windows the Mac
+target type-checks (`app/scripts/check-mac.sh`, 2026-11-20: 0 errors) and the self-check
+items ran; everything below about macOS behaviour is from Apple's documentation and the
+code, not from a Mac. The measurements are in `docs/benchmarks/practice.md`; the AME2
+facts and their sources in `docs/benchmarks/practice-mic.md` ("MAONO MaonoCaster AME2").
+
+### 12.1 Microphone permission
+
+- The bundle's `Info.plist` carries `NSMicrophoneUsageDescription` (from
+  `app/src-tauri/Info.plist`, which the Tauri CLI merges into the bundle). Without it macOS
+  ends the app the first time it opens the microphone (WO2 trap 3).
+  `scripts/build-mac.sh` step 6 runs `scripts/check-macos-infoplist.sh` on the built app
+  and stops the build if the key is missing.
+- No microphone entitlement is needed as the app is signed: `build-mac.sh` signs ad hoc
+  **without** the hardened runtime, and `com.apple.security.device.audio-input` only lifts
+  a hardened-runtime restriction. The same script reads the final signature and fails the
+  build if it ever carries the hardened runtime without that entitlement.
+- The flow: press Practice. If macOS has not asked yet, the app first shows its own
+  explanation (it listens only while the practice screen is open, works out the pitch in
+  memory, never records, saves or sends the voice), then asks macOS
+  (`AVCaptureDevice requestAccessForMediaType:`), and macOS shows its prompt with the
+  usage text. Choose **OK**.
+- Refused: practice opens as "watch only" (notes and piano keys, no marker, no grade) and
+  gives the steps: System Settings > Privacy & Security > Microphone, switch on Jukeoke,
+  then open practice again (quit and reopen Jukeoke if it still sees no microphone).
+- **Ad-hoc signing: macOS may ask again after every new build** (the permission is tied
+  to the signature), as for Screen Recording (section 8). Allow it again.
+- Apple's voice-processing input mode is not used (it would lower and reshape the app's
+  own playback). Capture is cpal 0.16 on the HAL; the availability check (section 11)
+  covers the microphone code.
+
+### 12.2 The MAONO AME2 and the recommended wiring
+
+From MAONO's AME2A manual and FAQs (not checked on the unit; the newer manual MAONO links
+was not read):
+
+- The USB feed to the Mac is the console's mix: the microphone **with its effects** plus
+  the background music (AUX-IN or Bluetooth) in WET mode (the default); DRY mode sends
+  the microphone only.
+- **LOOPBACK on** adds the Mac's own USB playback to that feed. **Off**: the Mac's sound
+  is still heard in the headphones but is not sent back.
+- 48 kHz, 16 bit; the channel count is not stated (the input picker shows a meter per
+  channel). No driver is needed.
+- Effects on the console: reverb, Auto-Tune, a PITCH voice changer, Denoise, Side Chain,
+  Music Only, tone controls, sound pads. Assume all of them reach the USB feed.
+
+**Recommended wiring for practice: music over USB, loopback off.**
+
+1. Plug the AME2 into the Mac by USB-C. Stop sending music into the mixer by AUX-IN or
+   Bluetooth.
+2. In Jukeoke, Settings > Audio output: pick the AME2. The song now reaches the EarPods
+   through the mixer, beside the live voice.
+3. On the mixer: **LOOPBACK off**. The app then gets the voice without the song.
+4. Practice > Input: pick the AME2 and the channel whose meter moves when you sing.
+5. **Keep the iPhone recording chain as it is** (LIVE OUTPUT 1, TRRS cable, Apple's
+   adapter). Practice mode never asks you to unplug it. One caution from the manual: with
+   loopback off the song is probably not in the LIVE outputs either (unconfirmed for the
+   AME2), so a recording made while practising may have the voice only. To record with
+   the song on the iPhone, switch loopback on: the app then hears its own music, warns,
+   and removes it where it can, but a real voice over a loud return is mostly left
+   ungraded (the result says so). For a graded practice, keep loopback off.
+6. Practice needs the cable or USB for the music. **Bluetooth music into the mixer can
+   show as pitch in the rests under a singer** (its delay wanders); the app says that
+   practice needs a cable or USB.
+
+**Switch off while practising:** Auto-Tune and the PITCH voice changer (they change the
+pitch: the grade would mean nothing and the app cannot tell), reverb and the other voice
+effects and pads (heavy reverb lowers the tracker's accuracy: about 13 points of raw pitch
+accuracy at a 0.8 s reverb), Music Only, Side Chain and Denoise. Which PITCH position is
+neutral is not in the manual.
+
+The delay from voice to app is measured automatically when the app's music comes back,
+or by the practice rig check; Settings > Practice > "Manual delay for this microphone" is
+the fallback.
+
+### 12.3 Two USB-C ports
+
+The MacBook Air has two USB-C ports: the stick and the mixer take both, so start with a
+charged battery. If that does not work, copy the whole stick
+folder (app, `Library`, `Settings`) to the Mac's own drive and run it from there (sections
+6 and 7 apply); practice results are then kept in that copy, so copy it back to the stick
+afterwards.
+
+### 12.4 Self-check and the practice rig check
+
+- The self-check (silent) adds six items: microphone permission state, a 3-second capture
+  (format, level, noise floor), the pitch tracker on generated tones through the real
+  analysis path with its speed, the guide read from the bundled demo song, a short scored
+  run against generated singers, and the lane's drawing cost in this web view.
+- **Practice rig check** (Settings > Practice, labelled "Makes a sound"; it asks for
+  confirmation): with the mixer plugged in and the in-ears on, it measures each input
+  channel, asks you to say a few words, plays three short bursts at -24 dBFS through the
+  current output and listens for them in the input. The report gets the devices and their
+  formats, which channels carry signal, the level and noise floor, and whether its sound
+  came back, how loud and how late. Run it once with loopback off and once with it on,
+  and bring the report back: it is the only look the next session gets at the real rig.
+
+## 13. Sources
 
 - S1 GitHub changelog, "GitHub Actions: macOS 14 runner image retirement", 2026-10-01: https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement/
 - S2 actions/runner-images README (image table): https://github.com/actions/runner-images

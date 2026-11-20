@@ -114,8 +114,11 @@ cp "$OUT/py.jksong" "$OUT/py-guide.jksong"
 "$PY" -I -B tests/conformance/guide_py.py fingerprint "$OUT/py-guide.jksong" "$OUT/py-guide.before.json" || fail "fingerprint"
 "$PY" -I -B tests/conformance/guide_py.py add "$OUT/py-guide.jksong" || fail "Python add_guide"
 "${GC[@]}" check "$OUT/py-guide.jksong" "$OUT/py-guide.before.json" || fail "Rust check of the Python guide"
-"${VERIFY[@]}" "$OUT/py-guide.jksong" --strict > "$OUT/py-guide.verify.log" 2>&1 \
-    && echo "  ok    jksong-verify --strict of the Python guide file" || fail "Rust verify of the Python guide file"
+if "${VERIFY[@]}" "$OUT/py-guide.jksong" --strict > "$OUT/py-guide.verify.log" 2>&1; then
+    echo "  ok    jksong-verify --strict of the Python guide file"
+else
+    fail "Rust verify of the Python guide file"
+fi
 
 step "9. 1.1: Rust adds a guide (real builder); Python checks it"
 cp "$OUT/py.jksong" "$OUT/rust-guide.jksong"

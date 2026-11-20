@@ -3,7 +3,7 @@ Licence and notice texts: Rust crates
 
 Every Rust crate linked into the shipped binaries (the app, jukeoke-cli, sck_probe; THIRD_PARTY_LICENSES.md section 2.1), with the licence and notice files of its published package exactly as they are in the cargo registry. Our own crates are GPL-3.0-or-later (LICENSE). A crate marked (Windows) or (macOS) is only in that build.
 
-245 components, 169 distinct texts.
+247 components, 169 distinct texts.
 
 ========================================================================================
 Text 1 of 169, used by: adler2 2.0.1 (LICENSE-0BSD)
@@ -1506,7 +1506,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ========================================================================================
-Text 20 of 169, used by: block-buffer 0.12.1 (LICENSE-APACHE), const-oid 0.10.3 (LICENSE-APACHE), crypto-common 0.2.2 (LICENSE-APACHE), digest 0.11.3 (LICENSE-APACHE), hybrid-array 0.4.15 (LICENSE-APACHE), md-5 0.11.0 (LICENSE-APACHE)
+Text 20 of 169, used by: block-buffer 0.12.1 (LICENSE-APACHE), const-oid 0.10.3 (LICENSE-APACHE), cpufeatures 0.3.1 (LICENSE-APACHE), crypto-common 0.2.2 (LICENSE-APACHE), digest 0.11.3 (LICENSE-APACHE), hybrid-array 0.4.15 (LICENSE-APACHE), md-5 0.11.0 (LICENSE-APACHE), sha2 0.11.0 (LICENSE-APACHE)
 ----------------------------------------------------------------------------------------
 
                               Apache License
@@ -2398,7 +2398,7 @@ Text 30 of 169, used by: clap 4.6.8 (LICENSE-APACHE), clap_builder 4.6.7 (LICENS
    limitations under the License.
 
 ========================================================================================
-Text 31 of 169, used by: const-oid 0.10.3 (LICENSE-MIT)
+Text 31 of 169, used by: const-oid 0.10.3 (LICENSE-MIT), cpufeatures 0.3.1 (LICENSE-MIT)
 ----------------------------------------------------------------------------------------
 
 Copyright (c) 2020-2026 The RustCrypto Project Developers
@@ -6840,7 +6840,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ========================================================================================
-Text 88 of 169, used by: md-5 0.11.0 (LICENSE-MIT)
+Text 88 of 169, used by: md-5 0.11.0 (LICENSE-MIT), sha2 0.11.0 (LICENSE-MIT)
 ----------------------------------------------------------------------------------------
 
 Copyright (c) 2016-2026 The RustCrypto Project Developers

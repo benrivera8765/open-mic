@@ -16,6 +16,16 @@ processed. The app also has a recorder that captures whatever the computer is pl
 losslessly. Everything, both apps and your songs, can live on one USB stick and runs
 without installing anything.
 
+**Practice mode** (new, not yet tried by a singer) shows the song's melody as glowing bars on a
+note lane with piano keys down the side, puts a marker at the pitch you sing, and grades the
+take at the end, line by line. It follows the key you choose, switching when the new key is
+actually heard, and counts the right note sung an octave lower or higher as right. It listens
+to your microphone or mixer only while the practice screen is open and never records your
+voice. Every song carries the melody it needs, worked out from its lead vocal without a model.
+Nobody has sung into it yet: the measurements use generated and recorded voices
+([`docs/benchmarks/practice.md`](docs/benchmarks/practice.md); wiring for a mixer in
+[`docs/MAC.md`](docs/MAC.md) section 12).
+
 "Jukeoke" is a placeholder name.
 
 ![The library, styled as jukebox title strips](docs/screenshots/library.png)
@@ -147,7 +157,8 @@ downloaded by the app, never included in the repository or the app.
 
 ## Privacy
 
-No telemetry, no accounts, no ads. The app works fully offline. It goes online only when
+No telemetry, no accounts, no ads. The app works fully offline. Practice mode analyses the microphone in memory
+and never records, saves or sends it. It goes online only when
 you ask it to: **Download models** (from Hugging Face and the model authors' release
 pages) and **Look up lyrics online** (sends only the title, artist and length to LRCLIB).
 Nothing is written outside the stick, apart from what Windows and macOS record about any
