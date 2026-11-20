@@ -53,5 +53,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    // The ticker fuzz tests (400 random songs, 200 rap songs) take 1-2 s on an idle PC but
+    // went past vitest's 5 s default when other builds filled the processor.
+    testTimeout: 60000,
   },
 });

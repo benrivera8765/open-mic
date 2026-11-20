@@ -1,6 +1,6 @@
 # Jukeoke: handoff
 
-Written 18 November 2026 at the end of the first build (about 22 hours of unattended work). Read this first. Details
+Written 18 November 2026 at the end of the first build (about 22 hours of unattended work). Section 10 (practice mode) was added on 20 November 2026. Read this first. Details
 are in `PROGRESS.md`, `DECISIONS.md`, `docs/WORK_ORDER_STATUS.md` (every requirement
 of the work order with its status and evidence), `docs/TEST_RESULTS.md` and
 `docs/benchmarks/`.
@@ -29,6 +29,9 @@ dialogs, the ticker in a really minimised window, open points in the key cache;
 sections 3 and 4). The rest needs
 you: a GitHub login (to build and test the Mac app), the MacBook, your ears, and a few
 licence decisions (section 8).
+
+**Practice mode (Work Order 2) is built and tested on Windows with generated singers;
+nobody has sung into it yet.** Section 10.
 
 **Nothing was published.** The repository is local only (`jukeoke/.git`), separate
 from every other project.
@@ -302,6 +305,21 @@ Use headphones or good speakers. Write down what you hear; a later session can a
    so later runs fail only on new ones.
 8. **A leftover process.** An idle Node.js process from the build (port 5191) may
    still be running; restarting the PC clears it.
+9. **Practice mode before any public release: patents and originality.** A scrolling
+   pitch lane is a long-established idea, and Jukeoke's design, artwork and code are its
+   own (no game's artwork, names or code; no GPL-2.0-only code). But the research for
+   Work Order 2 found patents on specific singing-game display techniques that are still
+   listed as active (for example US 8,449,360 and US 8,076,564). This is not legal
+   advice; there is no harmony or duet scoring. Have it checked before publishing.
+10. **Practice wiring.** For a graded practice, play the music from Jukeoke to the AME2
+   over USB and switch the mixer's LOOPBACK off; keep reverb, Auto-Tune and the PITCH
+   changer off. With loopback on (needed if the iPhone recording should carry the song)
+   the app hears its own music and grades a real voice only partly. Bluetooth music is
+   not supported for practice. `docs/MAC.md` section 12.
+11. **Practice limitations you accepted** (section 10.3): reverb lowers accuracy, about
+   6 % of note starts show late, Bluetooth music leaks into the rests, a loud music
+   return leaves a real voice mostly ungraded, low male songs lose points at the lowest
+   keys. Each can be worked on later if it bothers you in practice.
 
 ## 9. Where things are
 
@@ -318,3 +336,141 @@ Use headphones or good speakers. Write down what you hear; a later session can a
 | `MODELS.md`, `THIRD_PARTY_LICENSES.md`, `LICENSE` | Licences |
 | `scripts/` | `devenv.sh`, `make-dist.sh`, `build-mac.sh`, runtime build and checks |
 | `../jukeoke-build/` | Heavy local files: toolchains, venvs, model cache, evaluation data, logs the docs cite as evidence, and 33 Rust build folders (about 250 GB by file size; the `target-*` build folders are about 163 GB and can be rebuilt; `eval/cache` is 3.9 GB and safe to delete) |
+
+## 10. Practice mode (Work Order 2, finished 20 November 2026)
+
+**In plain language.** Press Practice on the singing screen (or `P`): the song's melody
+runs past as glowing bars, with piano keys down the side naming the note to sing, a mint
+marker at the pitch you sing and the hit parts of the bars lighting gold. At the end you
+get a percentage, a letter grade and a line-by-line breakdown. The key dial moves
+everything together, at the moment the new key is heard. Singing an octave down counts.
+Every song in `dist/Library` now carries its melody guide. **Nobody has sung into it.**
+This PC has no microphone, so every singer was generated sound or a recorded vocal fed in
+where the microphone would be. Your voice, your mixer and your Mac have not been tested.
+All numbers: `docs/benchmarks/practice.md`. Every requirement: `docs/WORK_ORDER_STATUS.md`
+section 18.
+
+### 10.1 Verified by test (Windows build PC)
+
+- **The guide** (the notes to sing) is built from each song's lead vocal by plain Rust
+  code, with no model: 97.5 % of notes right on a synthetic singer (best neural tracker
+  96.1 %), 87.3 % through the real separation; 1.2 s for a 4-minute song. Adding it to a
+  song leaves every other byte of the file the same (checked by SHA-256), and a pulled
+  stick leaves the old file or the new one. The previous release still plays the new
+  files.
+- **`dist/` refreshed** (20 November): `dist/Windows/Jukeoke.exe` replaced, a guide added to
+  both songs in `dist/Library` (yours: 435 notes, 332 graded); every stem, the lyrics, the
+  cover and both settings slots byte-identical before and after, `verify --strict --deep`
+  passes; your 385 other files in `dist/` match the 19 November backup exactly.
+- **The grade**, scripted singers on 5 songs: perfect 98.5-100 (A+), 30 cents sharp still
+  A+, 70 cents sharp 64-77 (D-C+), a semitone flat 9-27 (F), an octave low 100 (Strict 0),
+  silence and noise 0 with no marker. 100 ms early or late costs nothing. The same take
+  always gives the same grade.
+- **Key change.** The original singer, shifted by the app's own key change, at every key
+  -12..+12: the demo 100 at every key, your song 98.8 or more. Against a wrongly shifted
+  guide: always F. In the release app on the final build: the bars, the lit piano key and
+  the grading target switched within 1 ms of the moment the new key was heard, in both
+  key modes.
+- **Pitch tracker**: C2 to C6 within 2.3 cents on generated voices, no octave jumps, the
+  marker 35 ms behind the voice (median); silence, breath, thumps and pops show nothing.
+- **Your mixer's music coming back**: found within about a second, its delay measured to a
+  few microseconds over USB or cable, removed by 29-65 dB; with nobody singing the marker
+  stays off and the grade is 0.
+- **Playback untouched**: practice on vs off, 0 samples differ. 20 minutes of practice with
+  bubbles on: no dropouts added, 59.9 frames a second, 576-638 MB. Nothing written outside
+  the stick, no sound stored.
+- The real app explains itself with no microphone, with permission refused, with the input
+  unplugged mid-song and with a song that has no guide.
+
+### 10.2 Built but not verified
+
+- **Everything on the Mac**: the permission flow, the microphone code, the AME2 as a USB
+  device, the self-check items, the practice rig check, the drawing cost in Safari's web
+  view, 20 minutes on the M1. The Mac code type-checks; the bundle check for the
+  microphone text is in `scripts/build-mac.sh`. See `docs/MAC.md` section 12.
+- **A real voice, a real microphone and your AME2** on either system.
+- The guide stage after a real Studio job (tested with a stand-in Studio only).
+
+### 10.3 Not done, and accepted limitations
+
+Accepted (documented, not fixed, to save usage; DECISIONS D-250):
+
+- Heavy mixer reverb lowers the tracker's accuracy (about 13 points at a 0.8 s reverb):
+  switch the reverb off while practising.
+- About 6 % of real note starts show more than 100 ms late (never costs points).
+- Bluetooth music into the mixer can show as pitch in the rests under a singer: use the
+  cable or USB.
+- A real voice over a loud return of the music (mixer loopback on) is mostly left
+  ungraded; the result says why.
+- Low male songs lose points at the lowest keys (the melody goes below what the tracker
+  hears, about C2).
+
+Not done: the optional extras (practise one line, a suggested key, a trace of the last
+attempt); a second fix of the echo removal (stopped, kept outside the code);
+`dist/Windows/resources/demo-song.jksong`, `dist/Licenses/` and `dist/Mac/` were not
+refreshed (the self-check builds the demo's guide in memory; `make-dist.sh` without
+`--force-clean` refreshes them later); WebView2 itself contacts Microsoft at start-up
+(not practice mode; open from before).
+
+### 10.4 Checklist: first practice session (Windows or Mac, your booth rig)
+
+For each step: what to look for, and what to write down.
+
+1. **Plug in the AME2** by USB-C. Recommended wiring (`docs/MAC.md` 12.2): stop sending
+   music into the mixer by AUX-IN or Bluetooth; in Jukeoke, Settings > Audio output, pick
+   the AME2; on the mixer, **LOOPBACK off**; leave the iPhone cable in LIVE OUTPUT 1. Look
+   for: the song in your EarPods with your live voice. Write down: the name the output
+   list gives the AME2.
+2. **Switch the mixer's voice effects off**: Auto-Tune, the PITCH voice changer, reverb,
+   Denoise, Music Only, Side Chain, sound pads. Write down: anything you could not switch
+   off.
+3. **Open a song and press Practice.** Allow the microphone: the app explains first, then
+   Windows or macOS asks (Allow / OK). Look for: the input listening. If it says "watch
+   only", write down its exact words.
+4. **Pick the input and the voice channel** (Input...): the AME2, then the channel whose
+   meter moves when you sing. Look for: one meter per channel; "too quiet" or "clipping".
+   Write down: how many channels, which one carries the voice, the level while singing.
+5. **Make sure the mixer is not sending the music back**: play 20 seconds without
+   singing. Look for: no marker and no "the mixer is sending the music back" message. If
+   it appears, loopback is on: switch it off. Write down: whether it appeared, after how
+   many seconds.
+6. **Sing a slow scale** over an instrumental part. Look for: the marker follows each
+   step, the piano key you are on lights mint and names your note, no jumps by an octave,
+   the marker vanishes when you stop. Write down: the lowest and highest note it showed,
+   any jump.
+7. **Sing one song you know.** Look for: the marker on the bars when you are on the note,
+   the bars lighting gold, "higher" / "lower" when you are off. Write down: the result
+   (percentage, grade, "graded on n of N", sharp or flat) and any warning.
+8. **Change the key by -2 and later by -5 during the song.** Look for: the bars, the piano
+   names and the target move when you **hear** the new key, not when you press; notes
+   already sung keep their result. Write down: any moment the bars were in the wrong key,
+   and for how long.
+9. **Sing an octave down** (Octave: Auto). Look for: within the first phrases the lane
+   moves to your octave and the notes count as right; with Strict they do not. Write down:
+   how long Auto took.
+10. **Read the result screen**: overall and grade, the weakest lines, sharp or flat,
+    the key and octave, how much was sung, "Sing again". Write down: whether the tendency
+    matches what you hear, and any "cannot be trusted" note.
+11. If you want to record on the iPhone while practising: check whether the recording has
+    the song with loopback off (the manual suggests it may not). With loopback on, note
+    what the result screen says.
+
+### 10.5 Checklist: MacBook additions (to section 7)
+
+1. **Build the app** with `scripts/build-mac.sh`. Its step 6 checks that the bundle carries
+   the microphone text; a FAIL there means the app would be closed by macOS at the first
+   microphone use: bring the log back.
+2. **Run the self-check** (silent). Write down its six practice lines: microphone
+   permission, the 3-second capture, the tracker's speed, the guide, the scored run and
+   the lane's drawing cost.
+3. **First practice**: the app's explanation, then macOS asks: OK. After each new build
+   macOS may ask again (ad-hoc signing).
+4. **Run the practice rig check** with the mixer plugged in and the EarPods on (Settings >
+   Practice > Run the rig check; it plays three short bursts at -24 dBFS). Once with
+   loopback off, once on. It writes `Settings/selfcheck-rig-<time>.txt`.
+5. **Two USB-C ports**: the stick and the mixer take both; start with a charged battery. If
+   that does not work, copy the whole stick folder to the Mac's drive, practise there and
+   copy it back (results live in the copy).
+6. **20 minutes of practice** with bubbles on: dropouts, how warm the Mac gets, Activity
+   Monitor (Jukeoke plus its WebKit processes under 1 GB).
+7. **Bring the stick back** with the reports in `Settings/` (self-check and rig check).

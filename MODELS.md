@@ -135,6 +135,17 @@ of wav2vec2 is a pickle; transformers 5.23 loads it with `torch.load(weights_onl
 | Whisper large-v3-turbo (CTranslate2) | transcription when no lyrics are supplied - **default** | https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo (rev 0a363e91) | MIT | yes | `model.bin`, 1,617,884,929 B | `e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da` |
 | Whisper large-v3 (CTranslate2) | transcription, option | https://huggingface.co/Systran/faster-whisper-large-v3 (rev edaa852e) | MIT | yes | `model.bin`, 3,087,284,237 B | `69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1` |
 
+## Practice mode (no model)
+
+Practice mode (Work Order 2) uses **no machine-learning model** and downloads nothing. The
+melody guide is built by plain signal processing in Rust (`jk-pitch::guide`: pYIN pitch curve
+and note segmentation), the live tracker is the McLeod Pitch Method (`jk-pitch::tracker`),
+and the scorer and the removal of the app's own music are plain code too. It adds 0 bytes of
+weights to the stick and runs the same on Windows and the Mac. The neural trackers measured
+against the Rust builder (torchcrepe, SwiftF0, FCPE, PESTO; RMVPE not run) were evaluation
+only and are not shipped: `docs/benchmarks/practice-guide.md` sections 3 and 6, DECISIONS
+D-236.
+
 ## Surveyed and not used
 
 | model | why not |

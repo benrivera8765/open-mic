@@ -1,5 +1,8 @@
 # Test results (local sweep, CI equivalent)
 
+**Work Order 2 (practice mode):** local sweep re-run on 20 November 2026, every suite
+passing after one lint fix: section 10.
+
 **Latest re-run:** 18 November 2026, 05:18-05:51, after the preset-download pass (section
 8): `CARGO_TARGET_DIR=$JK_BUILD/target-presets bash scripts/local-ci.sh`, exit 0, log
 `$JK_BUILD/test-sweep/20261118-051847/`. Its counts are in the table of section 1 (the
@@ -597,3 +600,75 @@ A verifier's slip, undone: the first run with the old exe was started from a fol
 (15:56:59; it did not exist before). That folder, holding only that run's test files, was
 moved to `$JK_BUILD/verify-recsessions-live/old-run-appdata/`; `%LOCALAPPDATA%` and
 `%APPDATA%` hold no Jukeoke folder now, and the runs in the table used portable folders.
+
+## 10. Work Order 2: practice mode (20 November 2026)
+
+The lean finish of WO2 (DECISIONS D-249) on the committed practice code (029bc1f) plus this
+pass's small fixes. Nobody sang: every singer is generated or a recorded vocal; this PC has
+no microphone; nothing was played above -60 dBFS (null output device, master 0 in the real
+app). The numbers of practice mode itself: `docs/benchmarks/practice.md`.
+
+### 10.1 Local sweep
+
+`CARGO_TARGET_DIR=$JK_BUILD/target-wo2-finish bash scripts/local-ci.sh`, 08:40-09:02, log
+`$JK_BUILD/test-sweep/20261120-084050/`; conformance and lint re-run after the fix below
+(`test-sweep/20261120-090328/`, both pass).
+
+| Suite | Result | Time |
+|---|---|---|
+| UI (`npm ci`, build, vitest) | build OK (Safari 16.4 / Chrome 120 checks); **25 files, 529 passed** | 31 s |
+| Rust (`cargo test --workspace --release --locked`) | **439 passed, 0 failed, 0 ignored** in 50 test binaries (includes `rt_alloc`, `echo_alloc`, `practice_alloc`, `practice_session` 7) | 613 s |
+| Clippy | 0 errors, **33 warnings** (13 in `jk-format` as before; 20 new style warnings in `jk-format` guide/practice, `jk-guide` and the app's practice code: collapsible `if`, `chunks_exact`, manual `Default`, doc indentation). CI does not fail on clippy warnings; not fixed | 87 s |
+| Mac type-check (`aarch64-apple-darwin`, workspace) | 0 errors, 1 warning (an unused `Duration` import in `jk-recorder/src/preview.rs`, from WO1) | 8 s |
+| Studio, CPU | **251 passed**, 1 skipped, 24 deselected | 105 s |
+| Studio, GPU | **24 passed** | 193 s |
+| Song format conformance | **PASS**, 165 ok lines (steps 8-10: the 1.1 guide, Python and Rust both ways) | 35 s |
+| Portable smoke test (`dist/Windows/Jukeoke.exe`, the new exe) | **RESULT: OK** | 267 s |
+| Lint | first run: 1 ShellCheck finding (SC2015 in `tests/conformance/run.sh`, an `A && B || C`), rewritten as `if`; re-run **0 findings** (30 scripts), actionlint 0 | 3 s |
+
+### 10.2 Before the sweep
+
+- `cargo test --release -p jk-pitch -p jk-format -p jk-engine -p jk-cli -p jukeoke`: jk-pitch
+  89 passed (5 binaries); jukeoke, jk-engine, jk-format, jk-cli 237 passed (28 binaries),
+  `rt_alloc` included. The first attempt failed to build three echo examples that called
+  diagnostics of the stopped echo fix; the examples are back to their committed versions
+  (the fix is in `git stash`).
+- `app/scripts/build-windows.sh` into `$JK_BUILD/finish-app/Windows`: under processor load
+  three vitest tests failed (two ticker fuzz tests past the 5 s limit; the delete dialog's
+  focus asserted before its effect ran); they passed alone. Fixed in the tests (vitest
+  `testTimeout` 60 s; the focus is awaited); the rebuild passed 529 of 529. Release exe
+  17,532,430 bytes, 22 imported DLLs all part of Windows, no build-machine paths.
+- `app/scripts/check-mac.sh --locked`: passes (0 errors).
+- `scripts/gen-third-party.sh` then `--check`: up to date (281 crates linked, including
+  the new workspace crates `jk-guide` and `jk-pitch`; 2 flagged as before).
+
+### 10.3 Key change in the real app, final build
+
+`node app/ui/scripts/real-app-practice.mjs <root> <out> <singers> --only key` on the release
+exe above with the demo song, null device, master 0 (`$JK_BUILD/finish-real-app-key/`):
+**2 passed, 0 failed**, no page errors.
+
+| Mode | Heard after the presses | UI key switch vs heard | Lane frames vs heard | Target | Notes before / after |
+|---|---|---|---|---|---|
+| real time | 466 ms (two steps, 0 -> -2 -> -3) | -1 ms and 0 ms | 37 ms and 16 ms | Bb3 -> A3 (lit key row MIDI 58 -> 57) | 13 kept key 0 / 4 graded in -3 |
+| render ahead | 1,263 ms | 0 ms | 11 ms | A4 -> F#4 | 9 kept key 0 / 7 graded in -3 |
+
+Every other real-app check (every key -12..+12, octave, missing input, permission, unplugged,
+20 minutes, file audit) is from Stage 3b on the previous build: `docs/benchmarks/practice-app.md`.
+
+### 10.4 dist/
+
+`dist/Windows/Jukeoke.exe` replaced by the exe above (sha256 `4154ebeb...cb97bb`; the
+previous one kept in `$JK_BUILD/finish-previous-dist-exe/`); `Jukeoke.exe` was not running.
+Nothing else in `dist/` was replaced. `jukeoke-cli guide add` on both songs in
+`dist/Library` (the owner's song 435 notes in 1.37 s; the demo 42 notes). Proof in
+`$JK_BUILD/finish-dist-proof/`:
+
+- `chunks-before.json` / `chunks-after.json` / `compare.txt`: SHA-256 of both settings-slot
+  regions and of every chunk, before and after. Before, both files matched the owner
+  backup's SHA256SUMS (`4eb88d78...`, `1ddb91d8...`). After: **slot A, slot B, manifest,
+  lyrics, cover and every stem byte-identical, at the same offsets**; new chunks `guide` and
+  `guide.curve` only (the owner's song: 59,535 + 289,016 bytes); version 1.0 -> 1.1.
+- `verify --strict --deep`: **PASS, 0 errors, 0 warnings** on both.
+- `sha256sum -c` of the backup's list without `Library/` (385 files: recordings, settings,
+  caches): **all OK**. Only three files in `dist/` changed: the exe and the two songs.
