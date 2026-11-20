@@ -59,6 +59,12 @@ const STAB_TOL_S: f64 = 0.003;
 const SCOT_REG: f32 = 1e-3;
 /// Tapered length at each end of the reference segment, seconds.
 const TAPER_S: f64 = 0.032;
+/// After the echo was forgotten, hops (about 3 s) before the long average, whose threshold
+/// is lower because it normally averages 4 s, may declare it present again. Measured: with
+/// only a singer over the music, the long average refilled from zero reached z 13.5 after
+/// about a second and declared a vanished return present again for 3 s. A return switched
+/// back on is found by the short averages in under a second anyway.
+const LONG_HOPS_AFTER_FORGET: u32 = 24;
 
 /// One second-order section (direct form I, f64 state).
 #[derive(Clone, Copy, Debug, Default)]
@@ -241,6 +247,13 @@ pub(crate) struct Detector {
     aligned_hops: u32,
     music_hops: u32,
     low_hops: u32,
+    /// After [`Detector::forget_echo`] with the echo kept "present": waiting for the fresh
+    /// averages to find it again.
+    probation: bool,
+    /// Hops the long average needs before it may declare the echo present: 8 at the start
+    /// (as measured in docs/benchmarks/practice-echo.md), [`LONG_HOPS_AFTER_FORGET`] after
+    /// [`Detector::forget_echo`].
+    long_min_hops: u32,
     // Full-band powers, accumulated between hops, then averaged over the long time.
     acc_r: f64,
     acc_x: f64,
@@ -357,6 +370,8 @@ impl Detector {
             aligned_hops: 0,
             music_hops: 0,
             low_hops: 0,
+            probation: false,
+            long_min_hops: 8,
             acc_r: 0.0,
             acc_x: 0.0,
             acc_n: 0,
@@ -424,6 +439,8 @@ impl Detector {
         self.aligned_hops = 0;
         self.music_hops = 0;
         self.low_hops = 0;
+        self.probation = false;
+        self.long_min_hops = 8;
         self.acc_r = 0.0;
         self.acc_x = 0.0;
         self.acc_n = 0;
@@ -443,6 +460,75 @@ impl Detector {
             music_s: 0.0,
             time_s: 0.0,
         };
+    }
+
+    /// The canceller found the returned playback gone (the mixer's loopback switched off),
+    /// or suspects it: forget everything learnt about it. With `keep_present` false say
+    /// "absent" at once; with it true stay "present" on probation until the fresh averages
+    /// find the echo again ([`Detector::probation`] turns false) or the canceller gives up.
+    /// The correlation averages are scale-invariant (GCC-SCOT), so on their own they
+    /// forget a vanished echo only as fast as the new input outweighs it: 12-25 s for a
+    /// loud return over a quiet room (docs/benchmarks/practice-echo.md). The signal history
+    /// is kept, so a return that is still there (or comes back) is found again as quickly
+    /// as at the start (about a second). Does not allocate.
+    pub(crate) fn forget_echo(&mut self, keep_present: bool) {
+        let zc = Complex::new(0.0f32, 0.0);
+        for v in [
+            &mut self.s_f,
+            &mut self.s_s,
+            &mut self.s_l,
+            &mut self.sa_s,
+            &mut self.sa_l,
+        ] {
+            v.fill(zc);
+        }
+        for v in [
+            &mut self.pxx_f,
+            &mut self.prr_f,
+            &mut self.pxx_s,
+            &mut self.prr_s,
+            &mut self.pxx_l,
+            &mut self.prr_l,
+            &mut self.pxa_s,
+            &mut self.pra_s,
+            &mut self.pxa_l,
+            &mut self.pra_l,
+        ] {
+            v.fill(0.0);
+        }
+        self.lag = None;
+        self.lags_f = [f64::NAN; STAB_HOPS];
+        self.lags_s = [f64::NAN; STAB_HOPS];
+        self.lags_l = [f64::NAN; STAB_HOPS];
+        self.lag_pos = 0;
+        self.aligned_hops = 0;
+        // Averages restart: the first hops must count as the first again (no instant
+        // "present" from three hops of a half-filled average).
+        self.music_hops = 0;
+        self.low_hops = 0;
+        self.hist_len = 0;
+        self.hist_pos = 0;
+        self.probation = keep_present && self.state.presence == Presence::Present;
+        self.long_min_hops = LONG_HOPS_AFTER_FORGET;
+        if !self.probation {
+            self.state.presence = Presence::Absent;
+        }
+        self.state.z_fast = 0.0;
+        self.state.z_short = 0.0;
+        self.state.z_long = 0.0;
+        if !self.probation {
+            // On probation the last delay, its line and the level stay the best knowledge
+            // (the canceller's gate keeps expecting that echo until it is confirmed gone).
+            self.state.delay_s = None;
+            self.state.fit = None;
+            self.state.level = None;
+            self.state.echo_share = None;
+        }
+    }
+
+    /// Still on probation after [`Detector::forget_echo`] with `keep_present`.
+    pub(crate) fn probation(&self) -> bool {
+        self.probation
     }
 
     /// The latest results.
@@ -789,7 +875,9 @@ impl Detector {
         let (z_s, z_l) = (self.state.z_short, self.state.z_long);
         let z_f = self.state.z_fast;
         let found = (self.music_hops >= 3 && z_s >= th.z_on && self.steady(&self.lags_s))
-            || (self.music_hops >= 8 && z_l >= th.z_on_long && self.steady(&self.lags_l))
+            || (self.music_hops >= self.long_min_hops
+                && z_l >= th.z_on_long
+                && self.steady(&self.lags_l))
             || (self.music_hops >= 3 && z_f >= th.z_on_fast && self.steady(&self.lags_f));
         match self.state.presence {
             Presence::Searching | Presence::Absent => {
@@ -806,6 +894,15 @@ impl Detector {
                 }
             }
             Presence::Present => {
+                if self.probation {
+                    // Fresh averages: found again confirms the echo; the canceller decides
+                    // when to give up.
+                    if found {
+                        self.probation = false;
+                        self.low_hops = 0;
+                    }
+                    return;
+                }
                 if z_s < th.z_off && z_l < th.z_on_long && z_f < th.z_on_fast {
                     self.low_hops += 1;
                 } else {

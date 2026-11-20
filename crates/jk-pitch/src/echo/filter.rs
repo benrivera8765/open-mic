@@ -132,6 +132,11 @@ pub(crate) struct Pbfdaf {
     resets: u32,
     /// Foreground updates (diagnostics).
     updates: u32,
+    /// The background does not learn while set: the canceller's spectral look found the
+    /// singer in the output (a voice holding a note over the same note in the music is
+    /// otherwise slowly learnt as if the music predicted it; measured with continuous
+    /// singing: the output filter then took weights 2.3 times the echo).
+    frozen: bool,
 }
 
 impl Pbfdaf {
@@ -195,6 +200,7 @@ impl Pbfdaf {
             diverge_blocks: 0,
             resets: 0,
             updates: 0,
+            frozen: false,
         }
     }
 
@@ -204,6 +210,7 @@ impl Pbfdaf {
         let zc = Complex::new(0.0f32, 0.0);
         self.w.fill(zc);
         self.wf.fill(zc);
+        self.frozen = false;
         if history {
             self.xtime.fill(0.0);
             self.xs.fill(zc);
@@ -248,9 +255,20 @@ impl Pbfdaf {
         self.resets
     }
 
+    /// Hold the background's learning (true) or let it learn (false), from the next block.
+    pub(crate) fn set_frozen(&mut self, frozen: bool) {
+        self.frozen = frozen;
+    }
+
     /// Times the foreground took the background's weights.
     pub(crate) fn updates(&self) -> u32 {
         self.updates
+    }
+
+    /// The foreground's echo estimate for the block just processed (`b` samples): what
+    /// [`Pbfdaf::step`] subtracted from the input.
+    pub(crate) fn fore_estimate(&self) -> &[f32] {
+        &self.yf_t
     }
 
     /// Weight index.
@@ -436,7 +454,7 @@ impl Pbfdaf {
             self.py_avg[k] += a * (py - self.py_avg[k]);
         }
         let ref_active = st.px > 1e-9 * b as f32;
-        if !ref_active {
+        if !ref_active || self.frozen {
             return st;
         }
         if syy_f > 1e-20 && see_f > 1e-20 {

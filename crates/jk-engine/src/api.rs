@@ -385,6 +385,17 @@ impl Engine {
         self.inner.debug_set_slowdown(factor)
     }
 
+    /// A reader of the output tap: a lock-free copy of exactly what the output device plays
+    /// (after the graph, the output resampler, fades and the master volume), interleaved
+    /// stereo at the device rate, each piece stamped with the host time ([`crate::now_ns`])
+    /// its first frame leaves the DAC. For practice mode's echo canceller, read on its own
+    /// analysis thread. The ring (about 2 MiB) is allocated on the first call; while no
+    /// reader is attached the device callback skips the tap (two atomic loads). Playback is
+    /// bit-identical with or without a reader. See [`crate::tap`].
+    pub fn output_tap(&self) -> crate::tap::TapReader {
+        self.inner.output_tap()
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         self.inner.snapshot()
     }

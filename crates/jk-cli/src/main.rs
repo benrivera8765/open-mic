@@ -27,6 +27,10 @@
 //!   play the lead vocal alone in real time on the null device, change key during
 //!   playback, write the played audio and the key timeline the engine published.
 //! * `devices`: list output devices.
+//! * `practice run SONG (PERF.wav | --singer SPEC | --vocal) ...` and `practice sweep SONG`:
+//!   Work Order 2 offline practice harness: a performance through the app's practice
+//!   analysis chain (jk_pitch::practice) with the playback rendered as the echo reference;
+//!   result JSON (see `practice.rs`).
 //!
 //! Engine development (stem folders, generated material):
 //! * `gen-test-stems`, `render-stems`, `bench`, `ci-render` (Windows-vs-macOS renders).
@@ -41,6 +45,9 @@ use jk_dsp::{render, MixParams as DspParams, ParamEvent, RenderOptions, StemsRef
 use jk_engine::{Engine, EngineConfig, ExportFormat, FlacStem, MixParams, PlaybackState};
 
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
+
+// Work Order 2: the practice harness (`practice run`, `practice sweep`).
+mod practice;
 
 #[derive(Parser)]
 #[command(name = "jukeoke-cli", version, about = "Jukeoke audio engine and song-file tool")]
@@ -176,6 +183,12 @@ enum Cmd {
         /// Play the whole mix with the guide vocal instead of the lead vocal alone.
         #[arg(long)]
         full_mix: bool,
+    },
+    /// Work Order 2 practice harness: grade a performance through the practice analysis
+    /// chain as if it were the microphone (generated sound only).
+    Practice {
+        #[command(subcommand)]
+        cmd: practice::PracticeCmd,
     },
 }
 
@@ -350,6 +363,7 @@ fn main() {
         Cmd::KeySwitchCapture { song, out, mode, cache, start, changes, seconds, full_mix } => {
             cmd_key_switch_capture(&song, &out, &mode, cache, start, &changes, seconds, full_mix)
         }
+        Cmd::Practice { cmd } => practice::run(cmd),
     };
     if let Err(e) = r {
         eprintln!("error: {e}");

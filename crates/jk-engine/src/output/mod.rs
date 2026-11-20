@@ -551,6 +551,19 @@ impl Filler {
             self.gain = target_gain;
         }
 
+        // Output tap (practice mode): a copy of exactly what the device gets, master volume
+        // and fades included, with the host time its first frame leaves the DAC (the
+        // frames queued ahead of it are `latency_frames - frames`). Skipped, two atomic
+        // loads, while no reader is attached. Plain atomic stores only (see `crate::tap`).
+        if let Some(tap) = self.shared.tap.get()
+            && tap.active()
+        {
+            let ahead = latency_frames as i64 - frames as i64;
+            let dac_ns = (t0 as i64 + ahead * 1_000_000_000 / self.rate as i64).max(0) as u64;
+            let first = self.spans.position_back(frames as u64);
+            tap.write(out, ch, self.rate as u32, dac_ns, first.map_or(self.generation, |p| p.1), first.map(|p| p.0));
+        }
+
         // Clock: the sample leaving the DAC now was written `latency_frames` ago.
         let s = &self.shared;
         if let Some((pos, generation)) = self.spans.position_back(latency_frames as u64) {

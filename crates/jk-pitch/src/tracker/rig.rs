@@ -318,10 +318,7 @@ pub fn mixer_eq(x: &[f32], rate: u32, bright: bool) -> Vec<f32> {
             x,
             rate,
             &[
-                Eq::LowShelf {
-                    hz: 150.0,
-                    db: 6.0,
-                },
+                Eq::LowShelf { hz: 150.0, db: 6.0 },
                 Eq::Peak {
                     hz: 2500.0,
                     db: -3.0,

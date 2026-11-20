@@ -3,7 +3,7 @@
 //! the device callback. Plain atomics only; floats are stored as their bit patterns.
 
 use std::sync::atomic::{fence, AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering::*};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 /// Monotonic nanoseconds since the first use of the engine (for timestamps).
@@ -152,6 +152,12 @@ pub struct Shared {
     // ---- written by the reader -------------------------------------------------------
     /// A stem could not be decoded (message in the control state).
     pub reader_failed: AtomicBool,
+
+    // ---- output tap (practice mode) ----------------------------------------------------
+    /// Created by control on the first `Engine::output_tap` call, then written by the
+    /// device callback while a reader is attached (see [`crate::tap`]). `OnceLock::get`
+    /// is one atomic load, so the callback never waits on it.
+    pub tap: OnceLock<Arc<crate::tap::OutputTap>>,
 }
 
 impl Shared {

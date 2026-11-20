@@ -709,12 +709,42 @@ fn mixer_effects_keep_the_note() {
     rig::add_handling(&mut handled, rate, 8, 4, 5);
     // (name, signal, least share pitched, most share off)
     let cases: Vec<(&str, Vec<f32>, f64, f64)> = vec![
-        ("reverb RT60 0.3 s -6 dB", rig::reverb(&dry, rate, 0.3, -6.0, 1), 0.9, 0.0),
-        ("reverb RT60 1.0 s -8 dB", rig::reverb(&dry, rate, 1.0, -8.0, 2), 0.9, 0.0),
-        ("reverb RT60 1.5 s -6 dB", rig::reverb(&dry, rate, 1.5, -6.0, 3), 0.75, 0.02),
-        ("heavy compression", rig::compress(&noisy, rate, Compressor::HEAVY), 0.9, 0.0),
-        ("bright channel EQ", rig::mixer_eq(&dry, rate, true), 0.9, 0.0),
-        ("warm channel EQ", rig::mixer_eq(&dry, rate, false), 0.9, 0.0),
+        (
+            "reverb RT60 0.3 s -6 dB",
+            rig::reverb(&dry, rate, 0.3, -6.0, 1),
+            0.9,
+            0.0,
+        ),
+        (
+            "reverb RT60 1.0 s -8 dB",
+            rig::reverb(&dry, rate, 1.0, -8.0, 2),
+            0.9,
+            0.0,
+        ),
+        (
+            "reverb RT60 1.5 s -6 dB",
+            rig::reverb(&dry, rate, 1.5, -6.0, 3),
+            0.75,
+            0.02,
+        ),
+        (
+            "heavy compression",
+            rig::compress(&noisy, rate, Compressor::HEAVY),
+            0.9,
+            0.0,
+        ),
+        (
+            "bright channel EQ",
+            rig::mixer_eq(&dry, rate, true),
+            0.9,
+            0.0,
+        ),
+        (
+            "warm channel EQ",
+            rig::mixer_eq(&dry, rate, false),
+            0.9,
+            0.0,
+        ),
         ("proximity, pops and thumps", handled, 0.9, 0.0),
     ];
     for (name, x, min_pitched, max_off) in cases {
@@ -734,7 +764,11 @@ fn mixer_effects_keep_the_note() {
             }
         }
         let share = pitched as f64 / core as f64;
-        assert!(share >= min_pitched, "{name}: {:.1} % pitched", 100.0 * share);
+        assert!(
+            share >= min_pitched,
+            "{name}: {:.1} % pitched",
+            100.0 * share
+        );
         assert!(
             wrong as f64 <= max_off * pitched as f64,
             "{name}: {wrong} of {pitched} core events more than 50 cents off"

@@ -1862,6 +1862,8 @@ dependencies = [
  "hound",
  "jk-dsp",
  "jk-format",
+ "jk-pitch",
+ "jk-recorder",
  "jk-rubberband",
  "libc",
  "libm",
