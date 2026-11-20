@@ -87,6 +87,10 @@ Read this first in every session. Then DECISIONS.md, then docs/ARCHITECTURE.md.
 
 ## Notes for a fresh session
 
+- 2026-11-20 ~00:57: relaying a message to a workflow agent by its id RESUMED A DUPLICATE COPY of it; stopping the duplicate also interrupted the workflow's own instance (same id). Lesson: never SendMessage to workflow agents; harvest their results from the journal. The quality-round tracker item in wf_171f937d-ff8 is therefore hung (score and echo items still fine: read their results from its journal, then TaskStop that workflow). The tracker stream was relaunched as `wo2-quality-tracker-resume` (wf_8bd71af6-311).
+
+- 2026-11-19 ~23:05 -> 2026-11-20 ~00:30: usage limit again; the Stage 3b builder and the 3 quality-round builders were restarted automatically by their workflows (they resume from files on disk).
+
 - 2026-11-17 18:28-20:10: usage limit hit again during the Studio workflow; both build agents restarted at 20:11 and resume from files on disk.
 - 2026-11-17 12:10-15:10: the account's 5-hour usage limit was hit; every running agent stopped and the workflows restarted them after the reset. Keep workflows to a few agents at a time and avoid re-running finished benchmarks. Separation stream is on its third attempt (it resumes from files on disk).
 - `.gitignore` ignores `Models/` and Windows git is case-insensitive, so no source folder may be called `models/` (the Studio's model registry lives in `studio/jukeoke_studio/modelzoo/`).
