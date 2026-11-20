@@ -16,7 +16,10 @@
 //! - `legato`: note A then note B with no gap (intervals 1, 2, 5, 7, 12, -2, -5, -7, -12,
 //!   19 semitones from five base notes; targets below C2 skipped), 16 / 48 kHz: events off
 //!   both notes, time from the change to the first event on B, and the octave leaps
-//!   specifically.
+//!   specifically;
+//! - `noise`: long stretches of not singing (the Stage 1 verifier's probe): 40 x 15 s per
+//!   kind and rate of whispered speech (-30..-6 dBFS), breath, fricatives and room noise,
+//!   many seeds and levels: pitched events (must be 0) and the longest run.
 
 #[path = "tracker_set/mod.rs"]
 mod tracker_set;
@@ -285,6 +288,77 @@ fn legato(cfg: &TrackerConfig) {
     }
 }
 
+/// Long not-singing probes: pitched events per kind and rate (all should be 0).
+fn noise(cfg: &TrackerConfig) {
+    println!("\n## long not-singing probes: 40 x 15 s per kind and rate\n");
+    println!(
+        "| rate | kind | seconds | pitched events | longest run (events) | pitched pitches (Hz) |"
+    );
+    println!("|---|---|---|---|---|---|");
+    let kinds = [
+        "whispered speech -30..-6 dBFS",
+        "breath -35..-11 dBFS",
+        "fricatives -30..-6 dBFS",
+        "room noise -60..-30 dBFS",
+    ];
+    let jobs: Vec<(u32, usize)> = RATES
+        .iter()
+        .flat_map(|&r| (0..kinds.len()).map(move |k| (r, k)))
+        .collect();
+    let results: Vec<std::sync::Mutex<String>> = jobs
+        .iter()
+        .map(|_| std::sync::Mutex::new(String::new()))
+        .collect();
+    std::thread::scope(|sc| {
+        for (j, &(rate, kind)) in jobs.iter().enumerate() {
+            let results = &results;
+            sc.spawn(move || {
+                let (mut pitched, mut longest) = (0usize, 0usize);
+                let (mut lo, mut hi) = (f32::MAX, 0.0f32);
+                for seed in 1..=40u64 {
+                    let lvl = -30.0 + 24.0 * ((seed % 5) as f64) / 4.0;
+                    let x = match kind {
+                        0 => tv::speech_noise(rate, 15.0, lvl, seed * 13),
+                        1 => tv::breath(rate, 15.0, lvl - 5.0, seed * 17),
+                        2 => tv::fricatives(rate, 15.0, lvl, seed * 19),
+                        _ => tv::room_noise(
+                            rate,
+                            15.0,
+                            -60.0 + 30.0 * ((seed % 4) as f64) / 3.0,
+                            None,
+                            seed * 23,
+                        ),
+                    };
+                    let mut run = 0;
+                    for e in track(rate, cfg, &x) {
+                        if let Some(h) = e.hz {
+                            pitched += 1;
+                            run += 1;
+                            longest = longest.max(run);
+                            lo = lo.min(h);
+                            hi = hi.max(h);
+                        } else {
+                            run = 0;
+                        }
+                    }
+                }
+                let range = if pitched > 0 {
+                    format!("{lo:.0}..{hi:.0}")
+                } else {
+                    "-".into()
+                };
+                *results[j].lock().unwrap() = format!(
+                    "| {rate} | {} | 600 | {pitched} | {longest} | {range} |",
+                    kinds[kind]
+                );
+            });
+        }
+    });
+    for r in results {
+        println!("{}", r.into_inner().unwrap());
+    }
+}
+
 fn main() {
     let mut cfg = TrackerConfig::default();
     let mut sections: Vec<String> = Vec::new();
@@ -304,6 +378,9 @@ fn main() {
     }
     if want("legato") {
         legato(&cfg);
+    }
+    if want("noise") {
+        noise(&cfg);
     }
     println!("\nsettings: {cfg:?}");
 }

@@ -14,6 +14,8 @@
 //! * [`keyheard`]: the key that is heard at the DAC, and its recent history.
 //! * [`flac_write`]: an in-house FLAC encoder (fixtures, exports).
 //! * [`demo`]: the generated demo song (self-check, ticker ground truth).
+//! * [`tap`]: the output tap, a lock-free copy of what the device plays with DAC time
+//!   stamps (practice mode's echo reference).
 
 // Index loops over channels and frames are the clearest form for audio code.
 #![allow(clippy::needless_range_loop)]
@@ -30,6 +32,7 @@ pub mod keyheard;
 pub mod output;
 pub mod shared;
 pub mod source;
+pub mod tap;
 
 pub use api::{
     render_offline, DeviceInfo, DeviceStatus, Engine, EngineConfig, EngineError, EngineEvent, ExportFormat,
@@ -44,3 +47,4 @@ pub use keycache::{
 pub use keyheard::{KeyPending, KeySegment};
 pub use output::{OutputRequest, StreamInfo};
 pub use shared::now_ns;
+pub use tap::{Anchor as TapAnchor, OutputTap, TapRead, TapReader, TAP_CHANNELS, TAP_FRAMES};

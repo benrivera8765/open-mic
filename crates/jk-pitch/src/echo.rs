@@ -75,6 +75,26 @@
 //! (conservative: it counts bursts of left-over music), the residual compared with the
 //! singer's level once somebody has sung, else with the tracker's level gate.
 //!
+//! A second, spectral look at the output ([`spectral`], "tier 2") recognises the singer by
+//! energy standing above the most music there can be in each frequency bin, which needs no
+//! measured left-overs: it keeps a high note quieter than the music it sits in, and works
+//! with continuous singing from the first second (whose left-over share comes from the
+//! spectral regression until the singer pauses). With a wandering delay the gate compares
+//! with the loudest the echo can be within +-40 ms of the filter's position.
+//!
+//! # Changes of the echo path
+//!
+//! An echo-path gain tracker compares the input with the filter's echo estimate over the
+//! last half second (and the last 84 ms). A return switched off (the mixer's loopback, what
+//! the warning asks for) is dropped within about half a second with nobody singing and
+//! within about three with a singer (removal suspended, a fresh detector must confirm the
+//! echo within 2 s); the detector's scale-invariant averages are cleared so they do not keep
+//! a vanished echo for tens of seconds. A path that got louder (the OS or mixer volume)
+//! scales the expected echo and holds the level comparison for half a second. The engine's
+//! output tap is taken after the master volume, so the app's own volume control changes
+//! reference and return alike and is not a path change. Measurements:
+//! docs/benchmarks/practice-echo.md sections 10-12.
+//!
 //! # Contract with the caller
 //!
 //! - Same sample rate for reference and input (resample the reference to the input's rate).
@@ -90,6 +110,7 @@
 pub(crate) mod detect;
 pub(crate) mod filter;
 pub(crate) mod refline;
+pub(crate) mod spectral;
 pub mod testpath;
 
 #[cfg(test)]
@@ -98,6 +119,7 @@ mod tests;
 use detect::{Detector, Fit, Thresholds, fit_history};
 use filter::{BlockStats, Pbfdaf};
 use refline::{HALF, RefLine};
+use spectral::Spectral;
 
 /// Whether the app's own playback is in the input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -271,6 +293,11 @@ pub struct EchoReport {
     pub quality: RemovalQuality,
     /// Times the filter restarted at a new delay.
     pub relocks: u32,
+    /// Times the returned playback was found gone while it was being removed (the mixer's
+    /// loopback switched off, or turned down by more than about 12 dB): "present" was
+    /// dropped at once instead of waiting for the correlation to fade.
+    #[serde(default)]
+    pub lost: u32,
     /// Seconds of music analysed.
     pub music_s: f64,
 }
@@ -309,6 +336,73 @@ const RATIO_MIN_S: f64 = 0.3;
 /// Margin on the measured ratio for its fluctuation from moment to moment (3 dB; see
 /// docs/benchmarks/practice-echo.md for the calibration).
 const RATIO_BIAS: f32 = 2.0;
+/// Margin on the share of the echo left measured by the spectral look's regression during
+/// singing (6 dB): noisier than the measurement on music without singing; measured on
+/// continuous singing it was up to 7 dB under the true left-overs without a margin.
+const REGRESSION_BIAS: f32 = 4.0;
+/// Echo path gain tracker: chunks of about this length (s) of input x echo estimate and
+/// echo estimate x echo estimate, and how many are kept (about 0.5 s).
+const PG_CHUNK_S: f64 = 0.021;
+const PG_CHUNKS: usize = 24;
+/// The newest chunks of the tracker (about 84 ms) also give a fast path gain, used only to
+/// see a path that got louder at once (the OS or mixer volume turned up), before the half
+/// second average follows.
+const PG_FAST: usize = 4;
+/// After the path was last seen significantly louder than the filter learnt, the per-block
+/// comparison may not call a block the singer for this long (s): what removal leaves is
+/// not known until the filter has re-learnt the path band by band (measured: with only the
+/// gain in the bound, a return turned up 6 dB still showed 1.8 % pitch frames with nobody
+/// singing in the 5 s after). The spectral look, whose bound holds for a path up to about
+/// 9 dB louder, still recognises the singer meanwhile.
+const LOUDER_HOLD_S: f64 = 0.5;
+/// The returned playback is gone when the path gain (amplitude, relative to what the
+/// filter learnt) is below this with 3 standard errors to spare (-12 dB), or when the
+/// input holds less than [`GONE_POWER`] of the echo the detector expects (-25 dB), or less
+/// than a tenth of it while down at the noise floor (with nobody singing, a return switched
+/// off leaves only the floor). Measured with a plain -10 dB rule: a return turned down
+/// 20 dB (OS volume) was taken for "off" at once, and the left-overs showed as pitch for
+/// about a second until it was found again (3.8 % of the frames in the 5 s after); now
+/// such a drop goes the way of the gain test (removal suspended, the echo confirmed again
+/// within the grace time, "present" kept). With the -25 dB rule alone a -40 dB return
+/// switched off took 19 s to clear on one song (the floor is not 25 dB under it).
+const GONE_GAIN: f64 = 0.25;
+const GONE_POWER: f64 = 0.003;
+/// Below this path gain (2 standard errors to spare) subtracting the estimate would add
+/// more than it removes ((1 - g)^2 > g^2): the input passes through untouched.
+const BYPASS_GAIN: f64 = 0.5;
+/// The power test says "gone" at once only when the filter has run this long since it
+/// started (s), so that the detector's level is settled; earlier it only suspends removal
+/// (see [`GRACE_S`]). Measured: 0.3 s after a start, a level overestimated while a loud
+/// singer held a note took a -30 dB return for gone.
+const GONE_POWER_AFTER_S: f64 = 4.0;
+/// After the gain test says "gone" the canceller stops removing and the detector starts
+/// afresh; the echo is declared absent only if the fresh correlation has not found it again
+/// within this time (s). A filter that went wrong (it learnt part of a voice) also fails
+/// the gain test: then the echo is found again in under a second and the filter restarts,
+/// without the warning ever dropping.
+const GRACE_S: f64 = 2.0;
+/// With a wandering delay (Bluetooth) the gate compares the output with the loudest the
+/// echo can be anywhere within this many seconds either side of where the filter expects
+/// it (the Bluetooth model jumps up to 25 ms; the filter restarts at a new delay only
+/// about 0.4 s after a jump). Measured: with the echo expected only at the filter's delay,
+/// up to 1.31 % of the frames with nobody singing were shown as pitch (a drum hit arriving
+/// while the expected echo was quiet).
+const WANDER_SPAN_S: f64 = 0.040;
+/// With a wandering delay the gate takes the echo as this much louder than the detector's
+/// level (6 dB; the level is biased low by a wandering delay, measured up to 5.5 dB).
+/// Measured on the held-out songs: with 3 dB, up to 2.56 % of the frames with nobody
+/// singing were shown as pitch.
+const WANDER_BIAS: f32 = 4.0;
+
+/// What the echo path gain tracker concluded at the end of a chunk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PathVerdict {
+    Keep,
+    /// The gain test failed: gone, or the filter went wrong. Confirm with a fresh detector.
+    Suspect,
+    /// The input holds far less than the echo expected: gone.
+    Gone,
+}
 
 fn db(x: f64) -> f64 {
     10.0 * x.max(1e-30).log10()
@@ -402,6 +496,9 @@ pub struct EchoCanceller {
     a_long: f64,
     py_long: f64,
     px_long: f64,
+    /// The echo the detector expects (its level times the reference), same averaging: with
+    /// `py_long`, how much of the echo the output filter has captured.
+    hint_long: f64,
     pd_music: f64,
     pe_music: f64,
     /// Output power per block over blocks judged to be the singer (4 s average), and
@@ -409,10 +506,53 @@ pub struct EchoCanceller {
     pe_voice: f64,
     voice_blocks: u32,
     trust: [Trust; TRUST_RING],
+    /// Output power of each block in `trust` (the singer's level when the spectral look
+    /// decides a block afterwards).
+    trust_pe: Vec<f32>,
     /// Input index of the first sample of the newest block in `trust`, and blocks recorded.
     trust_last_start: i64,
     trust_count: u64,
     imp: Vec<f32>,
+    /// Spectral look at the output (voice evidence that does not need the left-overs
+    /// measured, and the left-over share during singing; see [`spectral`]).
+    spec: Spectral,
+    /// Mono aligned reference of the block being finished.
+    blk_xm: Vec<f32>,
+    /// Echo path gain tracker (see `path_update`): blocks per chunk, the current chunk's
+    /// sums (input x estimate, estimate x estimate, input power and expected echo power
+    /// over blocks where the expected echo stands above the noise, and those blocks), and
+    /// the ring of finished chunks.
+    pg_chunk_blocks: u32,
+    pg_blocks: u32,
+    pg_acc: [f64; 6],
+    pg_acc_n: u32,
+    pg_ring: [[f64; 6]; PG_CHUNKS],
+    pg_ring_n: [u32; PG_CHUNKS],
+    pg_len: usize,
+    pg_pos: usize,
+    /// Latest path gain and its standard error, when measured, and the same over the newest
+    /// [`PG_FAST`] chunks.
+    path: Option<(f64, f64)>,
+    path_fast: Option<(f64, f64)>,
+    /// Input time (s) until which the per-block comparison may not trust a block (see
+    /// [`LOUDER_HOLD_S`]).
+    louder_hold: f64,
+    /// The path gain is so low that the input passes through untouched.
+    bypass: bool,
+    /// Input time (s) the filter last started.
+    lock_t: f64,
+    lost: u32,
+    /// After a failed gain test: input time (s) until which the fresh detector may confirm
+    /// the echo (see [`GRACE_S`]); removal is stopped meanwhile.
+    grace_until: Option<f64>,
+    /// Wandering delay: the mono reference power per block read [`WANDER_SPAN_S`] ahead of
+    /// the filter's position (`wide_lead` samples), the block being filled, a ring of the
+    /// last blocks, and how many of them span twice [`WANDER_SPAN_S`].
+    wide_lead: f64,
+    wide_blk: f32,
+    wide_ring: Vec<f32>,
+    wide_pos: usize,
+    wide_blocks: usize,
 }
 
 impl EchoCanceller {
@@ -512,14 +652,38 @@ impl EchoCanceller {
             a_long: 1.0 - (-blk_s / 4.0).exp(),
             py_long: 0.0,
             px_long: 0.0,
+            hint_long: 0.0,
             pd_music: 0.0,
             pe_music: 0.0,
             pe_voice: 0.0,
             voice_blocks: 0,
             trust: [Trust::Unknown; TRUST_RING],
+            trust_pe: vec![0.0; TRUST_RING],
             trust_last_start: 0,
             trust_count: 0,
             imp: vec![0.0; p * b],
+            spec: Spectral::new(rate, b),
+            blk_xm: vec![0.0; b],
+            pg_chunk_blocks: ((PG_CHUNK_S / blk_s).round() as u32).max(1),
+            pg_blocks: 0,
+            pg_acc: [0.0; 6],
+            pg_acc_n: 0,
+            pg_ring: [[0.0; 6]; PG_CHUNKS],
+            pg_ring_n: [0; PG_CHUNKS],
+            pg_len: 0,
+            pg_pos: 0,
+            path: None,
+            path_fast: None,
+            louder_hold: 0.0,
+            bypass: false,
+            lock_t: 0.0,
+            lost: 0,
+            grace_until: None,
+            wide_lead: (WANDER_SPAN_S * f64::from(rate)).round(),
+            wide_blk: 0.0,
+            wide_ring: vec![0.0; ((2.0 * WANDER_SPAN_S / blk_s).ceil() as usize + 1).max(1)],
+            wide_pos: 0,
+            wide_blocks: ((2.0 * WANDER_SPAN_S / blk_s).ceil() as usize + 1).max(1),
             cfg,
         }
     }
@@ -571,13 +735,35 @@ impl EchoCanceller {
         self.nf_blocks = 0;
         self.py_long = 0.0;
         self.px_long = 0.0;
+        self.hint_long = 0.0;
         self.pd_music = 0.0;
         self.pe_music = 0.0;
         self.pe_voice = 0.0;
         self.voice_blocks = 0;
         self.trust = [Trust::Unknown; TRUST_RING];
+        self.trust_pe.fill(0.0);
         self.trust_last_start = 0;
         self.trust_count = 0;
+        self.spec.reset(true);
+        self.clear_path();
+        self.lock_t = 0.0;
+        self.lost = 0;
+        self.grace_until = None;
+        self.wide_blk = 0.0;
+        self.wide_ring.fill(0.0);
+        self.wide_pos = 0;
+    }
+
+    /// Forget the echo path gain tracker (a new filter).
+    fn clear_path(&mut self) {
+        self.pg_blocks = 0;
+        self.pg_acc = [0.0; 6];
+        self.pg_acc_n = 0;
+        self.pg_len = 0;
+        self.pg_pos = 0;
+        self.path = None;
+        self.path_fast = None;
+        self.bypass = false;
     }
 
     /// Process a block. `reference` is interleaved with `reference_channels` samples per
@@ -616,6 +802,12 @@ impl EchoCanceller {
                 for c in 0..self.ch {
                     self.blk_x[c * self.b + self.fill] = fr[c];
                 }
+                if self.wandering {
+                    // The reference ahead of the filter's position (nearest sample: only
+                    // its power is used), for the gate's wider echo bound.
+                    let m = self.line.mono_at((pos + self.wide_lead).round() as i64);
+                    self.wide_blk += m * m;
+                }
             }
             out[i] = self.out_buf[self.fill];
             self.blk_d[self.fill] = d;
@@ -630,11 +822,14 @@ impl EchoCanceller {
 
     /// A block of `b` samples is complete.
     fn block_done(&mut self) {
-        let st = if self.locked {
+        let mut st = if self.locked {
             // Hold the output filter while the input holds more than the echo expected (the
             // filter's estimate, or the detector's level while the filter is still poor): a
             // singer louder than about 6 dB under the returned music.
-            let expected = self.py_r.max(self.hint_r);
+            // A path significantly louder than the filter learnt (see `block_trust`) counts
+            // too, so the output filter can take the re-learnt weights.
+            let louder = self.louder().map_or(1.0, |g| g * g);
+            let expected = self.py_r.max(self.hint_r) * louder as f32;
             let quiet = !self.filt.adapted() || self.pd_r <= ECHO_ONLY * expected;
             Some(
                 self.filt
@@ -644,13 +839,285 @@ impl EchoCanceller {
             self.out_buf.copy_from_slice(&self.blk_d);
             None
         };
+        if let Some(s) = st.as_mut() {
+            let verdict = self.path_block(s);
+            if verdict == PathVerdict::Gone {
+                // The returned playback is gone (loopback switched off): stop removing at
+                // once, the input passes through, and the verdict is "clean".
+                self.echo_gone();
+                self.out_buf.copy_from_slice(&self.blk_d);
+                st = None;
+            } else {
+                if verdict == PathVerdict::Suspect {
+                    self.suspend();
+                }
+                if self.bypass {
+                    // The path gain fell under half (or removal is suspended): subtracting
+                    // the estimate would add more music than it removes.
+                    self.out_buf.copy_from_slice(&self.blk_d);
+                    s.pe = s.pd;
+                }
+            }
+        }
+        self.wide_ring[self.wide_pos] = self.wide_blk;
+        self.wide_pos = (self.wide_pos + 1) % self.wide_ring.len();
+        self.wide_blk = 0.0;
         let start = self.n_in as i64 - self.b as i64 - self.in_delay as i64;
         self.ref_env = self.blk_ref.max(self.ref_env * self.ref_decay);
         self.blk_ref = 0.0;
         let t = self.block_trust(st);
-        self.trust[(self.trust_count as usize) % TRUST_RING] = t;
+        let slot = (self.trust_count as usize) % TRUST_RING;
+        self.trust[slot] = t;
+        self.trust_pe[slot] = st.map_or(0.0, |s| s.pe);
         self.trust_last_start = start;
         self.trust_count += 1;
+        if let Some(s) = st {
+            self.spectral_block(s.px > 1e-9 * self.b as f32);
+        }
+    }
+
+    /// Feed the finished (locked) block to the spectral look; when a frame is analysed and
+    /// finds the singer, the blocks around its centre that the per-block comparison could
+    /// not trust become [`Trust::Singer`] (tier 2 of the gate, see [`spectral`]). A frame
+    /// is centred about 21 ms before the newest block, so a verdict can change for that
+    /// long after a block was recorded; a pitch tracker's event for a time arrives later
+    /// than that (the tracker needs half its 43 ms window after it, plus its smoothing).
+    fn spectral_block(&mut self, music: bool) {
+        let b = self.b;
+        for i in 0..b {
+            self.blk_xm[i] = if self.ch == 2 {
+                0.5 * (self.blk_x[i] + self.blk_x[b + i])
+            } else {
+                self.blk_x[i]
+            };
+        }
+        let gain = self.det.state().level.unwrap_or(0.0) as f32;
+        let Some(f) = self.spec.push(
+            &self.out_buf,
+            self.filt.fore_estimate(),
+            &self.blk_xm,
+            gain,
+            self.wandering,
+            music,
+        ) else {
+            return;
+        };
+        // The background filter does not learn while the output is the singer (nor while
+        // removal is suspended).
+        self.filt.set_frozen(f.voice || self.grace_until.is_some());
+        // A wandering delay (Bluetooth) misaligns the reference with the echo by up to the
+        // size of a jump, so the bound per bin does not hold: measured, 1.4 % of the frames
+        // with nobody singing would have been trusted (0.3 % without the spectral look).
+        // There the gate keeps assuming nothing was removed, and the app warns.
+        if !f.voice || self.wandering {
+            return;
+        }
+        // Blocks j back from the newest (0) whose centre lies within half a hop of the
+        // frame's centre: block j's centre is (j + 1/2) blocks before the newest block's
+        // end, the frame's centre `o` blocks before it.
+        let o = self.spec.len() / (2 * b);
+        let hop = self.spec.hop_blocks();
+        let al = self.a_long;
+        for j in o.saturating_sub(hop / 2)..o + hop / 2 {
+            if j as u64 >= self.trust_count || j >= TRUST_RING {
+                continue;
+            }
+            let idx = ((self.trust_count - 1 - j as u64) as usize) % TRUST_RING;
+            if matches!(self.trust[idx], Trust::Music | Trust::Unknown) {
+                self.trust[idx] = Trust::Singer;
+                let pe = f64::from(self.trust_pe[idx]);
+                if self.voice_blocks == 0 {
+                    self.pe_voice = pe;
+                } else {
+                    self.pe_voice += al * (pe - self.pe_voice);
+                }
+                self.voice_blocks = self.voice_blocks.saturating_add(1);
+            }
+        }
+    }
+
+    /// Echo path gain tracker, once per locked block. In chunks of about 21 ms it sums the
+    /// input times the output filter's echo estimate and the estimate squared; over the last
+    /// half second their ratio is the gain of the echo path relative to what the filter
+    /// learnt (1 while the return is unchanged, 0 once it is gone; a singer adds noise but
+    /// no bias, and the spread of the chunks gives its standard error). The detector cannot
+    /// say this quickly: its correlation is normalised, so it forgets a vanished echo only
+    /// as fast as new input outweighs it. Also sums the input's power against the echo the
+    /// filter (or, before it has learnt, the detector) expects, which says "gone" when
+    /// nobody sings even after the filter's divergence guard has reset it.
+    ///
+    /// Sets the bypass and says whether the returned playback looks gone.
+    fn path_block(&mut self, st: &BlockStats) -> PathVerdict {
+        let b = self.b;
+        if st.px <= 1e-9 * b as f32 || self.grace_until.is_some() {
+            // Silent music: no evidence either way, nothing ages. Suspended: the detector
+            // decides.
+            return PathVerdict::Keep;
+        }
+        let adapted = self.filt.adapted();
+        let y = self.filt.fore_estimate();
+        let (mut dy, mut yy) = (0.0f64, 0.0f64);
+        for i in 0..b {
+            dy += f64::from(self.blk_d[i]) * f64::from(y[i]);
+            yy += f64::from(y[i]) * f64::from(y[i]);
+        }
+        if adapted && !self.wandering {
+            self.pg_acc[0] += dy;
+            self.pg_acc[1] += yy;
+            self.pg_acc[4] += f64::from(st.pd);
+        }
+        // The echo expected in the input: the filter's estimate once it has learnt the path
+        // (exact in band), and the detector's level times the reference; the power test
+        // takes the smaller of the two sums, so neither a filter that went wrong (its
+        // estimate too large) nor a reference with much energy outside the detector's band
+        // can make it say "gone".
+        let hint = self.det.state().level.unwrap_or(0.0) * f64::from(st.px) / self.ch as f64;
+        let expected = if adapted && yy > 0.0 { yy } else { hint };
+        let noise = f64::from(self.nf_cur.min(self.nf_prev));
+        if noise < 1e30 && expected.min(hint) > 10.0 * noise {
+            self.pg_acc[2] += f64::from(st.pd);
+            self.pg_acc[3] += expected;
+            self.pg_acc[5] += hint;
+            self.pg_acc_n += 1;
+        }
+        self.pg_blocks += 1;
+        if self.pg_blocks < self.pg_chunk_blocks {
+            return PathVerdict::Keep;
+        }
+        self.pg_ring[self.pg_pos] = self.pg_acc;
+        self.pg_ring_n[self.pg_pos] = self.pg_acc_n;
+        self.pg_pos = (self.pg_pos + 1) % PG_CHUNKS;
+        self.pg_len = (self.pg_len + 1).min(PG_CHUNKS);
+        self.pg_blocks = 0;
+        self.pg_acc = [0.0; 6];
+        self.pg_acc_n = 0;
+        self.path_update()
+    }
+
+    /// A chunk finished: the path gain, its standard error, the bypass and the verdict
+    /// (see [`EchoCanceller::path_block`]).
+    fn path_update(&mut self) -> PathVerdict {
+        let ring = &self.pg_ring[..self.pg_len];
+        let (mut sdy, mut syy, mut spd_a, mut n) = (0.0f64, 0.0f64, 0.0f64, 0usize);
+        for c in ring.iter().filter(|c| c[1] > 0.0) {
+            sdy += c[0];
+            syy += c[1];
+            spd_a += c[4];
+            n += 1;
+        }
+        self.path = None;
+        // Only while the echo estimate is a fair part of the input (at most 6 dB under it).
+        // Under a much louder singer the gain is not measurable: a voice holding a note near
+        // a partial of the music correlates with it for longer than the chunks, so their
+        // spread understates the error (measured: a high "ee" 26 dB over a -30 dB return
+        // was taken for "gone" twice in 45 s). A return that weak cannot move the marker,
+        // and the singer's next pause settles it.
+        if n >= PG_CHUNKS / 2 && syy > 1e-20 && syy >= 0.25 * spd_a {
+            let g = sdy / syy;
+            let ss: f64 = ring
+                .iter()
+                .filter(|c| c[1] > 0.0)
+                .map(|c| (c[0] - g * c[1]).powi(2))
+                .sum();
+            let se = (ss / (syy * syy) * n as f64 / (n - 1) as f64).sqrt();
+            self.path = Some((g, se));
+        }
+        // The fast gain over the newest chunks (same rule for when it is measurable).
+        self.path_fast = None;
+        if self.pg_len >= PG_FAST {
+            let (mut fdy, mut fyy, mut fpd) = (0.0f64, 0.0f64, 0.0f64);
+            let mut cs = [[0.0f64; 2]; PG_FAST];
+            for (k, c2) in cs.iter_mut().enumerate() {
+                let c = &self.pg_ring[(self.pg_pos + PG_CHUNKS - 1 - k) % PG_CHUNKS];
+                fdy += c[0];
+                fyy += c[1];
+                fpd += c[4];
+                *c2 = [c[0], c[1]];
+            }
+            if cs.iter().all(|c| c[1] > 0.0) && fyy > 1e-20 && fyy >= 0.25 * fpd {
+                let g = fdy / fyy;
+                let ss: f64 = cs.iter().map(|c| (c[0] - g * c[1]).powi(2)).sum();
+                let se = (ss / (fyy * fyy) * PG_FAST as f64 / (PG_FAST - 1) as f64).sqrt();
+                self.path_fast = Some((g, se));
+            }
+        }
+        if self.louder().is_some() {
+            self.louder_hold = self.now_s() + LOUDER_HOLD_S;
+        }
+        self.bypass = self
+            .path
+            .is_some_and(|(g, se)| g + 2.0 * se < BYPASS_GAIN);
+        let gone_gain = n + 2 >= PG_CHUNKS
+            && self
+                .path
+                .is_some_and(|(g, se)| g + 3.0 * se < GONE_GAIN);
+        let (spd, sexp) = ring
+            .iter()
+            .fold((0.0, 0.0), |a, c| (a.0 + c[2], a.1 + c[3].min(c[5])));
+        let counted: u32 = self.pg_ring_n[..self.pg_len].iter().sum();
+        let blk_s = self.b as f64 / f64::from(self.rate);
+        // Gone: far under the echo expected, or 10 dB under it and down at the noise floor
+        // (a weak return switched off leaves the floor, which is not 25 dB under it; a loud
+        // return turned down 20 dB is still far above the floor).
+        let floor = f64::from(self.nf_cur.min(self.nf_prev));
+        let at_floor = floor < 1e30 && spd < 4.0 * floor * f64::from(counted);
+        let gone_power = f64::from(counted) * blk_s >= 0.25
+            && (spd < GONE_POWER * sexp || (spd < 0.1 * sexp && at_floor));
+        if gone_power && self.now_s() - self.lock_t >= GONE_POWER_AFTER_S {
+            PathVerdict::Gone
+        } else if gone_gain || gone_power {
+            PathVerdict::Suspect
+        } else {
+            PathVerdict::Keep
+        }
+    }
+
+    /// The echo path's gain when it is significantly louder than what the filter learnt
+    /// (the half-second gain 2 standard errors over 1, or the fast gain 3 standard errors
+    /// over 1.4: four chunks give a rough error, and a singer makes them noisy), else
+    /// `None`.
+    fn louder(&self) -> Option<f64> {
+        let slow = self.path.filter(|&(g, se)| g - 2.0 * se > 1.0).map(|p| p.0);
+        let fast = self.path_fast.filter(|&(g, se)| g - 3.0 * se > 1.4).map(|p| p.0);
+        match (slow, fast) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
+        .map(|g| g.min(4.0))
+    }
+
+    /// The gain test failed: stop removing (the input passes through, the background does
+    /// not learn) and let a fresh detector confirm the echo within [`GRACE_S`]
+    /// (`on_hop`). Meanwhile the gate expects the whole echo the detector measured
+    /// before, and the spectral look still recognises a singer above it.
+    fn suspend(&mut self) {
+        self.det.forget_echo(true);
+        self.filt.reset(false);
+        self.filt.set_frozen(true);
+        self.clear_fhist();
+        self.clear_ratio();
+        self.clear_path();
+        self.bypass = true;
+        self.grace_until = Some(self.now_s() + GRACE_S);
+    }
+
+    /// The returned playback is gone: count it, forget the echo (the detector says
+    /// "absent" at once and finds a return that comes back as at the start) and stop
+    /// removing.
+    fn echo_gone(&mut self) {
+        self.lost += 1;
+        self.grace_until = None;
+        self.det.forget_echo(false);
+        self.locked = false;
+        self.filt.reset(true);
+        self.drift = 0.0;
+        self.tau = 0.0;
+        self.off_count = 0;
+        self.wandering = false;
+        self.clear_fhist();
+        self.clear_ratio();
+        self.spec.reset(false);
+        self.clear_path();
     }
 
     /// Trust verdict and running statistics for a finished block.
@@ -693,6 +1160,8 @@ impl EchoCanceller {
         let al = self.a_long;
         self.py_long += al * (f64::from(st.py) - self.py_long);
         self.px_long += al * (f64::from(st.px) - self.px_long);
+        let hint_blk = self.det.state().level.unwrap_or(0.0) * f64::from(st.px) / self.ch as f64;
+        self.hint_long += al * (hint_blk - self.hint_long);
         let ref_active = st.px > 1e-9 * self.b as f32;
         // Left-over echo ratio, measured where the input is all returned music (its power
         // explained by the echo estimate): there the output holds only what removal left.
@@ -707,6 +1176,7 @@ impl EchoCanceller {
         self.hint_r += ar * (hint * px_mono - self.hint_r);
         self.hint_s += self.a_gate * (hint * px_mono - self.hint_s);
         if self.filt.adapted()
+            && !self.bypass
             && ref_active
             && self.py_r > 1e-12 * self.b as f32
             && self.pd_r <= ECHO_ONLY * self.py_r
@@ -726,24 +1196,72 @@ impl EchoCanceller {
             }
             self.ratio_blocks = self.ratio_blocks.saturating_add(1);
         }
-        let Some(ratio) = self.residual_ratio() else {
-            return Trust::Unknown;
+        // The echo path gain tracker (see `path_block`): the share of the expected echo
+        // still in the input (its upper bound), and a significant change of the path since
+        // the filter learnt it, whose left-over is (1 - g)^2 of the estimate until the
+        // filter follows.
+        let (scale, change) = match (self.louder(), self.path) {
+            // The path got significantly louder (the OS or mixer volume turned up): the
+            // echo in the input is g^2 of what the filter learnt and the left-over (g-1)^2
+            // of the estimate until the filter follows. Measured: without this, a return
+            // turned up 6 dB showed 2.6 % pitch frames with nobody singing in the 5 s
+            // after (left-overs as loud as the old echo passed for the singer until the
+            // half-second gain caught up).
+            (Some(g), _) => ((g * g) as f32, ((g - 1.0).powi(2)).min(1.0) as f32),
+            (None, Some((g, se))) => (
+                (g + 2.0 * se).clamp(0.0, 1.0).powi(2) as f32,
+                (((1.0 - g).abs() - 2.0 * se).max(0.0)).powi(2).min(1.0) as f32,
+            ),
+            (None, None) => (1.0, 0.0),
         };
-        let mut residual = ratio * self.py_s;
-        if self.wandering {
-            // The delay wanders (Bluetooth): what removal leaves cannot be measured, so the
-            // gate assumes nothing was removed, with 3 dB more for the detector's level, which
-            // a wandering delay biases low (measured up to 5 dB). A singer clearly louder than
-            // the returned music still counts; left-over music never does.
-            residual = residual.max(2.0 * self.hint_s);
-        }
+        let mut expected = scale * self.py_s.max(self.hint_s);
+        // Wandering delay: the loudest the echo can be within the span it may have moved
+        // to (the detector's level times the largest reference block power within
+        // +-WANDER_SPAN_S of the filter's position).
+        let wide = if self.wandering {
+            let peak = self.wide_ring[..self.wide_blocks].iter().copied().fold(0.0f32, f32::max);
+            let w = hint * peak;
+            expected = expected.max(w);
+            w
+        } else {
+            0.0
+        };
+        let residual = if self.bypass {
+            // Nothing is subtracted: the output holds whatever echo is still there.
+            expected
+        } else {
+            let mut residual = if let Some(ratio) = self.residual_ratio() {
+                ratio.max(change) * self.py_s
+            } else if let Some(share) = self.regression_share() {
+                // No stretch of music without singing yet: the share of the echo left in
+                // the output from the spectral look's regression, applied to the echo the
+                // detector expects (it does not depend on what the filter has learnt).
+                (change * self.py_s).max(share * self.hint_s)
+            } else {
+                // Not measured yet: only the spectral look (tier 2) can trust a block.
+                return Trust::Unknown;
+            };
+            if self.wandering {
+                // The delay wanders (Bluetooth): what removal leaves cannot be measured, so
+                // the gate assumes nothing was removed, with [`WANDER_BIAS`] more for the
+                // detector's level, which a wandering delay biases low (measured up to
+                // 5.5 dB). A singer clearly louder than the returned music still counts;
+                // left-over music should not.
+                residual = residual.max(WANDER_BIAS * self.hint_s.max(wide));
+            }
+            residual
+        };
         // An input fully explained by the echo expected (the filter's estimate, or the
         // detector's level) holds nobody louder than about 6 dB under the music: music, even
         // if the output looks louder than the left-overs measured so far. This covers the
         // moments the left-overs jump before the measurement follows (an instrument entering
-        // in a band the filter has not learnt yet).
-        let explained = self.pd_s <= ECHO_ONLY * self.py_s.max(self.hint_s);
-        let voice = !explained && self.pe_s > self.gate_k * residual.max(noise) + 1e-12;
+        // in a band the filter has not learnt yet). A singer quieter than the returned music
+        // is recognised by the spectral look instead (tier 2), which compares the output
+        // with the most music there can be in each frequency bin.
+        let explained = self.pd_s <= ECHO_ONLY * expected;
+        let voice = !explained
+            && self.pe_s > self.gate_k * residual.max(noise) + 1e-12
+            && self.now_s() >= self.louder_hold;
         if voice {
             if self.voice_blocks == 0 {
                 self.pe_voice = f64::from(st.pe);
@@ -843,15 +1361,48 @@ impl EchoCanceller {
     }
 
     /// Mean left-over echo as a share of the echo estimate, for the report, once measured on
-    /// enough echo-only blocks since the filter (re)started.
+    /// enough echo-only blocks since the filter (re)started; else the spectral look's
+    /// regression (continuous singing leaves no echo-only stretch), as a share of the echo.
     fn mean_residual_ratio(&self) -> Option<f32> {
-        (self.ratio_blocks >= self.ratio_min_blocks).then_some(self.ratio_mean)
+        if self.ratio_blocks >= self.ratio_min_blocks {
+            return Some(self.ratio_mean);
+        }
+        self.regression_share()
+    }
+
+    /// Share of the echo the detector expects that the output filter's estimate holds
+    /// (4 s averages; 0..1). Near 1 once the filter has learnt the path; low while a filter
+    /// held during continuous singing has learnt little.
+    fn captured(&self) -> f64 {
+        if self.hint_long > 1e-30 {
+            (self.py_long / self.hint_long).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
     }
 
     /// Expected left-over echo as a share of the echo estimate (with its margin), once
     /// measured on enough echo-only blocks since the filter (re)started.
     fn residual_ratio(&self) -> Option<f32> {
         (self.ratio_blocks >= self.ratio_min_blocks).then(|| (self.ratio_avg * RATIO_BIAS).min(1.0))
+    }
+
+    /// Share of the echo (the echo the detector expects, not the filter's estimate) left in
+    /// the output, from the spectral look's regression of the output's power fluctuations
+    /// on the reference's ([`spectral`]), with [`REGRESSION_BIAS`]. Bands the filter has not
+    /// learnt count whole. Used until the left-overs can be measured on music without
+    /// singing.
+    fn regression_share(&self) -> Option<f32> {
+        if !self.locked || self.grace_until.is_some() {
+            return None;
+        }
+        let g = self.det.state().level? as f32;
+        if g <= 0.0 {
+            return None;
+        }
+        self.spec
+            .leak_slope()
+            .map(|s| (s / g * REGRESSION_BIAS).clamp(1e-6, 1.0))
     }
 
     /// A detector hop finished: lock, measure the delay from the filter, follow the drift,
@@ -864,6 +1415,18 @@ impl EchoCanceller {
                     f.span_s >= 4.0 && f.n >= 10 && f.rms_s > self.cfg.wander_ms * 1e-3
                 }));
         let fs = f64::from(self.rate);
+        if let Some(until) = self.grace_until {
+            // Removal suspended after a failed gain test: the fresh detector found the echo
+            // again (the filter had gone wrong: restart it where the echo is), or did not
+            // in time (gone).
+            if ds.presence == Presence::Present && !self.det.probation() {
+                let d = ds.delay_s.unwrap_or(self.lock_delay_s + self.tau / fs);
+                self.lock(d);
+            } else if self.now_s() >= until {
+                self.echo_gone();
+            }
+            return;
+        }
         match ds.presence {
             Presence::Present => {
                 if !self.locked {
@@ -880,7 +1443,10 @@ impl EchoCanceller {
                 let fresh = self.filt.updates() != self.upd_seen;
                 if fresh
                     && self.filt.adapted()
-                    && self.residual_ratio().is_some_and(|r| r < 0.3)
+                    && self
+                        .residual_ratio()
+                        .or(self.regression_share())
+                        .is_some_and(|r| r < 0.3)
                     && let Some(j) = self.ir_peak()
                 {
                     self.upd_seen = self.filt.updates();
@@ -1006,6 +1572,10 @@ impl EchoCanceller {
         // Start-up steps follow the echo the detector measured (in its band).
         let hint = self.det.state().level.unwrap_or(1.0);
         self.filt.set_hint(hint as f32);
+        self.spec.reset(false);
+        self.clear_path();
+        self.grace_until = None;
+        self.lock_t = self.now_s();
         self.locked = true;
     }
 
@@ -1103,7 +1673,7 @@ impl EchoCanceller {
         let adapted = self.locked && self.filt.adapted();
         // Level: from the filter's echo estimate once adapted (whole band), else from the
         // detector (its band).
-        let level = if adapted && self.px_long > 1e-30 {
+        let level = if adapted && self.px_long > 1e-30 && self.captured() >= 0.5 {
             // px sums the reference channels; the reference power is that of their mean.
             let ref_block = ds.ref_ms * self.b as f64;
             Some(self.py_long / ref_block.max(1e-30))
@@ -1202,6 +1772,7 @@ impl EchoCanceller {
             voice_dbfs: self.voice_dbfs(),
             quality,
             relocks: self.relocks,
+            lost: self.lost,
             music_s: ds.music_s,
         }
     }
@@ -1219,6 +1790,24 @@ impl EchoCanceller {
     pub fn measured_suppression_db(&self) -> Option<f32> {
         (self.pe_music > 1e-30 && self.pd_music > 1e-30)
             .then(|| db(self.pd_music / self.pe_music) as f32)
+    }
+
+    /// One line of internal state for benchmark traces (allocates; never on a real-time
+    /// path).
+    #[doc(hidden)]
+    pub fn debug_line(&self) -> String {
+        format!(
+            "ratio_blocks {} ratio_avg {:.4} ratio_mean {:.4} regression {:?} captured {:.3} path {:?} bypass {} upd {} voice_blocks {}",
+            self.ratio_blocks,
+            self.ratio_avg,
+            self.ratio_mean,
+            self.regression_share(),
+            self.captured(),
+            self.path.map(|(g, se)| ((g * 1000.0).round() / 1000.0, (se * 1000.0).round() / 1000.0)),
+            self.bypass,
+            self.filt.updates(),
+            self.voice_blocks
+        )
     }
 
     /// Filter restarts by the divergence guard (diagnostics).

@@ -136,6 +136,16 @@ impl RefLine {
         }
     }
 
+    /// Mean of the channels at absolute sample `i` (0 outside what the ring holds).
+    #[inline]
+    pub(crate) fn mono_at(&self, i: i64) -> f32 {
+        let mut acc = 0.0f32;
+        for c in 0..self.channels {
+            acc += self.at(c, i);
+        }
+        acc / self.channels as f32
+    }
+
     /// Read every channel at absolute (fractional) sample position `pos` into `out`. The
     /// caller keeps `pos + HALF` below [`RefLine::written`]; samples outside what the ring
     /// holds read as zero.

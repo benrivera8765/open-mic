@@ -9,20 +9,27 @@
 //! 1. The input (one mono channel, chosen by the caller: channels are never summed) goes
 //!    through a 4th-order Butterworth high-pass at 55 Hz (below C2 = 65.4 Hz), which takes
 //!    the bulk of handling thumps, popped consonants, DC and 50 Hz hum away, and a
-//!    4th-order Butterworth low-pass at 4 kHz, so a bright mixer EQ, sibilance and the air
+//!    4th-order Butterworth low-pass at 3.5 kHz, so a bright mixer EQ, sibilance and the air
 //!    band do not lower the clarity of a sung vowel, and the same band is analysed at every
 //!    sample rate.
 //! 2. Every `hop` (10 ms) the last `window` of filtered samples (42.7 ms: 2048 samples at
 //!    48 kHz, sized in *time*, so 16, 44.1, 48 and 96 kHz give the same answer) is analysed:
 //!    the normalised square difference function (NSDF) `n(t) = 2 r(t) / m(t)`, with `r` the
 //!    autocorrelation (one forward and one inverse real FFT of the zero-padded window) and
-//!    `m(t) = sum x[j]^2 + x[j+t]^2` (updated incrementally per lag).
+//!    `m(t) = sum x[j]^2 + x[j+t]^2` (updated incrementally per lag). A second NSDF is
+//!    computed from the spectrum less an estimate of its late reverberation (the same bin
+//!    50 ms earlier, decayed as a room with RT60 1.5 s would decay it, over-subtracted;
+//!    `derev_rt60_s`): it only ever raises a candidate's clarity, so a new note is seen
+//!    through the tail of the one before it, while pitch and octave come from the plain one.
 //! 3. Candidates: the "key maximum" (highest local maximum) of every positive region of the
 //!    NSDF after the zero-lag lobe reaching half the highest, refined by parabolic
 //!    interpolation; at most six per frame. Each is scored by the periodicity of the
 //!    *flattened* spectrum at its period (the autocorrelation of `|X|^0.5` up to 5 kHz, see
-//!    `Tracker::flat_periodicity`), less `octave_cost` per octave it lies below the paper's
+//!    `periodicity_at`), less `octave_cost` per octave it lies below the paper's
 //!    own choice (the first key maximum reaching `peak_threshold` = 0.9 times the highest).
+//!    A candidate with another at two or three times its pitch also needs peaks at its own
+//!    harmonics (its odd ones for an octave), or it loses `odd_cost`: breath through a
+//!    narrow formant fills a high note's subharmonic with noise but puts no peaks there.
 //! 4. Path search: a Viterbi search over the candidates of the last frames. A step down
 //!    between frames costs `jump_cost` per octave, a step up `jump_up_cost`. The frame
 //!    `lookahead_frames` (2) behind the newest is the one decided and reported. While a
@@ -36,8 +43,13 @@
 //!    `clarity_off`) or steadily (`steady_frames` = 5 frames, from 20 ms before the decided
 //!    one to the newest, each at least `clarity_steady` = 0.8, within `steady_step_cents`
 //!    of the one before and above `steady_min_hz`: a real voice whose clarity stays under
-//!    0.93 holds a steady pitch; breath, whispers and thumps do not). It keeps going at
-//!    `clarity_off` = 0.75 while the pitch continues the line (`max_step_cents`).
+//!    0.93 holds a steady pitch; breath, whispers and thumps do not; every frame must also
+//!    have a harmonic series, `steady_harmonic_min`, which a whispered vowel lacks). Clear
+//!    onsets may start early (`early_start`): when the newer frames already hold the
+//!    confident evidence, the decided frame needs only `start_floor`, which shows a note up
+//!    to two hops sooner. It keeps going at `clarity_off` = 0.75 while the pitch continues
+//!    the line (`max_step_cents`). A decaying room tail (the level 15 dB under the recent
+//!    peak and falling every frame, `tail_drop_db`) ends a note and starts none.
 //! 6. A three-point median of the decided frame, the frame reported before it and the one
 //!    after it on the path smooths the reported pitch.
 //!
@@ -113,7 +125,7 @@ pub struct TrackerConfig {
     pub octave_cost: f32,
     /// Exponent applied to the magnitude spectrum before the autocorrelation that scores
     /// the candidates (2 = the plain autocorrelation, 1 = magnitude, smaller = flatter;
-    /// see `Tracker::flat_periodicity`). 0 scores candidates by their NSDF value instead.
+    /// see `periodicity_at`). 0 scores candidates by their NSDF value instead.
     pub flat_power: f32,
     /// Highest frequency in the flattened spectrum: the same band at every sample rate
     /// (below the 8 kHz Nyquist frequency of a 16 kHz input).
@@ -149,6 +161,99 @@ pub struct TrackerConfig {
     /// below about 160 Hz; there a note must start confidently, which needs a longer
     /// periodic stretch (WO2 4.10: they must never show as notes).
     pub steady_min_hz: f64,
+    /// Early start (WO2 tracker robustness, onset delay): the evidence for a confident start may come
+    /// from the newer frames of the look-ahead. Two adjacent frames anywhere from the decided
+    /// frame to the newest, one at `clarity_on` and the other at `clarity_off`, on one line;
+    /// the frames from that pair back to the decided frame continuing the line at
+    /// `start_floor`. A clear onset is then shown as soon as the newest windows hold it,
+    /// not when the decided (older) window does: up to `lookahead_frames` hops sooner, with
+    /// the same amount of evidence as the plain confident start. Not at pitches below
+    /// `steady_min_hz` (handling thumps), not while the newest window's level still rises
+    /// by more than `early_rise_db` (the attack still fills the windows) and not when a
+    /// frame holds a fair candidate an octave above its own (`early_octave_veto`): the first
+    /// windows of a high "ee" / "oo" can look an octave low for 30 ms. Measured on the
+    /// development set: onsets shown within 100 ms 84.8 -> 88.2 %; without the last two
+    /// conditions generated whole notes had 32-42 octave-off onset events per rate instead
+    /// of 3-9. Off: the plain rule only.
+    pub early_start: bool,
+    /// Clarity the decided frame (and any frame between it and the confirming pair) needs
+    /// in an early start. Its window holds the start of the note and some of what came
+    /// before, so it is less periodic than the confirming frames.
+    pub start_floor: f32,
+    /// See `early_start`: a frame with a candidate an octave above its chosen one at
+    /// this clarity or more does not confirm an early start (2 = never vetoed).
+    pub early_octave_veto: f32,
+    /// See `early_start`: the most the newest frame's level may lie above the frame
+    /// before it (dB) for an early start; a larger rise means the note's attack is still
+    /// filling the windows.
+    pub early_rise_db: f32,
+    /// Reverb tail (WO2 4.10 "Reverb must not upset the tracker"): a frame is a decaying tail
+    /// when its level is at least this far below the recent peak level and the level has
+    /// fallen by at least `tail_slope_db` between each of the last `tail_frames` frames. A
+    /// tail ends a shown note and cannot start one; after a tail, a note starts only after a
+    /// new onset (the level `tail_rise_db` above the lowest level of the tail), a level that
+    /// stopped falling, or a clear pitch away from the last note. 15 dB / 4 frames, measured
+    /// on the development set: reverb false alarms 11.5 -> 7.6 % (RT60 0.8 s) and 18.0 ->
+    /// 13.9 % (1.5 s), 1.58 -> 1.03 % on clean input, for 1.2 points of raw pitch accuracy
+    /// on clean input (the ends of notes on processed stems, where the reference calls the
+    /// stem's own reverb voiced). 0 turns the rule off.
+    pub tail_drop_db: f32,
+    /// Smallest fall in level per frame (10 ms) through the look-ahead frames that counts as
+    /// a decaying tail. A room with RT60 1.5 s decays by 0.4 dB per 10 ms.
+    pub tail_slope_db: f32,
+    /// Fall of the recent peak level per frame (its release), dB.
+    pub peak_release_db: f32,
+    /// Rise above the lowest level of a tail that counts as a new onset, dB.
+    pub tail_rise_db: f32,
+    /// Consecutive falling steps between frames, counted back from the newest, that a
+    /// tail needs (at least `lookahead_frames`).
+    pub tail_frames: u32,
+    /// Harmonic evidence for subharmonics (WO2 tracker robustness, breathy voices): a
+    /// candidate with another candidate at two or three times its pitch must show peaks at
+    /// its own harmonics that the higher one does not have (its odd harmonics for an
+    /// octave), at least `odd_ratio_min` times the power halfway between them, or its score
+    /// loses `odd_cost`. Breath through a narrow first formant fills the band around a
+    /// high note's subharmonic with noise but puts no peaks at its odd harmonics; a real
+    /// low voice with weak odd harmonics (15 dB down) still has them as peaks over the
+    /// valleys. 0 turns the check off.
+    pub odd_cost: f32,
+    /// See `odd_cost`: the least ratio of power at the subharmonic's own harmonics to the
+    /// power halfway between them.
+    pub odd_ratio_min: f32,
+    /// Smallest flattened-spectrum periodicity (see `periodicity_at`) of every
+    /// frame of a steady start. A sung vowel has many harmonics and scores high; noise
+    /// through a narrow formant (a whispered vowel) is nearly periodic over one window in
+    /// the NSDF but has no harmonic series. 0 turns the check off.
+    pub steady_harmonic_min: f32,
+    /// Late-reverberation suppression ("dereverberation lite", WO2 4.10): before the
+    /// autocorrelation, every spectrum bin below `flat_max_hz` loses an estimate of the late
+    /// reverberation, the power the same bin had `derev_delay_frames` frames earlier decayed
+    /// as a room with this RT60 would decay it (Lebart et al. 2001), times `derev_over`, the
+    /// bin keeping at least `derev_floor` of its power. On a steady dry voice every
+    /// harmonic loses the same share, which leaves the NSDF unchanged; the tail of the
+    /// previous note in the window of a new one is removed. The suppressed spectrum only
+    /// lifts clarity: the candidates, their pitch and their octave scores come from the
+    /// plain spectrum, and each candidate's clarity (`Cand::n`) is the higher of the plain
+    /// NSDF and the NSDF of the suppressed spectrum at its period (one more inverse FFT per
+    /// frame). Feeding the suppressed spectrum to the pitch and candidates too cost 6
+    /// points of raw pitch accuracy on the development set ("musical noise"). 0 turns it
+    /// off.
+    pub derev_rt60_s: f32,
+    /// Over-subtraction factor of the late-reverberation estimate.
+    pub derev_over: f32,
+    /// Least share of a bin's power kept by the suppression.
+    pub derev_floor: f32,
+    /// Frames between the window that gives the estimate and the window it is taken from
+    /// (5 = 50 ms: past the early reflections, and the two windows do not overlap).
+    pub derev_delay_frames: u32,
+    /// Candidates below this pitch keep their plain clarity. Most pitched
+    /// sound in a backing track that is not a voice is the bass line, and the suppression,
+    /// which isolates what is new over what is sustained, lifts it the most.
+    pub derev_min_hz: f64,
+    /// Candidates whose flattened-spectrum periodicity is below this keep their plain
+    /// clarity: spectral subtraction leaves random isolated peaks in noise ("musical
+    /// noise"), which can make a whispered vowel look periodic.
+    pub derev_per_min: f32,
 }
 
 /// Most candidate periods kept per analysis frame.
@@ -174,7 +279,7 @@ impl Default for TrackerConfig {
             level_on_dbfs: -55.0,
             level_off_dbfs: -60.0,
             highpass_hz: 55.0,
-            lowpass_hz: 4000.0,
+            lowpass_hz: 3500.0,
             min_voiced_frames: 2,
             max_step_cents: 150.0,
             candidate_floor: 0.5,
@@ -188,6 +293,24 @@ impl Default for TrackerConfig {
             steady_frames: 5,
             steady_step_cents: 40.0,
             steady_min_hz: 160.0,
+            early_start: true,
+            start_floor: 0.75,
+            early_octave_veto: 0.4,
+            early_rise_db: 1.0,
+            tail_drop_db: 15.0,
+            tail_slope_db: 0.3,
+            peak_release_db: 0.1,
+            tail_rise_db: 3.0,
+            tail_frames: 4,
+            derev_rt60_s: 1.5,
+            derev_over: 2.0,
+            derev_floor: 0.1,
+            derev_delay_frames: 5,
+            derev_min_hz: 130.0,
+            derev_per_min: 0.13,
+            steady_harmonic_min: 0.09,
+            odd_cost: 0.3,
+            odd_ratio_min: 2.0,
         }
     }
 }
@@ -223,6 +346,13 @@ struct Cand {
     n: f32,
     /// Periodicity less the octave cost (see `TrackerConfig::octave_cost`).
     score: f32,
+    /// Flattened-spectrum periodicity at the period (the NSDF value when that is off).
+    per: f32,
+    /// The plain NSDF value (`n` without the late-reverberation suppression, see
+    /// `TrackerConfig::derev_rt60_s`).
+    n0: f32,
+    /// Lies half an octave or more below the paper's choice of period (MPM's own pick).
+    below: bool,
 }
 
 /// One analysis frame in the path-search history.
@@ -234,6 +364,8 @@ struct Slot {
     len: usize,
     /// Mean square of the window (linear power).
     power: f64,
+    /// The same in dB (-200 for digital silence).
+    level_db: f32,
     /// Highest key maximum of the NSDF (0 when none).
     clarity: f32,
     /// Best path score ending at each candidate, relative to the best one (0).
@@ -248,9 +380,13 @@ impl Slot {
             hz: 0.0,
             n: 0.0,
             score: 0.0,
+            per: 0.0,
+            n0: 0.0,
+            below: false,
         }; MAX_CANDS],
         len: 0,
         power: 0.0,
+        level_db: -200.0,
         clarity: 0.0,
         acc: [0.0; MAX_CANDS],
         back: [NO_BACK; MAX_CANDS],
@@ -286,6 +422,8 @@ pub struct Tracker {
     hop: usize,
     /// `lookahead_frames`, checked.
     look: usize,
+    /// `tail_frames`, checked.
+    tail_steps: usize,
     /// Lag range searched for the period (samples), inclusive.
     lag_lo: usize,
     lag_hi: usize,
@@ -309,13 +447,27 @@ pub struct Tracker {
     frame: Vec<f32>,
     /// NSDF for lags `0..=lag_hi + 1`.
     nsdf: Vec<f32>,
-    /// Flattened spectrum and its autocorrelation (see `Tracker::flat_periodicity`), and
+    /// Flattened spectrum and its autocorrelation (see `periodicity_at`), and
     /// whether that is valid for the current frame.
     flat_spec: Vec<Complex<f32>>,
     acf_flat: Vec<f32>,
     flat_ok: bool,
     /// Spectrum bins below `flat_max_hz`.
     flat_bins: usize,
+    /// Power spectrum of the current frame below `flat_max_hz` (see `odd_cost`).
+    pow_spec: Vec<f32>,
+    /// Late-reverberation suppression (see `TrackerConfig::derev_rt60_s`): the observed
+    /// power of the first `flat_bins` bins of the last `derev_delay_frames` frames (row
+    /// `frame % derev_delay_frames`), and the decay factor over that delay (0 = off).
+    derev_hist: Vec<f32>,
+    derev_decay: f32,
+    /// The suppressed power spectrum, its autocorrelation and its NSDF (empty when the
+    /// suppression is off).
+    derev_spec: Vec<Complex<f32>>,
+    derev_acf: Vec<f32>,
+    derev_nsdf: Vec<f32>,
+    /// `derev_nsdf` holds the current frame's suppressed NSDF.
+    derev_live: bool,
     /// Linear power thresholds of the level gate.
     power_on: f64,
     power_off: f64,
@@ -326,6 +478,15 @@ pub struct Tracker {
     /// Whether the previously reported frame was voiced, and its (unsmoothed) pitch.
     voiced: bool,
     prev_hz: f32,
+    /// Recent peak level (dB) over the newest frames, released by `peak_release_db` per
+    /// frame (see `TrackerConfig::tail_drop_db`).
+    peak_db: f32,
+    /// A decaying tail was found and no new onset has come since; the lowest level seen in
+    /// it.
+    in_tail: bool,
+    tail_floor_db: f32,
+    /// Frames in a row, up to the newest, whose level fell by `tail_slope_db` or more.
+    fall_run: u32,
 }
 
 impl Tracker {
@@ -389,6 +550,7 @@ impl Tracker {
             win,
             hop,
             look,
+            tail_steps: (cfg.tail_frames as usize).max(look),
             lag_lo,
             lag_hi,
             hp: Biquad::butterworth_highpass4(fs, cfg.highpass_hz),
@@ -406,6 +568,43 @@ impl Tracker {
             flat_ok: false,
             flat_bins: ((cfg.flat_max_hz.min(0.5 * fs) / fs * fft_len as f64).ceil() as usize)
                 .min(fft_len / 2 + 1),
+            pow_spec: vec![
+                0.0;
+                ((cfg.flat_max_hz.min(0.5 * fs) / fs * fft_len as f64).ceil() as usize)
+                    .min(fft_len / 2 + 1)
+            ],
+            derev_hist: if cfg.derev_rt60_s > 0.0 {
+                let bins = ((cfg.flat_max_hz.min(0.5 * fs) / fs * fft_len as f64).ceil() as usize)
+                    .min(fft_len / 2 + 1);
+                vec![0.0; bins * cfg.derev_delay_frames.max(1) as usize]
+            } else {
+                Vec::new()
+            },
+            // Power decays by 60 dB in RT60: over d frames of hop_s, 10^(-6 d hop / RT60).
+            derev_decay: if cfg.derev_rt60_s > 0.0 {
+                10f64.powf(
+                    -6.0 * f64::from(cfg.derev_delay_frames.max(1)) * cfg.hop_s
+                        / f64::from(cfg.derev_rt60_s),
+                ) as f32
+            } else {
+                0.0
+            },
+            derev_spec: if cfg.derev_rt60_s > 0.0 {
+                r2c.make_output_vec()
+            } else {
+                Vec::new()
+            },
+            derev_acf: if cfg.derev_rt60_s > 0.0 {
+                c2r.make_output_vec()
+            } else {
+                Vec::new()
+            },
+            derev_nsdf: if cfg.derev_rt60_s > 0.0 {
+                vec![0.0; lag_hi + 2]
+            } else {
+                Vec::new()
+            },
+            derev_live: false,
             fft_buf: r2c.make_input_vec(),
             acf: c2r.make_output_vec(),
             spectrum: r2c.make_output_vec(),
@@ -417,6 +616,10 @@ impl Tracker {
             frames: 0,
             voiced: false,
             prev_hz: 0.0,
+            peak_db: -200.0,
+            in_tail: false,
+            tail_floor_db: -200.0,
+            fall_run: 0,
             cfg,
         };
         t.reset();
@@ -465,9 +668,14 @@ impl Tracker {
         self.since_hop = 0;
         self.consumed = 0;
         self.slots = [Slot::EMPTY; RING];
+        self.derev_hist.fill(0.0);
         self.frames = 0;
         self.voiced = false;
         self.prev_hz = 0.0;
+        self.peak_db = -200.0;
+        self.in_tail = false;
+        self.tail_floor_db = -200.0;
+        self.fall_run = 0;
     }
 
     /// Feed a block of mono samples (any length, including empty). `on_event` is called once
@@ -537,7 +745,12 @@ impl Tracker {
             .cfg
             .clarity_off
             .min(self.cfg.clarity_on)
-            .min(self.cfg.clarity_steady);
+            .min(self.cfg.clarity_steady)
+            .min(if self.cfg.early_start {
+                self.cfg.start_floor
+            } else {
+                1.0
+            });
         if slot.power < self.power_off || slot.clarity < min_clarity {
             slot.len = 0;
         }
@@ -545,6 +758,48 @@ impl Tracker {
         relax(prev.as_ref(), &mut slot, |a, b| self.step_cost(a, b));
         self.slots[(self.frames % RING as u64) as usize] = slot;
         self.frames += 1;
+
+        // Reverb tails (see `TrackerConfig::tail_drop_db`): the recent peak level follows the
+        // newest frame; the decided frame is a tail when it lies `tail_drop_db` under that
+        // peak and the level has fallen between each of the last `tail_frames` frames.
+        let look = self.look;
+        let lv = |t: &Self, k: usize| t.slot(k).map_or(-200.0, |s| s.level_db);
+        self.peak_db = lv(self, 0).max(self.peak_db - self.cfg.peak_release_db);
+        // Consecutive frames, up to the newest, each at least tail_slope_db quieter than
+        // the one before.
+        if lv(self, 0) <= lv(self, 1) - self.cfg.tail_slope_db {
+            self.fall_run = self.fall_run.saturating_add(1);
+        } else {
+            self.fall_run = 0;
+        }
+        let tail = self.cfg.tail_drop_db > 0.0
+            && lv(self, look) <= self.peak_db - self.cfg.tail_drop_db
+            && self.fall_run as usize >= self.tail_steps;
+        if tail && !self.in_tail {
+            self.in_tail = true;
+            self.tail_floor_db = lv(self, look);
+        }
+        if self.in_tail {
+            // A new onset (the level rising out of the tail) ends the tail state, and so
+            // do a level that has stopped falling over the last RING - 1 frames (40 ms) and
+            // a clear pitch away from the last one shown: a room tail keeps decaying on the
+            // last note's pitch, a note sung legato after it (perhaps quieter, on a weaker
+            // vowel) does neither.
+            let newest = lv(self, 0);
+            let new_pitch = self.prev_hz > 0.0
+                && self.slot(0).and_then(Slot::clearest).is_some_and(|c| {
+                    c.n >= self.cfg.clarity_off
+                        && (1200.0 * (c.hz / self.prev_hz).log2()).abs() > self.cfg.max_step_cents
+                });
+            if newest >= self.tail_floor_db + self.cfg.tail_rise_db
+                || newest >= lv(self, RING - 1) - self.cfg.tail_slope_db
+                || new_pitch
+            {
+                self.in_tail = false;
+            } else {
+                self.tail_floor_db = self.tail_floor_db.min(newest);
+            }
+        }
 
         // Pick the path: candidate index per frame, k = 0 the newest .. look + 1. While a
         // note is being shown it is the Viterbi path (pinned to what was shown); before a
@@ -554,7 +809,6 @@ impl Tracker {
         } else {
             self.anchored()
         };
-        let look = self.look;
         let cand = |k: usize| -> Option<Cand> {
             let i = path[k]?;
             self.slot(k).map(|s| s.cands[i])
@@ -570,12 +824,17 @@ impl Tracker {
         let voiced = match decided {
             None => false,
             Some(c) if self.voiced => {
-                level_ok(look, false)
-                    && (c.n >= self.cfg.clarity_on
+                // A jump (more than max_step_cents) needs the plain clarity at clarity_on;
+                // the suppression's help counts only for continuing the line.
+                !tail
+                    && level_ok(look, false)
+                    && (c.n0 >= self.cfg.clarity_on
                         || (c.n >= self.cfg.clarity_off
                             && (1200.0 * (c.hz / self.prev_hz).log2()).abs()
                                 <= self.cfg.max_step_cents))
             }
+            // No start inside a decaying tail (until a new onset).
+            Some(_) if self.in_tail || tail => false,
             Some(c) => {
                 // Confident start: this frame at clarity_on, the next frames continuing it.
                 let confident = c.n >= self.cfg.clarity_on && level_ok(look, true) && {
@@ -590,25 +849,81 @@ impl Tracker {
                         })
                     })
                 };
+                // Early start (see `TrackerConfig::early_start`): a confirming pair of
+                // adjacent frames (j + 1, j) in the look-ahead, one at clarity_on and the
+                // other at clarity_off on one line, and every frame from the pair back to the
+                // decided one continuing that line at start_floor. On the anchored path each
+                // frame is already within max_step_cents of the newer one.
+                // A frame that also holds a fair candidate an octave above its chosen one
+                // (an onset whose octave is not yet clear) does not confirm an early start.
+                let octave_up = |k: usize, c: Cand| -> bool {
+                    self.slot(k).is_some_and(|s| {
+                        s.cands[..s.len].iter().any(|d| {
+                            d.n >= self.cfg.early_octave_veto
+                                && (1200.0 * (d.hz / (2.0 * c.hz)).log2()).abs() <= 50.0
+                        })
+                    })
+                };
+                let early = !confident && self.cfg.early_start && {
+                    // Frames whose chosen period is an octave below MPM's own pick do not
+                    // confirm an early start: in the first windows of a high "ee" or "oo"
+                    // the octave below looks more periodic for 20-40 ms; such a note
+                    // starts by the plain rule, on the octave of a fuller window.
+                    let pair = |j: usize| -> bool {
+                        let (Some(a), Some(b)) = (cand(j + 1), cand(j)) else {
+                            return false;
+                        };
+                        if a.below || b.below || octave_up(j + 1, a) || octave_up(j, b) {
+                            return false;
+                        }
+                        let on =
+                            |d: Cand, k: usize| d.n >= self.cfg.clarity_on && level_ok(k, true);
+                        let off =
+                            |d: Cand, k: usize| d.n >= self.cfg.clarity_off && level_ok(k, false);
+                        // Not below steady_min_hz, where handling thumps live: there a note
+                        // starts by the plain rule (a longer periodic stretch).
+                        ((on(a, j + 1) && off(b, j)) || (on(b, j) && off(a, j + 1)))
+                            && step_cents(a, b) <= self.cfg.max_step_cents
+                            && f64::from(a.hz.min(b.hz)) >= self.cfg.steady_min_hz
+                    };
+                    // The newest window must hold no fair candidate an octave above its
+                    // own either, and the level must have stopped rising (the attack of
+                    // the note is over: the newest window is about as full as the next).
+                    let settled = self
+                        .slot(0)
+                        .is_some_and(|s| s.level_db - lv(self, 1) <= self.cfg.early_rise_db)
+                        && cand(0).is_some_and(|d| !octave_up(0, d));
+                    settled
+                        && (0..look).any(|j| {
+                            pair(j)
+                                && (j + 1..=look).all(|k| {
+                                    cand(k).is_some_and(|d| {
+                                        d.n >= self.cfg.start_floor
+                                            && level_ok(k, false)
+                                            && !d.below
+                                    })
+                                })
+                        })
+                };
                 // Steady start: every frame from the newest back over `steady_frames` (the
                 // look-ahead, the decided frame and the frames before it) clear enough, loud
-                // enough, above `steady_min_hz` and on one pitch.
-                let steady = !confident && {
+                // enough, above `steady_min_hz`, harmonic enough and on one pitch.
+                let steady = !confident && !early && {
                     let mut prev: Option<Cand> = None;
                     (0..self.cfg.steady_frames as usize).all(|k| {
                         cand(k).is_some_and(|d| {
                             let ok = d.n >= self.cfg.clarity_steady
+                                && d.per >= self.cfg.steady_harmonic_min
                                 && f64::from(d.hz) >= self.cfg.steady_min_hz
                                 && level_ok(k, true)
-                                && prev.is_none_or(|p| {
-                                    step_cents(d, p) <= self.cfg.steady_step_cents
-                                });
+                                && prev
+                                    .is_none_or(|p| step_cents(d, p) <= self.cfg.steady_step_cents);
                             prev = Some(d);
                             ok
                         })
                     })
                 };
-                confident || steady
+                confident || early || steady
             }
         };
 
@@ -764,8 +1079,21 @@ impl Tracker {
             .map(|&v| f64::from(v) * f64::from(v))
             .sum();
         slot.power = energy / win as f64;
+        slot.level_db = if slot.power > 1e-20 {
+            (10.0 * slot.power.log10()) as f32
+        } else {
+            -200.0
+        };
+        // This frame's row of the late-reverberation history (it holds the frame
+        // `derev_delay_frames` before this one until it is overwritten below).
+        let derev_rows = self.cfg.derev_delay_frames.max(1) as usize;
+        let derev_row = (self.frames % derev_rows as u64) as usize * self.flat_bins;
+        let derev = self.derev_decay > 0.0;
         // Digital silence or near it: nothing to analyse (and no division by ~0 below).
         if energy < 1e-12 {
+            if derev {
+                self.derev_hist[derev_row..derev_row + self.flat_bins].fill(0.0);
+            }
             return slot;
         }
 
@@ -790,6 +1118,24 @@ impl Tracker {
             .enumerate()
         {
             let p = c.re * c.re + c.im * c.im;
+            if let Some(w) = self.pow_spec.get_mut(k) {
+                *w = p;
+            }
+            // Late reverberation: what this bin held derev_delay_frames ago, decayed; the
+            // suppressed power `q`.
+            if derev {
+                let mut q = p;
+                if k < flat_bins {
+                    let h = &mut self.derev_hist[derev_row + k];
+                    let late = self.derev_decay * self.cfg.derev_over * *h;
+                    *h = p;
+                    if p > 1e-30 {
+                        q *= (1.0 - late / p).max(self.cfg.derev_floor);
+                    }
+                }
+                // Bins above the suppressed band keep their plain power.
+                self.derev_spec[k] = Complex::new(q, 0.0);
+            }
             *c = Complex::new(p, 0.0);
             let v = if flat_exp > 0.0 && k < flat_bins {
                 compress(p, flat_exp)
@@ -816,6 +1162,20 @@ impl Tracker {
         // realfft's inverse is unnormalised: r(t) = acf[t] / N. The NSDF is a ratio of r to
         // m, so scale m by N instead of r.
         let n_fft = self.fft_buf.len() as f64;
+        // The suppressed spectrum's autocorrelation is that of a quieter signal: its NSDF
+        // scales m by the share of the energy kept (acf[0] / (N energy)), so a uniform gain
+        // leaves the NSDF as it was.
+        let derev3 = derev
+            && self
+                .c2r
+                .process_with_scratch(&mut self.derev_spec, &mut self.derev_acf, &mut self.scratch)
+                .is_ok()
+            && self.derev_acf[0] > 0.0;
+        let n_derev = if derev3 {
+            f64::from(self.derev_acf[0]) / energy
+        } else {
+            1.0
+        };
 
         // NSDF n(t) = 2 r(t) / m(t), m(t) = sum_{j < win - t} x[j]^2 + x[j + t]^2.
         let mut m = 2.0 * energy;
@@ -829,7 +1189,15 @@ impl Tracker {
             } else {
                 0.0
             };
+            if derev3 {
+                self.derev_nsdf[t] = if m > 1e-12 * energy {
+                    (2.0 * f64::from(self.derev_acf[t]) / (m * n_derev)) as f32
+                } else {
+                    0.0
+                };
+            }
         }
+        self.derev_live = derev3;
 
         self.collect_candidates(&mut slot);
         slot
@@ -868,10 +1236,23 @@ impl Tracker {
             if !(self.cfg.min_hz..=self.cfg.max_hz).contains(&hz) {
                 return;
             }
+            // With the late-reverberation suppression the clarity is the higher of the
+            // plain NSDF and the NSDF of the suppressed spectrum near the same lag (above
+            // derev_min_hz; see also derev_per_min below).
+            let n0 = value;
+            let value = if self.derev_live && hz >= self.cfg.derev_min_hz {
+                let d = &self.derev_nsdf;
+                value.max(d[t - 1].max(d[t]).max(d[t + 1]).min(1.0))
+            } else {
+                value
+            };
             let c = Cand {
                 hz: hz as f32,
                 n: value,
                 score: 0.0,
+                per: 0.0,
+                n0,
+                below: false,
             };
             let is_top = n[t] >= top;
             if slot.len < MAX_CANDS - usize::from(!top_seen) || (is_top && !top_seen) {
@@ -886,41 +1267,79 @@ impl Tracker {
         let reference = paper_hz.unwrap_or(f32::MAX);
         for c in &mut slot.cands[..slot.len] {
             let octaves_below = (reference / c.hz).log2().max(0.0);
+            c.below = octaves_below >= 0.5;
             let periodicity = if self.flat_ok {
-                self.flat_periodicity(fs / f64::from(c.hz))
+                periodicity_at(&self.acf_flat, self.win, fs / f64::from(c.hz))
             } else {
                 c.n
             };
+            c.per = periodicity;
             c.score = periodicity - self.cfg.octave_cost * octaves_below;
+            // The suppressed clarity is believed only for a candidate with a harmonic
+            // series: spectral subtraction leaves random isolated peaks in noise ("musical
+            // noise"), which can make a whispered vowel look periodic.
+            if c.per < self.cfg.derev_per_min {
+                c.n = c.n0;
+            }
+            slot.clarity = slot.clarity.max(c.n);
+        }
+        // Subharmonics without harmonic evidence (see `TrackerConfig::odd_cost`).
+        if self.cfg.odd_cost > 0.0 {
+            for i in 0..slot.len {
+                let low = slot.cands[i].hz;
+                let multiple = slot.cands[..slot.len].iter().find_map(|d| {
+                    [2u32, 3]
+                        .into_iter()
+                        .find(|&m| (1200.0 * (d.hz / (m as f32 * low)).log2()).abs() <= 50.0)
+                });
+                if let Some(m) = multiple
+                    && self.own_harmonic_ratio(low, m) < self.cfg.odd_ratio_min
+                {
+                    slot.cands[i].score -= self.cfg.odd_cost;
+                }
+            }
         }
     }
 
-    /// Periodicity at `lag` measured on the flattened spectrum: the autocorrelation of
-    /// `|X|^flat_power`, normalised by its value at lag 0 and corrected for the shrinking
-    /// overlap of the window with itself (so a perfectly periodic sound gives about 1 at
-    /// every multiple of its period). Linear interpolation between the two nearest lags.
-    ///
-    /// Compressing the spectrum before the autocorrelation weighs weak harmonics more, so
-    /// the odd harmonics that tell an octave from its double count even when they are
-    /// 15 dB down (a real voice whose fundamental and odd harmonics are weak is otherwise
-    /// reported an octave high), while noise concentrated in a narrow band (breath
-    /// through a formant) no longer looks periodic at a multiple of the period (otherwise
-    /// a breathy high note is reported an octave or a twelfth low).
-    ///
-    /// Measured on the real-voice development set (docs/benchmarks/practice-tracker.md
-    /// section 13): scored by the NSDF value instead, 0.92 % of the frames both voiced were
-    /// an octave off and the marker jumped an octave 130 times inside a held pitch; scored
-    /// by this, 0.47 % and 63 times.
-    fn flat_periodicity(&self, lag: f64) -> f32 {
-        let i = lag.floor() as usize;
-        let w = self.win as f64;
-        if i + 1 >= self.win {
-            return 0.0;
+    /// Power at the harmonics of `f0` that are not multiples of `m` (up to 3 kHz), over the
+    /// power halfway between neighbouring harmonics of `f0` (see `TrackerConfig::odd_cost`);
+    /// peaks are the highest of three bins around the frequency. Large (100) when nothing
+    /// can be measured.
+    fn own_harmonic_ratio(&self, f0: f32, m: u32) -> f32 {
+        let bin_hz = f64::from(self.rate) / self.fft_buf.len() as f64;
+        let at = |f: f64| -> f64 {
+            let b = (f / bin_hz).round() as usize;
+            if b < 1 || b + 1 >= self.pow_spec.len() {
+                return f64::NAN;
+            }
+            f64::from(
+                self.pow_spec[b - 1]
+                    .max(self.pow_spec[b])
+                    .max(self.pow_spec[b + 1]),
+            )
+        };
+        let (mut peaks, mut valleys) = (0.0f64, 0.0f64);
+        let f0 = f64::from(f0);
+        let mut h = 1u32;
+        while f64::from(h) * f0 <= 3000.0 {
+            if !h.is_multiple_of(m) {
+                let (p, a, b) = (
+                    at(f64::from(h) * f0),
+                    at((f64::from(h) - 0.5) * f0),
+                    at((f64::from(h) + 0.5) * f0),
+                );
+                if p.is_finite() && a.is_finite() && b.is_finite() {
+                    peaks += p;
+                    valleys += 0.5 * (a + b);
+                }
+            }
+            h += 1;
         }
-        let at = |t: usize| f64::from(self.acf_flat[t]) * w / (w - t as f64);
-        let frac = lag - i as f64;
-        let v = (at(i) * (1.0 - frac) + at(i + 1) * frac) / f64::from(self.acf_flat[0]);
-        v.clamp(-1.0, 1.0) as f32
+        if valleys > 0.0 {
+            (peaks / valleys) as f32
+        } else {
+            100.0
+        }
     }
 
     /// Parabolic interpolation of the NSDF peak at integer lag `t`: (lag, value).
@@ -972,6 +1391,34 @@ impl Tracker {
             visit(r);
         }
     }
+}
+
+/// Periodicity at `lag` measured on a flattened spectrum: `acf` is the autocorrelation of
+/// `|X|^flat_power` (for a `win`-sample window), normalised by its value at lag 0 and corrected for the shrinking
+/// overlap of the window with itself (so a perfectly periodic sound gives about 1 at
+/// every multiple of its period). Linear interpolation between the two nearest lags.
+///
+/// Compressing the spectrum before the autocorrelation weighs weak harmonics more, so
+/// the odd harmonics that tell an octave from its double count even when they are
+/// 15 dB down (a real voice whose fundamental and odd harmonics are weak is otherwise
+/// reported an octave high), while noise concentrated in a narrow band (breath
+/// through a formant) no longer looks periodic at a multiple of the period (otherwise
+/// a breathy high note is reported an octave or a twelfth low).
+///
+/// Measured on the real-voice development set (docs/benchmarks/practice-tracker.md
+/// section 13): scored by the NSDF value instead, 0.92 % of the frames both voiced were
+/// an octave off and the marker jumped an octave 130 times inside a held pitch; scored
+/// by this, 0.47 % and 63 times.
+fn periodicity_at(acf: &[f32], win: usize, lag: f64) -> f32 {
+    let i = lag.floor() as usize;
+    let w = win as f64;
+    if i + 1 >= win {
+        return 0.0;
+    }
+    let at = |t: usize| f64::from(acf[t]) * w / (w - t as f64);
+    let frac = lag - i as f64;
+    let v = (at(i) * (1.0 - frac) + at(i + 1) * frac) / f64::from(acf[0]);
+    v.clamp(-1.0, 1.0) as f32
 }
 
 /// Path score given to the candidates a pinned frame did not choose: far below any path

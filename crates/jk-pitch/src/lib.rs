@@ -7,9 +7,12 @@
 //! - [`tracker`]: streaming pitch tracker for the singer's microphone.
 //! - [`guide`]: the melody guide builder (pitch curve of the isolated lead vocal -> notes).
 //! - [`score`]: grading a performance against the guide.
+//! - [`practice`]: the analysis chain shared by the app and the offline harness (channel,
+//!   echo, tracker, gate, song time, scorer).
 //! - [`echo`]: detecting and removing the app's own playback when a mixer returns it in the input.
 
 pub mod echo;
 pub mod guide;
+pub mod practice;
 pub mod score;
 pub mod tracker;

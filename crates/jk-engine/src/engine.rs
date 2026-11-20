@@ -1765,6 +1765,12 @@ impl EngineInner {
         self.core.shared.clip_epoch.fetch_add(1, Release);
     }
 
+    /// Attach a reader to the output tap (allocates the ring on the first call; never on a
+    /// real-time thread). See [`crate::tap`].
+    pub fn output_tap(&self) -> crate::tap::TapReader {
+        self.core.shared.tap.get_or_init(|| Arc::new(crate::tap::OutputTap::new())).reader()
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let mut ctl = lock(&self.core);
         self.core.drain_keys(&mut ctl);

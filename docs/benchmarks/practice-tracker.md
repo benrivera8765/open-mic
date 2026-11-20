@@ -1,60 +1,64 @@
-# Live pitch tracker measurements (Work Order 2: Stage 0, then hardening on real voices)
+# Live pitch tracker measurements (Work Order 2: Stage 0, hardening on real voices, robustness)
 
 Stage 0 measured on 2026-11-19 on the build PC (Windows 11, Ryzen 7 9700X, 32 GB), Rust 1.100
 `x86_64-pc-windows-gnu`, release profile. The tracker was then **hardened on real voices**
-the same day (sections 13 to 17): it is now evaluated on about 108 minutes of real singing
-with a singer-disjoint dev / held-out split, and its octave decision, start rules and
-analysis band changed. **Section 1 and sections 13 to 17 describe the current tracker;
-sections 2 to 12 are the Stage 0 record** (the "before" of the hardening), unchanged.
+the same day (sections 13 to 19, "Stage 1"): it is evaluated on about 108 minutes of real
+singing with a singer-disjoint dev / held-out split. The **robustness work** that followed
+(section 20) made it cope better with reverb, a bright EQ, slow real onsets, whispers and
+breathy voices. **Section 1 and section 20 describe the current tracker; sections 13 to 19
+are the Stage 1 record and sections 2 to 12 the Stage 0 record**, unchanged.
 
-Evidence: Stage 0 in `../jukeoke-build/practice-tracker/bench-final.txt`; hardening in
-`../jukeoke-build/practice-tracker/runs/final/` (bench, real-voice tables for both trackers,
-generated-voice probes, ablations) and the evaluation set in
-`../jukeoke-build/practice-tracker/eval/` (nothing of it in the repository). No microphone
-was opened and nobody sang for this report: real voices are recordings.
+Evidence: Stage 0 in `../jukeoke-build/practice-tracker/bench-final.txt`; Stage 1 in
+`../jukeoke-build/practice-tracker/runs/final/`; the robustness work in
+`../jukeoke-build/practice-tracker/s4/` (`runs/`: real-voice tables, onset-delay
+distributions, generated-voice probes, bench, music-only run; `log*.txt`: settings tried on
+dev); the evaluation set in `../jukeoke-build/practice-tracker/eval/` (nothing of it in the
+repository). No microphone was opened and nobody sang for this report: real voices are
+recordings.
 
 Code under test: `jk_pitch::tracker::Tracker` (`crates/jk-pitch/src/tracker.rs`), default
 `TrackerConfig`:
 
-| Setting | Value (Stage 0 value if different) | Why |
+| Setting | Value (Stage 1 value if different) | Why |
 |---|---|---|
 | Method | McLeod Pitch Method (McLeod and Wyvill, ICMC 2005) on `realfft` 3.5; octave decided over time (below) | WO2 section 6; the `pitch-detection` crate plans an FFT per call and has an octave bug |
 | Window | 42.67 ms, sized in time: 683 / 1882 / 2048 / 4096 samples at 16 / 44.1 / 48 / 96 kHz | a C2 period (15.3 ms) fits 1.8 times in the NSDF overlap (trap 5); same answer at every rate (trap 14) |
 | FFT | real FFT of the zero-padded window, length the next power of two >= 2 x window | linear autocorrelation, no wrap-around |
 | Hop | 10 ms | a new estimate every 10 ms |
 | Pitch range | 62 Hz to 1400 Hz | C2 with margin, above 60 Hz hum; C6 plus vibrato |
-| Filters | 4th-order Butterworth high-pass at 55 Hz; **4th-order Butterworth low-pass at 4 kHz** (none) | thumps, pops, DC, hum out; a bright EQ, sibilance and air no longer lower a vowel's clarity (section 13.4) |
-| Candidates | **every NSDF key maximum >= 0.5 x the highest, at most 6** (the first >= 0.9 x the highest) | the octave is chosen among them |
-| Octave scoring | **periodicity of the flattened spectrum (autocorrelation of \|X\|^0.5, 0-5 kHz) at each candidate, less 0.06 per octave below MPM's choice** (none) | tells weak odd harmonics from a second voice or a reverb tail (section 13.4) |
-| Path | **Viterbi over the last frames, decided 2 frames (20 ms) behind the newest; 0.2 per octave down, 0.1 per octave up; pinned to what was shown; a note starts on the newest window's octave** (three-point median only) | no octave flips inside a note, no onset flashes, leaps still followed |
-| Singing / not singing | start: clarity >= 0.93 then a continuing frame >= 0.75, **or five frames (20 ms before the decided one to the newest) >= 0.8 within 40 cents of each other, at least 160 Hz**; keep: >= 0.75 while the pitch continues (<= 150 cents per 10 ms); level >= -55 dBFS to start, >= -60 to keep | real voices with clarity 0.8-0.93 are shown; breath, whispers and thumps are not |
+| Filters | 4th-order Butterworth high-pass at 55 Hz; 4th-order Butterworth low-pass at **3.5 kHz** (4 kHz) | thumps, pops, DC, hum out; a bright EQ, sibilance and air do not lower a vowel's clarity (sections 13.4, 20.2) |
+| Candidates | every NSDF key maximum >= 0.5 x the highest, at most 6 | the octave is chosen among them |
+| Octave scoring | periodicity of the flattened spectrum (autocorrelation of \|X\|^0.5, 0-5 kHz) at each candidate, less 0.06 per octave below MPM's choice; **0.3 less for a candidate with another at 2 or 3 times its pitch whose own harmonics are not peaks (power at them under 2 x the power halfway between)** (no harmonic check) | weak odd harmonics, a second voice, a reverb tail (13.4); breath through a narrow formant (20.2) |
+| Late-reverberation suppression | **each candidate's clarity is the higher of the plain NSDF and the NSDF of the spectrum less a late-reverberation estimate (the same bin 50 ms earlier, decayed as RT60 1.5 s, x 2, floor 0.1); above 130 Hz and for candidates with flattened periodicity >= 0.13 only** (none) | a new note is seen through the tail of the one before (20.2) |
+| Path | Viterbi over the last frames, decided 2 frames (20 ms) behind the newest; 0.2 per octave down, 0.1 per octave up; pinned to what was shown; a note starts on the newest window's octave | no octave flips inside a note, no onset flashes, leaps still followed |
+| Singing / not singing | start: clarity >= 0.93 then a continuing frame >= 0.75; or five frames >= 0.8 within 40 cents, at least 160 Hz, **each with a harmonic series (flattened periodicity >= 0.09)**; **or early: two adjacent newer frames at 0.93 / 0.75 and the decided frame >= 0.75, at least 160 Hz, the newest level risen <= 1 dB, no candidate an octave up at NSDF >= 0.4**; keep: >= 0.75 while the pitch continues (<= 150 cents per 10 ms); level >= -55 dBFS to start, >= -60 to keep; **a decaying tail (15 dB under the recent peak, falling >= 0.3 dB in each of the last 4 frames) ends a note and starts none** | real voices with clarity 0.8-0.93 are shown; breath, whispers and thumps are not; clear real onsets show up to 20 ms sooner; a room tail stops being a note (20.2) |
 | Smoothing | three-point median of the previous reported frame, the decided frame and the next one on the path | removes single-frame slips |
 | Input | one mono channel chosen by the caller; channels are never summed | trap 14, WO2 4.4 |
-| Output | `PitchEvent { time, ready_at, hz: Option<f32>, clarity, level_dbfs }` every hop | `time` = centre of the decided window; `ready_at - time` = half a window + 2 hops = 41.3 ms (was half a window + 1 hop) |
+| Output | `PitchEvent { time, ready_at, hz: Option<f32>, clarity, level_dbfs }` every hop | `time` = centre of the decided window; `ready_at - time` = half a window + 2 hops = 41.3 ms |
 
 ## 1. Summary (current tracker)
 
-| WO2 requirement (4.4 table, section 9 row "Tracker", 4.10) | Result (Stage 0 in brackets) | Criterion |
+| WO2 requirement (4.4 table, section 9 row "Tracker", 4.10) | Result (Stage 1 in brackets) | Criterion |
 |---|---|---|
 | Range | C2 to C6 tracked, every semitone, three vowels, four rates, 100 % of held events pitched (same) | E2..C6, aim C2 |
-| Accuracy on steady tones | max 2.36 cents at 16 kHz, <= 0.10 cents at 44.1 / 48 / 96 kHz (2.38 / 0.10) | within 10 cents |
-| Octave jumps on a steady note, generated | 0 in every held part; whole notes including onsets: 3 / 6 / 6 / 9 octave-off events at 16 / 44.1 / 48 / 96 kHz in 147 notes (14 / 14 / 12 / 10); ordinary jitter 0 (2-6); mild breath held part 0 except 16 kHz (8-13) | none |
-| Octave errors, real voices | 0.47 % of frames dev, **0.42 % held-out** (0.90 / 0.74 %); octave jumps on a held pitch 63 dev, 37 held-out in about 50 minutes each (121 / 51) | none |
-| Real sung frames shown (voicing recall) | 89.6 % dev, **79.1 % held-out** (81.6 / 69.7 %); right note when shown 99.0 / 98.8 % | (report) |
-| Not singing: silence, breath, speech-like noise, consonants, room noise, thumps, pops | 0 pitched events, every rate, 30 s per kind (0); a 10-minute whispered-speech probe per rate gave 10 / 7 short events (50-70 ms) at 44.1 / 96 kHz, 0 with steady starts off (section 19) | no pitch, no wandering |
-| Delay, onset to first correct event, generated | median 46 ms, max 72 ms (36 / 62); marker off after singing stops median 67, max 80 ms (47 / 60) | aim 50 ms, never > 100 ms |
-| Delay on real voices (from the reference's first voiced 10 ms frame) | median 70 / 80 ms dev / held-out, p90 120 ms (p90 180 / 190); 15-18 % of real onsets take more than 100 ms (vocadito 11-13 %), section 19 | aim 50 ms, never > 100 ms: **not met on real voices** |
-| Same answer across sample rates | generated melody p95 <= 0.68 cents, max 28.8 cents (16 kHz); real voices resampled to 16 / 48 / 96 kHz: RPA within 0.3 points of the original | same answer |
-| The owner's rig (real voices through generated effects) | compression, warm EQ, proximity, pops and thumps: within 1 point (or better); **bright EQ -5 to -7 points, reverb RT60 0.3-1.5 s at -6 dB -5 to -19 points** of real sung frames shown (Stage 0 -8 to -9 and -7 to -23); right note when shown >= 93.8 % | within a few points |
-| Processor cost | 1.7 ms per second of audio at 48 kHz, 18 us per analysis, 0.17 % of one core (1.0 ms) | (report) |
-| MacBook Air M1 estimate | 3.5-5 ms per second of audio at 48 kHz (0.35-0.5 % of one core) | (estimate) |
+| Accuracy on steady tones | max 2.26 cents at 16 kHz, <= 0.10 cents at 44.1 / 48 / 96 kHz (2.36 / 0.10); vibrato max 12.2 cents (same) | within 10 cents |
+| Octave jumps on a steady note, generated | 0 in every held part; whole notes including onsets: 6 / 6 / 6 / 12 events more than 50 cents off at 16 / 44.1 / 48 / 96 kHz in 147 notes (3 / 6 / 6 / 9); breathy voice (-12 dB breath) 379 / 205 / 173 / 138 (448 / 256 / 283 / 244; Stage 0 165 / 126 / 133 / 47) | none |
+| Octave errors, real voices | 0.44 % of frames dev, **0.38 % held-out** (0.47 / 0.42 %); octave jumps on a held pitch 70 dev, 36 held-out in about 50 minutes each (63 / 37) | none |
+| Real sung frames shown (voicing recall) | 91.2 % dev, **82.9 % held-out** (89.6 / 79.2 %); right note when shown 99.1 / 98.9 %; false alarms 1.08 / 0.94 % (1.36 / 1.65 %) | (report) |
+| Not singing: silence, breath, speech-like noise, consonants, room noise, thumps, pops | 0 pitched events, every rate, 30 s per kind (0); 10-minute probes per kind and rate: **0 at every rate** (whispered speech 10 / 7 events at 44.1 / 96 kHz); with fresh seeds, 30 minutes of whispered speech per rate still gives 0 / 3 / 6 / 4 brief events (30-40 ms) at 16 / 44.1 / 48 / 96 kHz (section 21) | no pitch, no wandering |
+| Delay, onset to first correct event, generated | median 46 ms, max 72 ms (same); marker off after singing stops median 66, max 76 ms (67 / 80) | aim 50 ms, never > 100 ms |
+| Delay on real voices (from the reference's first voiced 10 ms frame) | median 70 ms, p90 110 ms dev and held-out (70-80 / 120); **12.8 % (dev) and 13.8 % (held-out) of real onsets take more than 100 ms (15.7 / 17.4 %)**, vocadito (hand-annotated onsets) 11.1 / 9.3 % (13.2 / 10.7 %); the pipeline's own delay is 41.3 ms (section 20.4) | aim 50 ms, never > 100 ms: **not met on real voices** |
+| Same answer across sample rates | generated melody p95 <= 0.66 cents, max 5.8 cents (16 kHz) (0.68 / 28.8); real voices resampled to 16 / 48 / 96 kHz: RPA within 0.3 points of the original | same answer |
+| The owner's rig (real voices through generated effects; RPA change against clean input, dev / held-out) | compression, warm EQ, proximity, pops and thumps: -0.4 to +4.1 points; **bright EQ -3.8 / -5.4 (-5.3 / -7.3); reverb RT60 0.3 / 0.8 / 1.5 s at -6 dB: -4.4 / -9.7 / -14.8 dev, -8.0 / -13.0 / -17.5 held-out (-5.4 / -11.5 / -16.9 and -8.7 / -14.5 / -19.2)**; false alarms under those reverbs 2.4 / 8.2 / 15.1 % dev (4.2 / 11.1 / 17.4 %); every condition ahead of Stage 1 in absolute terms (+1.7 to +7.7 points) | within a few points: **met for compression, warm EQ, proximity, pops, sample rate and (dev) bright EQ; not met for reverb** |
+| Processor cost | 2.1 ms per second of audio at 48 kHz, 22 us per analysis, 0.21 % of one core (1.7 ms) | (report) |
+| MacBook Air M1 estimate | 4.3-6.5 ms per second of audio at 48 kHz (0.45-0.65 % of one core) | (estimate) |
 | No allocation per block | 0 allocations (`tests/tracker_alloc.rs`) | none |
-| Same code on the Mac | `cargo check --all-targets --target aarch64-apple-darwin` of the tracker module passes (type-checked only) | WO2 5 |
+| Same code on the Mac | `cargo check -p jk-pitch --all-targets --target aarch64-apple-darwin` passes (type-checked only) | WO2 5 |
 
-> **Sections 2 to 12 below are the Stage 0 tracker's measurements**, kept as the record the
-> hardening is compared with. The same bench re-run on the current tracker is
-> `../jukeoke-build/practice-tracker/runs/final/bench-wo2.txt`; its headline numbers are in
-> section 1 and section 14.
+> **Sections 2 to 12 below are the Stage 0 tracker's measurements and sections 13 to 19 the
+> Stage 1 tracker's**, kept as the record the later work is compared with. The bench re-run
+> on the current tracker is `../jukeoke-build/practice-tracker/s4/runs/bench-final.txt`; its
+> headline numbers are in section 1 and section 20.
 
 ## 2. Steady notes C2..C6, every semitone, three vowels
 
@@ -715,6 +719,9 @@ stream, block size and reset, non-finite input, level gate, and the three alloca
 
 ## 17. Decisions, and what is still open
 
+> The open items below are the Stage 1 state; section 20 is the work done on them and
+> what is still open now.
+
 Decisions made here (to be recorded in DECISIONS.md by the coordinator):
 
 - Live tracker = MPM candidates + flattened-spectrum octave scoring + fixed-lag (2 frames)
@@ -813,3 +820,405 @@ baseline is git HEAD's `tracker.rs` plus `pub mod rig;`.
    off, against 87 and 111 for the voice generated at 16 kHz: the tracker gives the same
    answer, the generator puts more breath in band. The breathy regression against Stage 0 is
    real at 48 kHz (1 % / 6 % / -15 dB: 152 of about 7,900 held events).
+
+## 20. Robustness: reverb, EQ, real onsets, whispers, breath (WO2 4.4 delay, 4.10)
+
+The Stage 1 verifier (section 19, DECISIONS D-244) left these open: 15-17 % of real onsets
+shown after more than 100 ms; reverb (RT60 0.3 / 0.8 / 1.5 s) costing 5 / 12 / 17 points of
+raw pitch accuracy (RPA) with false alarms up to 17 %, a bright mixer EQ 5-7 points;
+whispered speech briefly passing the steady start at 44.1 / 96 kHz on long runs; low voices
+on stems shown about half the time; music alone voiced more often than by Stage 0; breathy
+generated voices worse than Stage 0. This section is the work on them, measured 2026-11-19
+on the same PC, with the same evaluation set and rig effects (sections 13.1, 15).
+
+**Protocol.** Every setting was chosen on the **dev** split (the logs `s4/log*.txt` hold every
+setting tried) and on the generated voices; nothing was tuned on held-out. The held-out split
+was run twice, and the second run is the one reported: the first run
+(`s4/runs/v1-final-heldout.txt`) was of the tracker without the harmonic check of change 3
+below. That check was then added because of the generated breathy voices, chosen on dev and
+on generated voices only, and the final tracker was run on held-out once more. Over every
+condition the two held-out runs differ by at most 0.15 points of RPA, 0.05 of octave errors
+and 7 octave jumps (clean: RPA 72.5 both, octave errors 0.41 -> 0.38 %). The "Stage 1"
+columns are the current code with the new switches off (`s4/stage1-set.txt`:
+`lowpass_hz=4000 early_start=0 tail_drop_db=0 tail_frames=2 derev_rt60_s=0
+steady_harmonic_min=0 odd_cost=0`), which reproduces the Stage 1 tables of section 13 to the
+digit on dev and within 0.01 points on held-out.
+
+### 20.1 What changed
+
+1. **Late-reverberation suppression for clarity ("dereverberation lite").** Each frame's power
+   spectrum below 5 kHz loses an estimate of its late reverberation: the power the same bin
+   had 50 ms earlier, decayed as a room with RT60 1.5 s would decay it, times 2, keeping at
+   least 10 % (spectral subtraction after Lebart et al. 2001). A second NSDF is computed from
+   the result (one more inverse FFT), and each candidate's clarity becomes the higher of the
+   plain and the suppressed NSDF at its period. The candidates, their pitch and their octave
+   scores still come from the plain spectrum: feeding the suppressed spectrum to everything
+   gave far fewer false alarms under reverb (RT60 1.5 s: 18.0 -> 12.6 %) but cost 6 points of
+   RPA on clean input, with 1.7 times the octave jumps (musical noise in the pitch). Below
+   130 Hz (bass lines in music) and for candidates whose flattened-spectrum periodicity is
+   under 0.13 (noise, whispers) the plain clarity is kept. The parameters matter little (RT60
+   0.5-1.5 s, over-subtraction 1.5-3, floor 0.03-0.1, delay 30-50 ms: RPA 85.5-86.6 % clean
+   and 74.7-76.1 % under RT60 0.8 s on dev, `log-derev.txt`).
+2. **Analysis low-pass at 3.5 kHz** instead of 4 kHz: bright EQ on dev 77.6 -> 78.5 % RPA
+   alone (Stage 1 settings otherwise), clean 82.9 -> 83.3 %.
+3. **Harmonic evidence for subharmonics.** A candidate with another candidate at two or three
+   times its pitch must show peaks at its own harmonics that the higher one does not have (its
+   odd harmonics for an octave): the power at them, up to 3 kHz, at least twice the power
+   halfway between them, or its score loses 0.3. Breath through a narrow first formant
+   (270-300 Hz) fills the band around a high "ee" / "oo" note's subharmonic with noise but puts
+   no peaks at its odd harmonics; a real voice whose odd harmonics are 15 dB down still has
+   them as peaks over the valleys. Generated breathy voice (-12 dB breath, whole notes) at
+   48 kHz: 289 -> 173 events off; real voices: octave errors 0.45 -> 0.44 % dev. A stricter
+   ratio (3 or 4) helped the breathy voice more (122-131 events) but raised octave jumps
+   under reverb (RT60 0.8 s: 33 -> 47-49), the reverb tail filling the valleys of a real low
+   note.
+4. **Steady starts need a harmonic series**: every frame of a steady start must have a
+   flattened-spectrum periodicity of at least 0.09. A whispered vowel is nearly periodic over
+   one window in the NSDF (noise through a narrow formant) but has no harmonic series; real
+   sung frames are under 0.09 in 5 % of cases inside runs and 24 % at the first frame of a run
+   (`s3/perdiag.py`), which the other start rules cover.
+5. **Early start** on clear onsets: two adjacent newer frames of the look-ahead at 0.93 and
+   0.75 on one line and the decided frame (and any frame between) at 0.75 start the note, up
+   to two hops before the plain confident start would. Three guards keep its octave right and
+   thumps out: not below 160 Hz (the generated 25 ms burst at 155 Hz became a note without
+   it, `short_low_bursts_are_not_notes`); the newest window's level must have risen by at most
+   1 dB over the previous one (the attack is over); and no frame used may hold a candidate an
+   octave above its own at NSDF >= 0.4. Without the last two, generated whole notes had 42 /
+   32 / 32 / 38 events more than 50 cents off at the onsets (Stage 1: 3 / 6 / 6 / 9): the first
+   30 ms of a generated high "ee" / "oo" note look an octave low (the first formant ringing),
+   and the early start took that octave. With them: 6 / 6 / 6 / 12.
+6. **Reverb tail rule**: a frame whose level is 15 dB or more under the recent peak (released
+   by 0.1 dB per frame) after the level fell by at least 0.3 dB between each of the last four
+   frames is a decaying tail: it ends a shown note and starts none. After a tail a note starts
+   again on a new onset (3 dB above the lowest level of the tail), when the level stops
+   falling over 40 ms, or on a clear pitch away from the last note (without the last two, a
+   legato step down to a quieter note was never shown, `legato` in `tracker_synth`). On dev it
+   is a trade, not a free gain (`log-tail.txt`, `log-allcond.txt`): false alarms under RT60
+   0.8 / 1.5 s 11.5 -> 8.2 % and 18.0 -> 15.1 %, on clean input 1.58 -> 1.08 % (mostly
+   vocadito, whose annotation ends with the note while the vowel still rings), for 1.2
+   points of RPA on clean input. The frames it loses on clean input lie in the last 100 ms
+   of the reference's voiced runs on the processed stems (`s4/lostdiag.py`: 56 % of them in
+   the last 100 ms, 6 % on vocadito), where the stems carry their own reverb and the
+   reference calls its tail voiced. Gentler settings (20-25 dB) removed fewer false alarms
+   for less; stricter ones (6-10 dB) cost 2-6 points of voicing recall.
+
+### 20.2 Results on real voices, every rig condition
+
+**dev, all sets** (Stage 1 -> final; cost = RPA change against clean input of the same tracker)
+
+| condition | RPA % | cost (points) | VR % | VFA % | right note when shown (Acc) % | Oct % | flips | onsets shown <= 100 ms % |
+|---|---|---|---|---|---|---|---|---|
+| clean | 82.9 -> **85.0** |  | 89.6 -> 91.2 | 1.36 -> 1.08 | 99.04 -> 99.08 | 0.47 -> 0.44 | 63 -> 70 | 84.3 -> 87.2 |
+| reverb RT60 0.3 s, -6 dB | 77.5 -> **80.6** | -5.4 -> **-4.4** | 85.5 -> 88.5 | 4.24 -> 2.35 | 97.00 -> 97.16 | 0.65 -> 0.62 | 50 -> 58 | 72.0 -> 77.0 |
+| reverb RT60 0.8 s, -6 dB | 71.4 -> **75.3** | -11.5 -> **-9.7** | 80.2 -> 84.1 | 11.11 -> 8.21 | 95.00 -> 95.29 | 0.62 -> 0.53 | 39 -> 33 | 70.2 -> 76.0 |
+| reverb RT60 1.5 s, -6 dB | 65.9 -> **70.1** | -16.9 -> **-14.8** | 75.2 -> 79.4 | 17.38 -> 15.06 | 93.80 -> 94.22 | 0.62 -> 0.49 | 25 -> 29 | 64.6 -> 73.1 |
+| reverb RT60 1.5 s, 0 dB | 54.0 -> **56.7** | -28.9 -> **-28.3** | 66.3 -> 69.1 | 21.22 -> 18.98 | 86.25 -> 86.89 | 0.77 -> 0.62 | 28 -> 35 | 44.9 -> 52.3 |
+| compressor | 82.5 -> **85.4** | -0.4 -> **+0.4** | 89.3 -> 91.6 | 1.29 -> 1.14 | 99.03 -> 99.04 | 0.46 -> 0.43 | 66 -> 68 | 83.4 -> 87.3 |
+| heavy compressor | 82.3 -> **85.6** | -0.6 -> **+0.6** | 89.1 -> 91.8 | 1.30 -> 1.26 | 99.02 -> 99.00 | 0.44 -> 0.42 | 68 -> 66 | 82.6 -> 87.0 |
+| bright EQ | 77.6 -> **81.2** | -5.3 -> **-3.8** | 84.8 -> 88.1 | 1.10 -> 0.89 | 99.08 -> 99.05 | 0.45 -> 0.48 | 49 -> 52 | 76.8 -> 83.4 |
+| warm EQ | 84.2 -> **85.9** | +1.3 -> **+1.0** | 90.7 -> 92.0 | 1.72 -> 1.48 | 98.77 -> 98.82 | 0.60 -> 0.54 | 67 -> 76 | 86.1 -> 89.0 |
+| proximity bass | 84.0 -> **86.1** | +1.2 -> **+1.1** | 90.5 -> 92.0 | 1.95 -> 1.72 | 98.61 -> 98.62 | 0.47 -> 0.45 | 49 -> 51 | 86.1 -> 89.3 |
+| proximity + pops + thumps | 82.5 -> **84.6** | -0.4 -> **-0.4** | 88.9 -> 90.5 | 1.83 -> 1.59 | 98.60 -> 98.60 | 0.47 -> 0.48 | 50 -> 52 | 83.4 -> 87.5 |
+| the whole rig | 68.2 -> **74.0** | -14.7 -> **-11.0** | 75.9 -> 81.7 | 5.40 -> 5.32 | 96.90 -> 97.06 | 0.50 -> 0.44 | 24 -> 25 | 57.1 -> 67.8 |
+| resampled 16 kHz | 82.8 -> **84.7** | -0.1 -> **-0.3** | 89.5 -> 91.0 | 1.35 -> 1.08 | 98.99 -> 99.04 | 0.52 -> 0.48 | 76 -> 72 | 84.3 -> 87.2 |
+| resampled 48 kHz | 82.9 -> **85.0** | -0.0 -> **+0.0** | 89.6 -> 91.2 | 1.36 -> 1.08 | 99.03 -> 99.10 | 0.48 -> 0.43 | 66 -> 72 | 84.3 -> 87.2 |
+| resampled 96 kHz | 82.9 -> **85.0** | -0.0 -> **+0.0** | 89.6 -> 91.2 | 1.36 -> 1.08 | 99.03 -> 99.09 | 0.47 -> 0.43 | 66 -> 72 | 84.3 -> 87.2 |
+
+**heldout, all sets** (Stage 1 -> final; cost = RPA change against clean input of the same tracker)
+
+| condition | RPA % | cost (points) | VR % | VFA % | right note when shown (Acc) % | Oct % | flips | onsets shown <= 100 ms % |
+|---|---|---|---|---|---|---|---|---|
+| clean | 68.3 -> **72.5** |  | 79.2 -> 82.9 | 1.65 -> 0.94 | 98.82 -> 98.87 | 0.42 -> 0.38 | 37 -> 36 | 82.6 -> 86.2 |
+| reverb RT60 0.3 s, -6 dB | 59.6 -> **64.5** | -8.7 -> **-8.0** | 71.5 -> 76.7 | 3.68 -> 1.90 | 95.94 -> 96.31 | 0.99 -> 0.84 | 49 -> 56 | 69.9 -> 75.3 |
+| reverb RT60 0.8 s, -6 dB | 53.8 -> **59.5** | -14.5 -> **-13.0** | 65.9 -> 72.0 | 7.89 -> 6.17 | 94.40 -> 95.06 | 0.74 -> 0.53 | 28 -> 22 | 70.8 -> 76.7 |
+| reverb RT60 1.5 s, -6 dB | 49.2 -> **54.9** | -19.2 -> **-17.5** | 61.2 -> 67.4 | 9.75 -> 8.90 | 93.49 -> 94.09 | 0.57 -> 0.46 | 15 -> 18 | 68.3 -> 75.6 |
+| reverb RT60 1.5 s, 0 dB | 38.3 -> **41.6** | -30.1 -> **-30.9** | 51.6 -> 55.4 | 11.63 -> 10.79 | 85.44 -> 86.50 | 0.85 -> 0.56 | 13 -> 13 | 50.5 -> 58.1 |
+| compressor | 67.8 -> **72.9** | -0.6 -> **+0.4** | 78.7 -> 83.3 | 1.59 -> 1.13 | 98.76 -> 98.81 | 0.44 -> 0.38 | 38 -> 36 | 82.1 -> 86.4 |
+| heavy compressor | 67.4 -> **73.0** | -0.9 -> **+0.5** | 78.4 -> 83.5 | 1.57 -> 1.27 | 98.72 -> 98.75 | 0.43 -> 0.35 | 40 -> 35 | 80.3 -> 86.9 |
+| bright EQ | 61.0 -> **67.0** | -7.3 -> **-5.4** | 72.0 -> 78.1 | 1.31 -> 0.76 | 98.92 -> 98.97 | 0.39 -> 0.34 | 28 -> 24 | 74.0 -> 81.0 |
+| warm EQ | 71.9 -> **75.4** | +3.6 -> **+2.9** | 82.3 -> 85.3 | 1.89 -> 1.14 | 98.40 -> 98.48 | 0.41 -> 0.34 | 30 -> 38 | 85.5 -> 88.9 |
+| proximity bass | 72.9 -> **76.6** | +4.5 -> **+4.1** | 83.0 -> 86.3 | 2.17 -> 1.62 | 97.70 -> 97.79 | 0.35 -> 0.29 | 21 -> 21 | 86.2 -> 89.6 |
+| proximity + pops + thumps | 71.7 -> **75.5** | +3.4 -> **+3.0** | 81.8 -> 85.1 | 2.06 -> 1.49 | 97.71 -> 97.81 | 0.35 -> 0.29 | 21 -> 21 | 85.3 -> 89.6 |
+| the whole rig | 51.9 -> **59.6** | -16.4 -> **-12.9** | 62.8 -> 71.2 | 3.74 -> 3.97 | 96.03 -> 96.36 | 0.36 -> 0.31 | 8 -> 11 | 59.5 -> 74.9 |
+| resampled 16 kHz | 68.2 -> **72.2** | -0.1 -> **-0.3** | 79.0 -> 82.6 | 1.72 -> 0.92 | 98.76 -> 98.88 | 0.46 -> 0.36 | 44 -> 39 | 81.9 -> 85.5 |
+| resampled 48 kHz | 68.3 -> **72.5** | +0.0 -> **+0.1** | 79.2 -> 83.0 | 1.65 -> 0.93 | 98.83 -> 98.89 | 0.39 -> 0.35 | 32 -> 33 | 82.6 -> 85.8 |
+| resampled 96 kHz | 68.3 -> **72.6** | +0.0 -> **+0.1** | 79.2 -> 83.0 | 1.65 -> 0.93 | 98.83 -> 98.91 | 0.39 -> 0.34 | 33 -> 33 | 82.6 -> 85.8 |
+
+**dev, clean, per set** (Stage 1 -> final)
+
+| set | VR % | VFA % | RPA % | Acc % | Oct % (high) | flips | delay p50 / p90 ms | shown <= 100 ms % | onset flashes |
+|---|---|---|---|---|---|---|---|---|---|
+| ccmixter | 95.7 -> **95.9** | 0.08 -> 0.15 | 90.9 -> **91.2** | 99.33 -> 99.39 | 0.25 (0.04) -> 0.22 (0.04) | 28 -> 27 | 80 / 110 -> 80 / 100 | 84.6 -> **88.0** | 0 -> 1 |
+| musdb | 79.9 -> **83.6** | 0.43 -> 0.68 | 71.1 -> **75.4** | 98.61 -> 98.70 | 0.91 (0.71) -> 0.83 (0.65) | 31 -> 38 | 90 / 300 -> 80 / 170 | 64.0 -> **72.0** | 0 -> 0 |
+| vocadito | 95.3 -> **96.1** | 5.02 -> 3.40 | 91.0 -> **92.2** | 99.09 -> 99.07 | 0.21 (0.17) -> 0.23 (0.18) | 4 -> 5 | 70 / 110 -> 60 / 110 | 86.8 -> **88.9** | 4 -> 0 |
+| all | 89.6 -> **91.2** | 1.36 -> 1.08 | 82.9 -> **85.0** | 99.04 -> 99.08 | 0.47 (0.29) -> 0.44 (0.28) | 63 -> 70 | 70 / 120 -> 70 / 110 | 84.3 -> **87.2** | 4 -> 1 |
+
+**heldout, clean, per set** (Stage 1 -> final)
+
+| set | VR % | VFA % | RPA % | Acc % | Oct % (high) | flips | delay p50 / p90 ms | shown <= 100 ms % | onset flashes |
+|---|---|---|---|---|---|---|---|---|---|
+| ccmixter | 74.6 -> **80.1** | 0.16 -> 0.22 | 59.4 -> **64.9** | 98.34 -> 98.44 | 0.29 (0.23) -> 0.20 (0.15) | 7 -> 10 | 80 / 120 -> 80 / 110 | 72.1 -> **77.0** | 0 -> 0 |
+| musdb | 78.4 -> **81.6** | 0.15 -> 0.30 | 70.5 -> **74.1** | 99.06 -> 99.12 | 0.61 (0.21) -> 0.58 (0.25) | 22 -> 19 | 80 / 230 -> 80 / 150 | 70.6 -> **81.2** | 0 -> 0 |
+| songs | 62.8 -> **70.1** | 0.13 -> 0.00 | 48.9 -> **55.4** | 98.07 -> 98.12 | 0.08 (0.08) -> 0.22 (0.22) | 1 -> 1 | 110 / 500 -> 110 / 210 | 50.0 -> **50.0** | 0 -> 0 |
+| vocadito | 96.4 -> **97.4** | 10.05 -> 4.75 | 92.7 -> **94.0** | 99.09 -> 99.10 | 0.17 (0.10) -> 0.17 (0.11) | 7 -> 6 | 70 / 100 -> 60 / 100 | 89.2 -> **90.6** | 12 -> 11 |
+| all | 79.2 -> **82.9** | 1.65 -> 0.94 | 68.3 -> **72.5** | 98.82 -> 98.87 | 0.42 (0.19) -> 0.38 (0.19) | 37 -> 36 | 80 / 120 -> 70 / 110 | 82.6 -> **86.2** | 12 -> 11 |
+
+**Onset delay, dev, all sets** (share of the reference onsets by the delay to the first event on the note, %)
+
+| tracker | condition | onsets | <= 50 ms | 50-75 | 75-100 | 100-150 | 150-250 | later or never | > 100 ms | p50 / p75 / p90 ms |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Stage 1 | clean | 553 | 9.0 | 42.3 | 32.9 | 9.9 | 0.7 | 5.1 | 15.7 | 70 / 90 / 120 |
+| Stage 1 | reverb RT60 0.8 s, -6 dB | 553 | 10.3 | 26.6 | 33.3 | 14.1 | 3.8 | 11.9 | 29.8 | 80 / 110 / 470 |
+| Stage 1 | bright EQ | 553 | 6.9 | 37.8 | 32.2 | 13.6 | 2.2 | 7.4 | 23.2 | 80 / 100 / 140 |
+| **final** | clean | 553 | 15.2 | 42.1 | 29.8 | 7.6 | 0.9 | 4.3 | 12.8 | 70 / 90 / 110 |
+| **final** | reverb RT60 0.8 s, -6 dB | 553 | 15.6 | 36.0 | 24.4 | 12.1 | 3.1 | 8.9 | 24.1 | 70 / 100 / 190 |
+| **final** | bright EQ | 553 | 13.0 | 40.0 | 30.4 | 9.4 | 1.6 | 5.6 | 16.6 | 70 / 90 / 120 |
+
+**Onset delay, heldout, all sets** (share of the reference onsets by the delay to the first event on the note, %)
+
+| tracker | condition | onsets | <= 50 ms | 50-75 | 75-100 | 100-150 | 150-250 | later or never | > 100 ms | p50 / p75 / p90 ms |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Stage 1 | clean | 442 | 13.6 | 35.5 | 33.5 | 9.7 | 2.5 | 5.2 | 17.4 | 80 / 90 / 120 |
+| Stage 1 | reverb RT60 0.8 s, -6 dB | 442 | 15.2 | 28.1 | 27.6 | 12.2 | 3.6 | 13.3 | 29.1 | 80 / 110 / 500 |
+| Stage 1 | bright EQ | 442 | 10.4 | 31.7 | 31.9 | 14.5 | 2.5 | 9.0 | 26.0 | 80 / 100 / 210 |
+| **final** | clean | 442 | 19.9 | 40.0 | 26.2 | 8.8 | 1.6 | 3.4 | 13.8 | 70 / 90 / 110 |
+| **final** | reverb RT60 0.8 s, -6 dB | 442 | 18.8 | 35.7 | 22.2 | 11.1 | 3.2 | 9.0 | 23.3 | 70 / 100 / 200 |
+| **final** | bright EQ | 442 | 17.0 | 36.2 | 27.8 | 10.9 | 1.6 | 6.6 | 19.1 | 70 / 90 / 120 |
+
+What this says:
+
+- **Every condition is ahead of Stage 1 in absolute RPA**, by 1.7 to 5.8 points on dev and 3.3
+  to 7.7 on held-out: the gains carry over to held-out (clean +4.2 points, the whole rig +7.7).
+- **Bright EQ**: the cost falls from 5.3 to 3.8 points on dev and from 7.3 to 5.4 on held-out.
+- **Reverb**: the cost relative to clean input falls by 1-2 points (RT60 0.8 s: 11.5 -> 9.7
+  dev, 14.5 -> 13.0 held-out), and false alarms by an eighth to a half (RT60 0.3 / 0.8 / 1.5 s:
+  4.2 -> 2.4, 11.1 -> 8.2, 17.4 -> 15.1 % dev). **This is not "within a few points"**: at RT60 0.8 s with
+  the wet part a quarter of the voice's energy, a new note is shown more than 100 ms after its
+  onset for 23-24 % of onsets (12.8-13.8 % without reverb), mostly where the last note's
+  tail is still as loud as the new note, and the marker lingers on the last note's pitch for
+  part of the tail (the right note when shown stays at 94-97 %). The setup checklist should
+  keep the mixer's reverb off (or low) on the feed to the computer (decision for the owner,
+  section 17).
+- **Octaves**: octave errors 0.47 -> 0.44 % dev and 0.42 -> 0.38 % held-out; octave jumps on a
+  held pitch 63 -> 70 dev (more frames shown), 37 -> 36 held-out.
+
+### 20.3 Onset delay against the 100 ms ceiling
+
+The tables above give the distribution: the share of onsets shown later than 100 ms falls
+from 15.7 to 12.8 % (dev) and from 17.4 to 13.8 % (held-out); with reverb RT60 0.8 s from
+29.8 to 24.1 % and 29.1 to 23.3 %. Where the rest comes from:
+
+- **The pipeline itself is 41.3 ms** (half the 42.7 ms window plus the two-hop look-ahead):
+  the event describing a moment exists 41.3 ms after it. On generated notes (a clean 10 ms
+  ramp onset) the first correct event comes 46 ms after the onset in the median and at most
+  72 ms (section 5 method; the same as Stage 1: the early start never fires there, because a
+  generated note's level keeps rising until the window is full). The rest of the time on real
+  voices is evidence: the window must hold enough of the note to be clear.
+- **The reference marks the first voiced 10 ms frame.** On the stems (pYIN + CREPE
+  reference) almost no onset (0-2.4 %) is shown within 50 ms (the reference voices the breathy start of
+  a note before it is periodic enough for a 43 ms window); on vocadito (hand-annotated) 21-30
+  % are. Vocadito onsets later than 100 ms: 11.1 % dev, 9.3 % held-out (13.2 / 10.7 %).
+- **Onsets shown on the note only after 250 ms, or never** (wrong note, or not voiced within
+  500 ms): 4.3 % dev, 3.4 % held-out (5.1 / 5.2 %).
+- A **one-frame look-ahead** for every event (pipeline 31.3 ms) was measured: onsets within
+  100 ms 89.3 % on dev, but generated onset errors 14-16 per rate (limit in the unit test:
+  12) and a mild-breath held part with 30 errors at 16 kHz; not taken. The guarded early start
+  keeps generated onset errors close to Stage 1 (6 / 6 / 6 / 12 against 3 / 6 / 6 / 9).
+
+**For the marker budget** (`docs/APP_API.md`): the tracker part is unchanged at 46 / 72 ms
+(median / max, generated), so the Stage 1 verifier's note still stands: with the batch wait,
+the frame and the trip to the web view, the worst case is about 105-110 ms. Real onsets add
+evidence time on top, as above.
+
+### 20.4 Generated voices, not singing, processor
+
+Full outputs: `s4/runs/synth-final.txt` and `s4/runs/synth-stage1.txt` (same generators, the
+Stage 1 settings), `s4/runs/bench-final.txt` (the Stage 0 bench on the final tracker).
+
+| measure | Stage 1 | final |
+|---|---|---|
+| whole notes, every semitone C2..C6 x 3 vowels: events > 50 c off at 16 / 44.1 / 48 / 96 kHz | 3 / 6 / 6 / 9 | 6 / 6 / 6 / 12 (all at onsets, none held) |
+| the same, mild breath (-20 dB) | 27 / 9 / 15 / 9 | 34 / 6 / 14 / 9 |
+| the same, breathy (-12 dB) | 448 / 256 / 283 / 244 | **379 / 205 / 173 / 138** (Stage 0: 165 / 126 / 133 / 47) |
+| rough voices, held events > 600 c off: 16 kHz 1 % / 6 % / -20 dB; 2 % / 10 %; 2 % / 10 % / -15 dB | 87; 18; 111 | **29; 6; 108** |
+| rough voices, 48 kHz 2 % / 10 % / -15 dB | 46 | **29** (all other rough rows 0 in both) |
+| legato steps (5 base notes x 10 intervals), change -> first event on the new note, max | 80 ms | 80 ms; events off both notes 1 / 9-10 / 10 (same) |
+| 10-minute not-singing probes per kind and rate (whispered speech, breath, fricatives, room noise; 40 x 15 s, -60..-6 dBFS) | whispered speech 10 events at 44.1 kHz, 7 at 96 kHz | **0 at every rate** |
+| 30 s probes per kind (silence, breath, speech-like noise, fricatives, room noise with hum, thumps, pops) | 0 | 0 |
+| shortest periodic burst shown, 65-150 Hz | 35-45 ms | 35-45 ms |
+| steady notes held part, max error / octave errors / voiced | 2.36 c / 0 / 100 % | 2.26 c / 0 / 100 % |
+| same answer vs 48 kHz (40 s melody), voicing differs / p95 / max | 3 of 4000 / 0.68 c / 28.8 c | 2 of 4000 / 0.66 c / 5.8 c (16 kHz) |
+| delay onset -> first correct event, median / max; marker off after the note, median / max | 46 / 72 ms; 67 / 80 ms | 46 / 72 ms; 66 / 76 ms |
+| music only (MUSDB accompaniment, nobody singing, 50 min): frames with a pitch | 6.89 % (Stage 0 4.9 %) | 6.98 % |
+| held-out sung frames below 160 Hz shown, stems (ccMixter / MUSDB / test songs) | 44.5 / 44.3 / 47.7 % (section 19) | 50.3 / 49.8 / 51.7 % (`s4/runs/bands-heldout-final.txt`) |
+
+The breathy rows are still worse than Stage 0 at 16-96 kHz: the generator's breath goes
+through formant filters 60 Hz wide and rings on the subharmonic of the highest "ee" / "oo"
+notes (C#5-B5); the harmonic check removes the cases where the higher candidate exists, not
+the frames where breath alone makes the octave below look periodic. The 16 kHz rows carry
+more breath in band than the others (section 19, item 6).
+
+**Processor** (`tracker_bench cpu`, best of 5, this PC idle): 1.14 / 2.07 / 2.13 / 4.06 ms per
+second of audio at 16 / 44.1 / 48 / 96 kHz (Stage 1: 0.89 / 1.66 / 1.72 / 3.32), 22 us per
+analysis at 48 kHz, 0.21 % of one core. The extra is the third inverse FFT (the suppressed
+NSDF). MacBook Air M1 estimate (x2-3, section 8): 4.3-6.5 ms per second of audio. No
+allocation per block (`tests/tracker_alloc.rs`), same answer at every sample rate (above),
+the delay of the pipeline itself 41.3 ms.
+
+### 20.5 Tried and dropped (dev)
+
+Each measured on dev with the other changes in place (`s4/log*.txt`; RPA / voicing recall /
+false alarms on clean input unless stated):
+
+- **Freshness tail** (a frame is a tail when less than a share of its power is more than a room
+  could carry over from the same bin 50 ms earlier): rev15 false alarms 18.0 -> 16.4-13.9 % for
+  0.1-2.6 points of clean voicing recall, a worse trade than the level rule; the generated
+  room's per-bin power fluctuates too much frame to frame (as real rooms do).
+- **Keep only while the suppressed NSDF stays periodic** (0.3-0.6): false alarms rev15 18.0 ->
+  15.1 % at 0.6 for 1.3 points of clean voicing recall; little gain.
+- **The suppressed spectrum for pitch and candidates too** (20.1, change 1): -6 points of RPA.
+- **Lower start thresholds**: confident start at 0.90 (+1.2 points clean, +2.4 under RT60 0.8 s,
+  but octave jumps 70 -> 99 and onset flashes doubled); steady start at 0.75 (+0.5 points, but
+  generated onset errors 6 -> 12 per rate); keep at 0.70 (+1.1 points, false alarms up).
+- **Steady starts below 160 Hz** (`steady_min_hz` 120 / 90): +0.6 / +0.9 points of dev frames
+  below 160 Hz, music alone voiced 7.9 -> 8.0 / 8.7 %; and a formant-band (1-5 kHz)
+  periodicity to allow low steady starts or block bass-like ones: no gain (low frames 82.1 ->
+  81.3 % dev).
+- **Early start from the older pair only** (decided frame and the next, before the guards
+  existed): onsets within 100 ms 87.0 % instead of 88.8 %, and still 20-22 generated onset
+  errors per rate.
+
+### 20.6 Unit tests
+
+No test was loosened. `cargo test --release -p jk-pitch` (the repository workspace, with the
+other workstreams' code): 67 library tests, 4 `echo_alloc`, 1 `practice_alloc`, 3
+`tracker_alloc`, all pass; the 18 tracker tests and 3 allocation tests also pass in the
+private tracker-only build. The early start's 160 Hz floor exists because
+`short_low_bursts_are_not_notes` failed without it (a 25 ms burst at 155 Hz became a note at
+16 kHz). `cargo clippy --all-targets` reports nothing in the tracker files;
+`cargo check -p jk-pitch --all-targets --target aarch64-apple-darwin` passes.
+
+### 20.7 Decisions, and what is still open
+
+Decisions (for DECISIONS.md, by the coordinator):
+
+- Live tracker = Stage 1 + late-reverberation suppression for clarity only + 3.5 kHz analysis
+  low-pass + harmonic evidence for subharmonic candidates + harmonic steady starts + guarded
+  early start + level-based reverb-tail rule; pipeline delay unchanged (41.3 ms); 2.1 ms per
+  second of audio at 48 kHz.
+- `tracker_eval --delays` reports the onset-delay distribution; the 100 ms share is part of
+  the acceptance numbers from now on.
+
+Open:
+
+- **Reverb is not "within a few points"** (RPA cost 4-18 points by room and split, onsets later
+  than 100 ms for about a quarter of notes at RT60 0.8 s). Recommendation for the owner's
+  checklist: mixer reverb off or low on the USB feed while practising. A stronger fix would
+  need a longer look at the past (a proper late-reverberation estimate per bin over several
+  hundred ms, or a learned model) and was not attempted here.
+- **Real onsets later than 100 ms: 12.8-13.8 %** (vocadito 9-11 %). Part of it is the reference
+  marking breathy starts voiced; the tracker's own share is the 41.3 ms pipeline plus the
+  window fill.
+- **Low voices on processed stems** are shown about half the time (50-52 %), vocadito 86 %.
+- **Breathy generated "ee" / "oo" above C5** still drop an octave or a twelfth more often than
+  with Stage 0 (above).
+- **Music alone** is voiced on 7.0 % of frames (Stage 0 4.9 %); keeping the marker off with
+  music in the input stays the echo stage's job.
+
+### 20.8 How to reproduce
+
+```sh
+cd jukeoke && source scripts/devenv.sh
+export CARGO_TARGET_DIR="$JK_BUILD/target-wo2-tracker"
+cargo test --release -p jk-pitch
+E="cargo run --release -p jk-pitch --example"
+ALL=clean,rev03,rev08,rev15,rev15wet0,comp,comp_heavy,eq_bright,eq_warm,prox,pops,rig,r16k,r48k,r96k
+$E tracker_eval -- --split dev --cond $ALL --delays --tsv final-dev.tsv
+$E tracker_eval -- --split dev --cond $ALL --delays $(cat $JK_BUILD/practice-tracker/s4/stage1-set.txt) --tsv stage1-dev.tsv
+$E tracker_eval -- --split heldout --cond $ALL --delays --tsv final-heldout.tsv
+$E tracker_eval -- --manifest $JK_BUILD/practice-tracker/s3/music/manifest.tsv --split all   # music only
+$E tracker_synth                     # whole notes, rough voices, legato, 10-minute noise probes
+$E tracker_bench                     # sections 2-8 tables on the current tracker
+```
+
+`../jukeoke-build/practice-tracker/s4/report.py` writes the tables of 20.2 from the TSV files
+in `s4/runs/`; `s4/try.sh NAME --set k=v ...` is the dev loop used for every setting (dev
+clean, three reverbs, bright EQ, music only, generated whole notes); `s3/music.py` made the
+music-only set (MUSDB18-HQ accompaniment, local only).
+
+## 21. Independent verification of the robustness work (2026-11-19)
+
+A verifier re-ran the robustness work from the same tree, with its own target directory
+(`$JK_BUILD/target-wo2-trackerverify`). Evidence is in `../jukeoke-build/practice-tracker/verify-s4/`:
+`v-*.txt` (the re-runs), `probe/` (a small crate that probes level changes and whispers
+with fresh seeds), `levels-probe.txt` and `whisper-fresh-seeds.txt`.
+
+**Reproduced** (identical to the digit unless noted):
+
+- `cargo test --release -p jk-pitch`: 67 library tests, 4 `echo_alloc`, 1 `practice_alloc`
+  and 3 `tracker_alloc`, all pass. In a debug build, `cargo test -p jk-pitch --lib tracker`
+  passes (19 tests). `cargo test --release -p jk-engine --test rt_alloc` passes, and
+  `rustfmt --check` on the tracker files is clean.
+- `tracker_eval --split dev --cond clean,rev08,eq_bright --delays`, run once with the final
+  defaults and once with `s4/stage1-set.txt`, then `--split heldout --cond clean,rev08 --delays`
+  with the final defaults: every **all** row and every onset-delay row in 20.2 and 20.3 matches.
+  The Stage 1 settings reproduce section 13 (dev, clean: RPA 82.9, VR 89.6, VFA 1.36,
+  63 flips, 84.3 % of onsets within 100 ms).
+- `tracker_synth` with the final defaults matches `s4/runs/synth-final.txt`, including 0
+  pitched events in every 10-minute probe. `tracker_bench` gives a delay of 46 / 72 ms, a
+  release of 66 / 76 ms, a same-answer maximum of 5.75 cents and 2.14 ms per second of audio
+  at 48 kHz. Music only: 6.98 % (6.89 % with the Stage 1 settings). Held-out low band (`s4/bands.py`
+  on both trackers' events): 44.5 / 44.3 / 47.7 % with Stage 1, 50.3 / 49.8 / 51.7 % final.
+- Ablation (each change switched off on its own; RPA %, with dev / held-out in each cell). The
+  held-out runs are for verification only, and nothing was tuned on them. Every change moves
+  held-out in the same direction as dev:
+
+| switched off | clean | RT60 0.8 s | bright EQ | held-out false alarms, clean / RT60 0.8 s |
+|---|---|---|---|---|
+| nothing (final) | 85.0 / 72.5 | 75.3 / 59.5 | 81.2 / 67.0 | 0.94 / 6.17 % |
+| late-reverberation suppression | 83.0 / 68.9 | 71.4 / 54.0 | 78.3 / 62.3 | 0.83 / 6.01 % |
+| early start | 83.9 / 71.0 | 74.1 / 58.1 | 79.9 / 65.3 | 0.91 / 6.11 % |
+| reverb-tail rule | 85.9 / 73.3 | 75.8 / 59.9 | 82.0 / 67.8 | 1.83 / 8.17 % |
+| harmonic check | 85.0 / 72.5 | 75.3 / 59.6 | 81.2 / 67.1 | 0.95 / 6.20 % |
+| harmonic steady start | 85.3 / 72.6 | 75.6 / 59.8 | 81.5 / 67.1 | 0.99 / 6.42 % |
+| 3.5 kHz low-pass (back to 4 kHz) | 84.6 / 72.0 | 74.8 / 58.9 | 80.5 / 66.2 | 0.90 / 5.91 % |
+
+**Corrected:** `s4/runs/synth-stage1.txt` had been run with the harmonic check on
+(`odd_cost: 0.3` in its settings line; breathy 367 / 202 / 173 / 165), not with the Stage 1
+settings the text gives. It has been replaced with a re-run using `s4/stage1-set.txt`: breathy
+448 / 256 / 283 / 244, rough 87 / 18 / 111 and 46, whispered speech 10 / 7. These are the
+numbers given in 20.4, which were right. The old file is kept as
+`synth-stage1-oddcost-on.txt`.
+
+**Found:**
+
+1. **Whispers with fresh seeds.** The probe ran 120 x 15 s of `speech_noise` per rate, with
+   seeds and levels (-36..-3 dBFS) that `tracker_synth` does not use. The final tracker gave
+   0 / 3 / 6 / 4 pitched events at 16 / 44.1 / 48 / 96 kHz, in runs of 3-4 events at
+   294-308 Hz. The Stage 1 settings gave 12 / 17 / 0 / 6. That is better overall, but not 0,
+   and worse at 48 kHz. With `derev_rt60_s=0` every rate gives 0: the clarity measured on
+   the suppressed spectrum lifts a few whispered frames over the confident start, even with
+   `derev_per_min`. Raising `derev_per_min` to 0.16 is not a free fix: it costs 0.7 points of
+   dev RPA on clean input and 1.7 under RT60 0.8 s. Breath with fresh seeds gives 0 at every
+   rate.
+2. **The tail rule cuts dry fades.** A dry held note fading at 45 / 60 / 100 dB/s is shown
+   for only 83 / 77 / 71 % of the time until it is 24 dB down. It is still above -36 dBFS
+   there, far above the level gate, and the gaps last up to 100 ms. With `tail_drop_db=0`, or
+   with the Stage 1 settings, it is shown 100 % of the time. These cases are unaffected
+   (at least 99.5 % shown, gaps of 20 ms at most): fades at 15-30 dB/s, a sudden 12-26 dB
+   drop on the same pitch, and legato steps of 1, 2 or 5 semitones up or down to a note
+   20 dB quieter. So the clean-input loss in 20.1 item 6 comes from more than the stems'
+   own reverb: on any fast release, the marker loses the last ~100 ms. The scorer excuses
+   moments without a pitch while the singer makes sound (at least -50 dBFS, up to a quarter
+   of the note), so the cost to the grade should be small. The visible effect is that the
+   marker ends early.
+3. **The tail rule lowers RPA in every condition, reverb included** (table above). What it
+   buys is fewer false alarms. About 0.4 of the points that the reverb "cost" improves by in
+   20.2 come from the clean figure falling, not from reverb getting better, so read the
+   absolute RPA rows there.
+4. 20.1 item 3: a ratio of 3 gives 131 breathy events at 48 kHz and 47 octave jumps under
+   RT60 0.8 s; a ratio of 4 gives 112 and 58 (the text says 122-131 and 47-49). The ratio
+   tries are not in `s4/log*.txt`. The choice of 2 stands.
+5. No unit test exercises the tail rule, the early start, the harmonic check or the
+   suppression directly. They run inside the existing tests only because they are on by
+   default.

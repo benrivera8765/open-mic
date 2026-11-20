@@ -18,6 +18,8 @@
 //! - `--set field=value` (repeatable): a `TrackerConfig` override, for exploration.
 //! - `--events DIR`: write each clip's events as CSV.
 //! - `--clips`: one line per clip as well.
+//! - `--delays`: the distribution of the onset delays as well (share of onsets per delay
+//!   band, against WO2's 100 ms ceiling; "later" includes onsets never shown on the note).
 //! - `--tsv PATH`: the tables as tab-separated values.
 //! - `--manifest PATH`; `--only TEXT` keeps the clips whose id contains TEXT.
 //!
@@ -357,9 +359,8 @@ fn score(ev: &[PitchEvent], rate: u32, r: &[RefFrame], seconds: f64) -> Stats {
     // Octave jumps inside voiced runs.
     for k in 1..r.len() {
         if let (Some(Some(a)), Some(Some(b))) = (at[k - 1], at[k]) {
-            let ref_holds = r[k - 1].flag == 1
-                && r[k].flag == 1
-                && cents(r[k].f0, r[k - 1].f0).abs() < 300.0;
+            let ref_holds =
+                r[k - 1].flag == 1 && r[k].flag == 1 && cents(r[k].f0, r[k - 1].f0).abs() < 300.0;
             if cents(b, a).abs() >= 600.0 && ref_holds {
                 s.flips += 1;
             }
@@ -412,7 +413,6 @@ fn score(ev: &[PitchEvent], rate: u32, r: &[RefFrame], seconds: f64) -> Stats {
     s
 }
 
-
 fn row(name: &str, s: &Stats) -> String {
     format!(
         "| {name} | {} | {:.1} | {:.1} | {:.2} | {:.1} | {:.2} | {:.2} ({:.2} high) | {:.2} | {} | {} | {:.0} / {:.0} | {:.1} | {} ({}) |",
@@ -435,12 +435,34 @@ fn row(name: &str, s: &Stats) -> String {
     )
 }
 
+/// One row of the onset-delay distribution: share of onsets per delay band (ms).
+fn delay_row(name: &str, s: &Stats) -> String {
+    let n = s.delays_ms.len().max(1) as f64;
+    let share = |lo: f64, hi: f64| {
+        100.0 * s.delays_ms.iter().filter(|&&d| d > lo && d <= hi).count() as f64 / n
+    };
+    format!(
+        "| {name} | {} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.0} / {:.0} / {:.0} |",
+        s.delays_ms.len(),
+        share(f64::NEG_INFINITY, 50.0),
+        share(50.0, 75.0),
+        share(75.0, 100.0),
+        share(100.0, 150.0),
+        share(150.0, 250.0),
+        share(250.0, f64::INFINITY),
+        quantile(&s.delays_ms, 0.5),
+        quantile(&s.delays_ms, 0.75),
+        quantile(&s.delays_ms, 0.9),
+    )
+}
+
 fn main() {
     let mut split = "dev".to_string();
     let mut conds = vec!["clean".to_string()];
     let mut cfg = TrackerConfig::default();
     let mut events_dir: Option<PathBuf> = None;
     let mut per_clip = false;
+    let mut delays = false;
     let mut tsv_out: Option<PathBuf> = None;
     let mut manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../jukeoke-build/practice-tracker/eval/manifest.tsv");
@@ -453,6 +475,7 @@ fn main() {
             "--set" => set_field(&mut cfg, &args.next().unwrap()),
             "--events" => events_dir = Some(args.next().unwrap().into()),
             "--clips" => per_clip = true,
+            "--delays" => delays = true,
             "--tsv" => tsv_out = Some(args.next().unwrap().into()),
             "--manifest" => manifest = args.next().unwrap().into(),
             "--only" => only = Some(args.next().unwrap()),
@@ -482,9 +505,9 @@ fn main() {
                         let c = &clips[i];
                         let x = read_f32(&c.clip);
                         let seconds = x.len() as f64 / f64::from(c.rate);
-                        let seed = c.id.bytes().fold(7u64, |h, b| {
-                            h.wrapping_mul(31).wrapping_add(u64::from(b))
-                        });
+                        let seed =
+                            c.id.bytes()
+                                .fold(7u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)));
                         let (y, rate) = condition(cond, x, c.rate, seed);
                         let ev = track(rate, &cfg, &y);
                         if let Some(dir) = &events_dir {
@@ -526,6 +549,17 @@ fn main() {
             println!("{}", row(ds, s));
         }
         println!("{}", row("**all**", &total));
+        if delays {
+            println!(
+                "\nonset delay, split {split}, condition {cond} (share of onsets, %)\n\n\
+                 | set | onsets | <= 50 ms | 50-75 | 75-100 | 100-150 | 150-250 | later or never \
+                 | p50 / p75 / p90 ms |\n|---|---|---|---|---|---|---|---|---|"
+            );
+            for (ds, s) in &by_ds {
+                println!("{}", delay_row(ds, s));
+            }
+            println!("{}", delay_row("**all**", &total));
+        }
         let mut m = BTreeMap::new();
         for (ds, s) in by_ds {
             m.insert(ds, s);

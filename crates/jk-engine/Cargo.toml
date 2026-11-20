@@ -25,6 +25,10 @@ crc32fast = "1.5.5"
 
 [dev-dependencies]
 hound = "3.5"
+# examples/tap_loopback.rs only (practice mode's output tap, proven end to end on a real
+# device: the engine's tap + the recorder's loopback capture + the echo canceller).
+jk-pitch = { path = "../jk-pitch" }
+jk-recorder = { path = "../jk-recorder" }
 
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.27"

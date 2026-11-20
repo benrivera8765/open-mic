@@ -19,6 +19,8 @@
 //! output resampler runs too) and counts, per phase, from the steady state on: plain
 //! play, key changes, seeks (also at a shifted key), mixer and master changes, pause
 //! and resume, a song change while playing; then the prerender key mode (cache feeds).
+//! The output tap (practice mode's echo reference, src/tap.rs) is attached and read by an
+//! analysis thread for one phase (with a seek and master changes) and then detached.
 //! Every phase must show 0 allocations and 0 frees on the worker and on the device
 //! thread. The start of each thread (its own buffers, thread priority name) is outside
 //! the counted window: that is set-up, not the real-time loop.
@@ -326,6 +328,45 @@ fn run_realtime_phases(engine: &Engine, song_a: &PathBuf, song_b: &PathBuf) -> V
     let mut ph = Phases::start();
     sleep_ms(2000);
     ph.end("play, key 0 (2 s)");
+
+    // Output tap (practice mode, src/tap.rs): attach a reader (the first call allocates the
+    // ring, here on the control thread), read it on an analysis thread while the song
+    // plays, seeks and the master volume changes (at or under -60 dB, for the real-device
+    // run); then detach. The device callback copies into the tap only while attached.
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let tap_reader = {
+        let mut r = engine.output_tap();
+        let stop = stop.clone();
+        std::thread::Builder::new()
+            .name("jk-practice-test".into())
+            .spawn(move || {
+                let mut buf = vec![0.0f32; 2 * 1024];
+                let mut frames = 0u64;
+                while !stop.load(Relaxed) {
+                    while let Some(p) = r.read(&mut buf) {
+                        frames += p.frames as u64;
+                    }
+                    sleep_ms(5);
+                }
+                (frames, r.lost())
+            })
+            .unwrap()
+    };
+    sleep_ms(1000);
+    engine.seek(8.0);
+    sleep_ms(400);
+    let m = if engine.snapshot().device.as_ref().is_some_and(|d| d.name.contains("null device")) { 0.3 } else { 0.001 };
+    engine.set_master(m);
+    sleep_ms(200);
+    engine.set_master(0.0);
+    sleep_ms(400);
+    ph.end("output tap read (2 s, seek, 2 master)");
+    stop.store(true, Relaxed);
+    let (tap_frames, tap_lost) = tap_reader.join().unwrap();
+    println!("   output tap: {tap_frames} frames read on the analysis thread, {tap_lost} lost");
+    assert!(tap_frames > 20_000 && tap_lost == 0, "output tap: {tap_frames} frames read, {tap_lost} lost");
+    sleep_ms(300);
+    ph.end("output tap detached (0.3 s)");
 
     let mut p = params(0);
     // Every key from -12 to +12 (each pitch ratio sets up Rubber Band's resampler for
