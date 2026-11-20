@@ -260,6 +260,11 @@ impl Pbfdaf {
         self.frozen = frozen;
     }
 
+    /// Whether the learning filter is held (diagnostics).
+    pub(crate) fn is_frozen(&self) -> bool {
+        self.frozen
+    }
+
     /// Times the foreground took the background's weights.
     pub(crate) fn updates(&self) -> u32 {
         self.updates

@@ -65,6 +65,27 @@ const TAPER_S: f64 = 0.032;
 /// about a second and declared a vanished return present again for 3 s. A return switched
 /// back on is found by the short averages in under a second anyway.
 const LONG_HOPS_AFTER_FORGET: u32 = 24;
+/// A detection this strong (peak-to-floor ratio of the average that found it) is believed
+/// at once. Returned music with nobody singing is found at 24 or more (USB and cable, -40
+/// to 0 dB, 8 songs; docs/benchmarks/practice-echo.md section 13).
+const Z_SURE: f32 = 24.0;
+/// A weaker detection is a candidate until the short correlation has stood out at its lag
+/// (within [`CAND_TRACK_S`], peak-to-floor at least [`Z_HOLD`]) in [`CAND_HOPS`] of the
+/// last [`CAND_SPAN`] hops (about 3 s of 4); it is dropped after [`CAND_MAX`] hops without.
+/// A singer holding a note in tune with a note of the music makes a peak that lasts about
+/// as long as the note (measured: false "present" on 2 of 8 songs with only a singer, one
+/// of them for 93 s of a 4-minute song); a returned song stays at its delay for good.
+const Z_HOLD: f32 = 6.0;
+const CAND_HOPS: u32 = 24;
+const CAND_SPAN: u32 = 32;
+const CAND_MAX: u32 = 48;
+/// How far the candidate's lag may move from hop to hop and still be the same echo
+/// (a Bluetooth delay wanders by a few milliseconds a second), seconds.
+const CAND_TRACK_S: f64 = 0.003;
+/// A detection within this of a delay already confirmed in this session is believed at
+/// once (the same return found again after the loopback was switched back on, or after a
+/// filter restart), seconds.
+const CONFIRMED_TOL_S: f64 = 0.002;
 
 /// One second-order section (direct form I, f64 state).
 #[derive(Clone, Copy, Debug, Default)]
@@ -134,9 +155,36 @@ pub(crate) struct Fit {
     pub max_s: f64,
     /// Time between the oldest and the newest measurement used, seconds.
     pub span_s: f64,
-    /// Measurements used.
+    /// Measurements used (on the line).
     pub n: usize,
+    /// Measurements in the window, on the line or not.
+    pub total: usize,
+    /// Of those off the line, the most that agree with each other (within
+    /// [`CLUSTER_S`]): a second delay the echo jumped to, rather than scattered false peaks.
+    pub cluster2: usize,
 }
+
+impl Fit {
+    /// Whether the delay wanders: the measurements on the line spread by more than
+    /// `wander_s` (RMS), or the delay jumped (a second group of measurements that agree with
+    /// each other off the line, or fewer than half of them on it). Peaks that land
+    /// anywhere off the line (a singer holding a note in tune with the music, under a weak
+    /// return) neither move the line nor make it wander: measured, six fixed-delay USB
+    /// returns 30-40 dB under a singer were called "wandering" when the spread of every
+    /// measurement was used (docs/benchmarks/practice-echo.md section 13).
+    pub fn wanders(&self, wander_s: f64) -> bool {
+        self.rms_s > wander_s
+            || (self.total >= 10 && (2 * self.n < self.total || (self.cluster2 >= 5 && 5 * self.cluster2 >= self.total)))
+    }
+}
+
+/// Measurements off the line that agree within this (seconds) form a second delay.
+const CLUSTER_S: f64 = 0.001;
+/// The line is first fitted to the measurements within this (seconds) of the densest
+/// group, so that up to half of them can be false peaks anywhere else.
+const BAND_S: f64 = 0.0025;
+/// Measurements kept per fit (the histories hold at most this many).
+const FIT_MAX: usize = 256;
 
 /// What the detector knows after its latest hop.
 #[derive(Clone, Copy, Debug)]
@@ -163,6 +211,9 @@ pub(crate) struct DetectState {
     pub music_s: f64,
     /// Input time (seconds since the first sample) at the centre of the latest analysis frame.
     pub time_s: f64,
+    /// Whether the fast or the short correlation stood out (peak-to-floor at least
+    /// [`Z_HOLD`]) within 0.5 ms of the delay given to [`Detector::watch`] at the latest hop.
+    pub watch_held: bool,
 }
 
 /// Thresholds of the decision (see `EchoConfig`).
@@ -254,6 +305,18 @@ pub(crate) struct Detector {
     /// (as measured in docs/benchmarks/practice-echo.md), [`LONG_HOPS_AFTER_FORGET`] after
     /// [`Detector::forget_echo`].
     long_min_hops: u32,
+    /// A detection not yet believed (see [`Z_SURE`]): its lag (fractional, decimated
+    /// samples), hops since it appeared, and which of the last [`CAND_SPAN`] hops saw the
+    /// short correlation stand out there (a bit ring, newest in bit 0).
+    cand: Option<f64>,
+    cand_hops: u32,
+    cand_bits: u64,
+    /// The latest delay confirmed in this session (decimated samples).
+    confirmed: Option<f64>,
+    /// Floor of the latest correlation computed by `gcc`.
+    last_floor: f32,
+    /// A delay the canceller asked about (decimated samples, see [`Detector::watch`]).
+    watch: Option<f64>,
     // Full-band powers, accumulated between hops, then averaged over the long time.
     acc_r: f64,
     acc_x: f64,
@@ -372,6 +435,12 @@ impl Detector {
             low_hops: 0,
             probation: false,
             long_min_hops: 8,
+            cand: None,
+            cand_hops: 0,
+            cand_bits: 0,
+            confirmed: None,
+            last_floor: 0.0,
+            watch: None,
             acc_r: 0.0,
             acc_x: 0.0,
             acc_n: 0,
@@ -393,6 +462,7 @@ impl Detector {
                 in_ms: 0.0,
                 music_s: 0.0,
                 time_s: 0.0,
+                watch_held: false,
             },
         }
     }
@@ -441,6 +511,10 @@ impl Detector {
         self.low_hops = 0;
         self.probation = false;
         self.long_min_hops = 8;
+        self.cand = None;
+        self.cand_hops = 0;
+        self.cand_bits = 0;
+        self.confirmed = None;
         self.acc_r = 0.0;
         self.acc_x = 0.0;
         self.acc_n = 0;
@@ -459,7 +533,9 @@ impl Detector {
             in_ms: 0.0,
             music_s: 0.0,
             time_s: 0.0,
+            watch_held: false,
         };
+        self.watch = None;
     }
 
     /// The canceller found the returned playback gone (the mixer's loopback switched off),
@@ -510,6 +586,9 @@ impl Detector {
         self.hist_pos = 0;
         self.probation = keep_present && self.state.presence == Presence::Present;
         self.long_min_hops = LONG_HOPS_AFTER_FORGET;
+        self.cand = None;
+        self.cand_hops = 0;
+        self.cand_bits = 0;
         if !self.probation {
             self.state.presence = Presence::Absent;
         }
@@ -668,7 +747,14 @@ impl Detector {
             self.prr_l[k] += a_l * (pr - self.prr_l[k]);
         }
         let (_, f_f, z_f) = self.gcc(0);
+        // The fast correlation is in `corr`: a wandering delay (Bluetooth) smears the
+        // short one, so the candidate counts as standing out in either.
+        let fast_held = self.cand_stands_out();
+        let watch_fast = self.watch_stands_out();
         let (m_s, f_s, z_s) = self.gcc(1);
+        self.state.watch_held = watch_fast || self.watch_stands_out();
+        // The short correlation is in `corr` now: does it stand out at the candidate's lag?
+        self.probe_candidate(fast_held);
         let (m_l, f_l, z_l) = self.gcc(2);
         self.state.z_fast = z_f;
         self.state.z_short = z_s;
@@ -755,6 +841,7 @@ impl Detector {
             0.0
         };
         let z = if floor > 1e-30 { peak / floor } else { 0.0 };
+        self.last_floor = floor;
         let mut frac = best as f64;
         if best > 0 && best < self.lmax {
             let (ym, y0, yp) = (
@@ -856,6 +943,115 @@ impl Detector {
         )
     }
 
+    /// During a candidate's probation, after the short correlation was computed into
+    /// `corr`: whether it stands out near the candidate's lag this hop (and follow the lag
+    /// to where it stands out most, for a delay that wanders).
+    /// Ask, from the next hop on, whether the correlation still stands out at the delay
+    /// `delay_s` (where the canceller has the echo): a peak elsewhere is then a false peak,
+    /// not a jump of the delay (see [`DetectState::watch_held`]). `None` stops asking.
+    pub(crate) fn watch(&mut self, delay_s: Option<f64>) {
+        self.watch = delay_s.map(|d| d * self.fd);
+    }
+
+    /// Whether the correlation in `corr` stands out within 0.5 ms of the watched delay.
+    fn watch_stands_out(&self) -> bool {
+        let Some(c) = self.watch else { return false };
+        let w = (0.0005 * self.fd).ceil() as usize;
+        let ci = (c.round().max(0.0) as usize).min(self.lmax);
+        let (lo, hi) = (ci.saturating_sub(w), (ci + w).min(self.lmax));
+        let peak = self.corr[lo..=hi].iter().fold(0.0f32, |a, v| a.max(v.abs()));
+        self.last_floor > 1e-30 && peak >= Z_HOLD * self.last_floor
+    }
+
+    /// Whether the correlation in `corr` stands out near the candidate's lag.
+    fn cand_stands_out(&self) -> bool {
+        let Some(c) = self.cand else { return false };
+        let w = (CAND_TRACK_S * self.fd).ceil() as usize;
+        let ci = (c.round().max(0.0) as usize).min(self.lmax);
+        let (lo, hi) = (ci.saturating_sub(w), (ci + w).min(self.lmax));
+        let peak = self.corr[lo..=hi].iter().fold(0.0f32, |a, v| a.max(v.abs()));
+        self.last_floor > 1e-30 && peak >= Z_HOLD * self.last_floor
+    }
+
+    fn probe_candidate(&mut self, fast_held: bool) {
+        let Some(c) = self.cand else { return };
+        let w = (CAND_TRACK_S * self.fd).ceil() as usize;
+        let ci = (c.round().max(0.0) as usize).min(self.lmax);
+        let (lo, hi) = (ci.saturating_sub(w), (ci + w).min(self.lmax));
+        let (mut best, mut peak) = (ci, 0.0f32);
+        for (m, v) in self.corr.iter().enumerate().take(hi + 1).skip(lo) {
+            if v.abs() > peak {
+                peak = v.abs();
+                best = m;
+            }
+        }
+        let held = fast_held || (self.last_floor > 1e-30 && peak >= Z_HOLD * self.last_floor);
+        self.cand_bits = (self.cand_bits << 1) | u64::from(held);
+        self.cand_hops += 1;
+        if held {
+            self.cand = Some(best as f64);
+        }
+    }
+
+    /// Whether a detection `hit` (peak-to-floor ratio, lag) is believed now: at once when
+    /// it is strong or at a delay confirmed before, else after the candidate's probation.
+    fn confirm(&mut self, hit: Option<(f32, f64)>) -> bool {
+        let tol = CONFIRMED_TOL_S * self.fd;
+        if let Some((z, lag)) = hit {
+            if z >= Z_SURE || self.confirmed.is_some_and(|c| (c - lag).abs() <= tol) {
+                return self.accept(lag);
+            }
+            let track = CAND_TRACK_S * self.fd;
+            if self.cand.is_none_or(|c| (c - lag).abs() > track) && (self.cand_bits & 0xF) == 0 {
+                // A new candidate (the old one, if any, has not stood out in the last four
+                // hops: a Bluetooth delay that jumped, or a passing coincidence).
+                self.cand = Some(lag);
+                self.cand_hops = 0;
+                self.cand_bits = 0;
+            }
+        }
+        if let Some(c) = self.cand {
+            if self.cand_held() >= CAND_HOPS {
+                return self.accept(c);
+            }
+            if self.cand_hops >= CAND_MAX {
+                self.cand = None;
+                self.cand_hops = 0;
+                self.cand_bits = 0;
+            }
+        }
+        false
+    }
+
+    /// Diagnostics: the candidate's lag (ms) and the hops it stood out in, of the last
+    /// [`CAND_SPAN`], and of all since it appeared.
+    pub(crate) fn candidate(&self) -> Option<(f64, u32, u32)> {
+        self.cand.map(|c| (c / self.fd * 1e3, self.cand_held(), self.cand_hops))
+    }
+
+    /// A candidate is on probation and stood out in at least one of the last eight hops
+    /// (about a second): the playback may be coming back, so "absent" must wait, and the
+    /// canceller treats the input as unknown rather than clean meanwhile. Measured without
+    /// this on held-out songs: a Bluetooth return as loud as the music was declared absent
+    /// 3 s into its probation and 12 % of the frames showed the returned music as pitch
+    /// with nobody singing.
+    pub(crate) fn pending(&self) -> bool {
+        self.cand.is_some() && (self.cand_bits & 0xFF) != 0
+    }
+
+    /// Hops of the last [`CAND_SPAN`] in which the candidate stood out.
+    fn cand_held(&self) -> u32 {
+        (self.cand_bits & ((1u64 << CAND_SPAN) - 1)).count_ones()
+    }
+
+    fn accept(&mut self, lag: f64) -> bool {
+        self.confirmed = Some(lag);
+        self.cand = None;
+        self.cand_hops = 0;
+        self.cand_bits = 0;
+        true
+    }
+
     /// Whether at least [`STAB_MIN`] of the last [`STAB_HOPS`] peak lags were confident and
     /// those lay within [`STAB_TOL_S`] of each other. Hops where the music correlates too
     /// little to say (sparse music, a weak return under a codec) do not count against it.
@@ -874,11 +1070,32 @@ impl Detector {
         let th = self.th;
         let (z_s, z_l) = (self.state.z_short, self.state.z_long);
         let z_f = self.state.z_fast;
-        let found = (self.music_hops >= 3 && z_s >= th.z_on && self.steady(&self.lags_s))
-            || (self.music_hops >= self.long_min_hops
+        let newest = (self.lag_pos + STAB_HOPS - 1) % STAB_HOPS;
+        // Which average found it (its lag and peak-to-floor ratio), strongest first.
+        let mut hit: Option<(f32, f64)> = None;
+        let mut consider = |ok: bool, z: f32, lag: f64| {
+            if ok && !lag.is_nan() && hit.is_none_or(|h| z > h.0) {
+                hit = Some((z, lag));
+            }
+        };
+        consider(
+            self.music_hops >= 3 && z_s >= th.z_on && self.steady(&self.lags_s),
+            z_s,
+            self.lags_s[newest],
+        );
+        consider(
+            self.music_hops >= self.long_min_hops
                 && z_l >= th.z_on_long
-                && self.steady(&self.lags_l))
-            || (self.music_hops >= 3 && z_f >= th.z_on_fast && self.steady(&self.lags_f));
+                && self.steady(&self.lags_l),
+            z_l,
+            self.lags_l[newest],
+        );
+        consider(
+            self.music_hops >= 3 && z_f >= th.z_on_fast && self.steady(&self.lags_f),
+            z_f,
+            self.lags_f[newest],
+        );
+        let found = self.confirm(hit);
         match self.state.presence {
             Presence::Searching | Presence::Absent => {
                 if found {
@@ -889,6 +1106,7 @@ impl Detector {
                     && z_l < th.z_on_long
                     && z_s < th.z_on
                     && z_f < th.z_on_fast
+                    && !self.pending()
                 {
                     self.state.presence = Presence::Absent;
                 }
@@ -921,26 +1139,46 @@ impl Detector {
 }
 
 /// Least-squares line through delay measurements `d` (seconds) taken at times `t`
-/// (seconds), using those no older than `window` before `now`, with one pass of outlier
-/// trimming (points further than 3 x RMS, at least 0.05 ms, from the first line). The spread
-/// reported is that of *all* the recent measurements around the trimmed line, so a jump
-/// (Bluetooth) shows instead of being trimmed away. Order of the entries does not matter.
+/// (seconds), using those no older than `window` before `now`, robust to false peaks:
+/// the line is fitted first to the measurements within [`BAND_S`] of the densest group
+/// (the measurement with the most others within 1 ms), then once more to those within
+/// 3 x its RMS (at least 0.05 ms). The spread reported is that of the measurements on the
+/// line; [`Fit::wanders`] also looks at those off it, so a jump (Bluetooth) shows while
+/// scattered false peaks do not. Order of the entries does not matter. No allocation.
 pub(crate) fn fit_history(t: &[f64], d: &[f64], now: f64, window: f64) -> Option<Fit> {
-    let line = |trim: Option<(f64, f64, f64)>| -> Option<(f64, f64, usize, f64, f64)> {
-        let (mut n, mut st, mut sd, mut stt, mut std) = (0usize, 0.0, 0.0, 0.0, 0.0);
-        let mut tmin = f64::MAX;
-        let mut tmax = f64::MIN;
-        for (&ti, &di) in t.iter().zip(d) {
-            let ti = ti - now;
-            if ti < -window {
+    let mut tv = [0.0f64; FIT_MAX];
+    let mut dv = [0.0f64; FIT_MAX];
+    let mut n = 0usize;
+    for (&ti, &di) in t.iter().zip(d) {
+        let ti = ti - now;
+        if ti < -window || n >= FIT_MAX {
+            continue;
+        }
+        tv[n] = ti;
+        dv[n] = di;
+        n += 1;
+    }
+    if n < 2 {
+        return None;
+    }
+    let (tv, dv) = (&tv[..n], &dv[..n]);
+    // The densest group: the measurement with the most others within 1 ms.
+    let (mut center, mut best) = (dv[0], 0usize);
+    for &a in dv {
+        let c = dv.iter().filter(|&&b| (a - b).abs() <= CLUSTER_S).count();
+        if c > best {
+            best = c;
+            center = a;
+        }
+    }
+    let line = |keep: &dyn Fn(f64, f64) -> bool| -> Option<(f64, f64, usize, f64, f64)> {
+        let (mut m, mut st, mut sd, mut stt, mut std) = (0usize, 0.0, 0.0, 0.0, 0.0);
+        let (mut tmin, mut tmax) = (f64::MAX, f64::MIN);
+        for (&ti, &di) in tv.iter().zip(dv) {
+            if !keep(ti, di) {
                 continue;
             }
-            if let Some((b, c, lim)) = trim
-                && (di - (c + b * ti)).abs() > lim
-            {
-                continue;
-            }
-            n += 1;
+            m += 1;
             st += ti;
             sd += di;
             stt += ti * ti;
@@ -948,44 +1186,59 @@ pub(crate) fn fit_history(t: &[f64], d: &[f64], now: f64, window: f64) -> Option
             tmin = tmin.min(ti);
             tmax = tmax.max(ti);
         }
-        if n < 2 {
+        if m < 2 {
             return None;
         }
-        let nf = n as f64;
-        let den = nf * stt - st * st;
-        let b = if den.abs() > 1e-12 {
-            (nf * std - st * sd) / den
-        } else {
-            0.0
-        };
-        let c = (sd - b * st) / nf;
-        Some((b, c, n, tmin, tmax))
+        let mf = m as f64;
+        let den = mf * stt - st * st;
+        let b = if den.abs() > 1e-12 { (mf * std - st * sd) / den } else { 0.0 };
+        let c = (sd - b * st) / mf;
+        Some((b, c, m, tmin, tmax))
     };
-    let resid = |b: f64, c: f64| {
-        let (mut ss, mut mx, mut n) = (0.0f64, 0.0f64, 0usize);
-        for (&ti, &di) in t.iter().zip(d) {
-            let ti = ti - now;
-            if ti < -window {
+    let resid = |b: f64, c: f64, keep: &dyn Fn(f64, f64) -> bool| {
+        let (mut ss, mut mx, mut m) = (0.0f64, 0.0f64, 0usize);
+        for (&ti, &di) in tv.iter().zip(dv) {
+            if !keep(ti, di) {
                 continue;
             }
             let r = (di - (c + b * ti)).abs();
             ss += r * r;
             mx = mx.max(r);
-            n += 1;
+            m += 1;
         }
-        ((ss / n.max(1) as f64).sqrt(), mx)
+        ((ss / m.max(1) as f64).sqrt(), mx)
     };
-    let (b, c, _, _, _) = line(None)?;
-    let (rms0, _) = resid(b, c);
+    let in_band = |_: f64, di: f64| (di - center).abs() <= BAND_S;
+    let (b, c, _, _, _) = line(&in_band).or_else(|| line(&|_, _| true))?;
+    let (rms0, _) = resid(b, c, &in_band);
     let lim = (3.0 * rms0).max(0.000_05);
-    let (b, c, n, tmin, tmax) = line(Some((b, c, lim)))?;
-    let (rms, mx) = resid(b, c);
+    let on = |ti: f64, di: f64| (di - (c + b * ti)).abs() <= lim;
+    let (b2, c2, m, tmin, tmax) = line(&on)?;
+    let on2 = |ti: f64, di: f64| (di - (c2 + b2 * ti)).abs() <= lim;
+    let (rms, mx) = resid(b2, c2, &on2);
+    // Off the line: the largest group that agrees within 1 ms.
+    let mut cluster2 = 0usize;
+    for (&ta, &a) in tv.iter().zip(dv) {
+        if on2(ta, a) {
+            continue;
+        }
+        let c = tv
+            .iter()
+            .zip(dv)
+            .filter(|&(&tb, &bb)| !on2(tb, bb) && (a - bb).abs() <= CLUSTER_S)
+            .count();
+        cluster2 = cluster2.max(c);
+    }
+    let _ = m;
+    let n_on = tv.iter().zip(dv).filter(|&(&ti, &di)| on2(ti, di)).count();
     Some(Fit {
-        slope: b,
-        delay_now_s: c,
+        slope: b2,
+        delay_now_s: c2,
         rms_s: rms,
         max_s: mx,
         span_s: tmax - tmin,
-        n,
+        n: n_on,
+        total: n,
+        cluster2,
     })
 }
