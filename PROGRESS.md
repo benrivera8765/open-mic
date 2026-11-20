@@ -87,6 +87,8 @@ Read this first in every session. Then DECISIONS.md, then docs/ARCHITECTURE.md.
 
 ## Notes for a fresh session
 
+- 2026-11-20 ~03:25 -> ~05:30: usage limit again; workflows restarted their agents automatically. The standalone tracker copy finished and its result landed in wf_171f937d-ff8 as build:q-tracker (same id), so that workflow is NOT hung after all: its q-tracker verifier is running.
+
 - 2026-11-20 ~00:57: relaying a message to a workflow agent by its id RESUMED A DUPLICATE COPY of it as a standalone background agent (a169eb8e0854df3fb, transcript in subagents/ not subagents/workflows/). TaskStop on that id stopped the WORKFLOW's instance instead; the standalone copy kept working and is now the tracker quality builder (it has the full context and the demo-low-key regression report). The relaunch wf_8bd71af6-311 was stopped at 01:49 to keep one editor. When the standalone copy reports (task notification), run an independent tracker verifier. Lesson: never SendMessage to workflow agents. The quality-round workflow wf_171f937d-ff8 will never finish (its tracker item is dead): harvest the score and echo results from its journal, then TaskStop it.
 
 - 2026-11-19 ~23:05 -> 2026-11-20 ~00:30: usage limit again; the Stage 3b builder and the 3 quality-round builders were restarted automatically by their workflows (they resume from files on disk).
