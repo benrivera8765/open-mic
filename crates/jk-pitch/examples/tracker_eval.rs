@@ -19,7 +19,15 @@
 //! - `--events DIR`: write each clip's events as CSV.
 //! - `--clips`: one line per clip as well.
 //! - `--delays`: the distribution of the onset delays as well (share of onsets per delay
-//!   band, against WO2's 100 ms ceiling; "later" includes onsets never shown on the note).
+//!   band, against WO2's 100 ms ceiling; "later" includes onsets never shown on the note),
+//!   and the share later than 100 ms by three definitions: to the first event on the note
+//!   (the headline, as above), to the first event within 50 cents of the reference's own
+//!   pitch at that moment (a scoop into the note counts as followed), and to the first
+//!   pitched event of any pitch (the marker appearing).
+//! - `--bands`: reference-voiced frames shown, and shown within 50 cents, by the
+//!   reference's pitch band (below C2, C2-D2, D2-E2, E2-A2, A2-C3, C3-D#3, D#3-B3, B3 and
+//!   up; and C2 to 160 Hz together), WO2 4.4 range "at least E2, aim C2". Frames below C2
+//!   lie outside the tracker's range (`min_hz` 62 Hz) and are left out of the C2-160 Hz sum.
 //! - `--tsv PATH`: the tables as tab-separated values.
 //! - `--manifest PATH`; `--only TEXT` keeps the clips whose id contains TEXT.
 //!
@@ -97,6 +105,34 @@ struct Stats {
     flashes: usize,
     flash_onsets: usize,
     delays_ms: Vec<f64>,
+    /// The same onsets, to the first event within 50 cents of the reference pitch at the
+    /// event's own described time (a scoop into the note is followed), and to the first
+    /// pitched event of any pitch (the marker appearing).
+    delays_curve_ms: Vec<f64>,
+    delays_any_ms: Vec<f64>,
+    /// Per pitch band (`BANDS`): reference-voiced frames, shown, shown within 50 cents.
+    band_n: [usize; BANDS.len()],
+    band_shown: [usize; BANDS.len()],
+    band_hit: [usize; BANDS.len()],
+}
+
+/// Pitch bands of `--bands` (upper edges in Hz) and their names.
+const BANDS: [(f64, &str); 8] = [
+    (63.5, "< 63.5 Hz (below C2)"),
+    (73.4, "63.5-73 Hz (C2-D2)"),
+    (82.0, "73-82 Hz (D2-E2)"),
+    (110.0, "82-110 Hz (E2-A2)"),
+    (130.0, "110-130 Hz (A2-C3)"),
+    (160.0, "130-160 Hz (C3-D#3)"),
+    (250.0, "160-250 Hz (D#3-B3)"),
+    (f64::INFINITY, ">= 250 Hz"),
+];
+
+fn band_of(f0: f64) -> usize {
+    BANDS
+        .iter()
+        .position(|b| f0 < b.0)
+        .unwrap_or(BANDS.len() - 1)
 }
 
 impl Stats {
@@ -120,6 +156,13 @@ impl Stats {
         self.flashes += o.flashes;
         self.flash_onsets += o.flash_onsets;
         self.delays_ms.extend(&o.delays_ms);
+        self.delays_curve_ms.extend(&o.delays_curve_ms);
+        self.delays_any_ms.extend(&o.delays_any_ms);
+        for i in 0..BANDS.len() {
+            self.band_n[i] += o.band_n[i];
+            self.band_shown[i] += o.band_shown[i];
+            self.band_hit[i] += o.band_hit[i];
+        }
     }
 }
 
@@ -331,6 +374,12 @@ fn score(ev: &[PitchEvent], rate: u32, r: &[RefFrame], seconds: f64) -> Stats {
         match r[k].flag {
             1 => {
                 s.rpa_n += 1;
+                let b = band_of(r[k].f0);
+                s.band_n[b] += 1;
+                if let Some(hz) = tr {
+                    s.band_shown[b] += 1;
+                    s.band_hit[b] += usize::from(cents(hz, r[k].f0).abs() <= 50.0);
+                }
                 if stable(k) {
                     s.vr_n += 1;
                     s.vr_hit += usize::from(tr.is_some());
@@ -401,6 +450,21 @@ fn score(ev: &[PitchEvent], rate: u32, r: &[RefFrame], seconds: f64) -> Stats {
         } else {
             s.delays_ms.push(500.0);
         }
+        let curve = k_ready.iter().find(|(t, ready, hz)| {
+            let j = (t / 0.01).round();
+            *ready > onset - 0.02
+                && j >= 0.0
+                && (j as usize) < r.len()
+                && r[j as usize].flag == 1
+                && hz.is_some_and(|h| cents(h, r[j as usize].f0).abs() <= 50.0)
+        });
+        s.delays_curve_ms
+            .push(curve.map_or(500.0, |(_, ready, _)| ((ready - onset) * 1000.0).min(500.0)));
+        let any = k_ready
+            .iter()
+            .find(|(_, ready, hz)| *ready > onset - 0.02 && hz.is_some());
+        s.delays_any_ms
+            .push(any.map_or(500.0, |(_, ready, _)| ((ready - onset) * 1000.0).min(500.0)));
         let flashes = k_ready
             .iter()
             .filter(|(t, _, hz)| {
@@ -441,8 +505,9 @@ fn delay_row(name: &str, s: &Stats) -> String {
     let share = |lo: f64, hi: f64| {
         100.0 * s.delays_ms.iter().filter(|&&d| d > lo && d <= hi).count() as f64 / n
     };
+    let over = |v: &[f64]| 100.0 * v.iter().filter(|&&d| d > 100.0).count() as f64 / n;
     format!(
-        "| {name} | {} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.0} / {:.0} / {:.0} |",
+        "| {name} | {} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.0} / {:.0} / {:.0} | {:.1} / {:.1} / {:.1} |",
         s.delays_ms.len(),
         share(f64::NEG_INFINITY, 50.0),
         share(50.0, 75.0),
@@ -453,6 +518,9 @@ fn delay_row(name: &str, s: &Stats) -> String {
         quantile(&s.delays_ms, 0.5),
         quantile(&s.delays_ms, 0.75),
         quantile(&s.delays_ms, 0.9),
+        over(&s.delays_ms),
+        over(&s.delays_curve_ms),
+        over(&s.delays_any_ms),
     )
 }
 
@@ -463,6 +531,7 @@ fn main() {
     let mut events_dir: Option<PathBuf> = None;
     let mut per_clip = false;
     let mut delays = false;
+    let mut bands = false;
     let mut tsv_out: Option<PathBuf> = None;
     let mut manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../jukeoke-build/practice-tracker/eval/manifest.tsv");
@@ -476,6 +545,7 @@ fn main() {
             "--events" => events_dir = Some(args.next().unwrap().into()),
             "--clips" => per_clip = true,
             "--delays" => delays = true,
+            "--bands" => bands = true,
             "--tsv" => tsv_out = Some(args.next().unwrap().into()),
             "--manifest" => manifest = args.next().unwrap().into(),
             "--only" => only = Some(args.next().unwrap()),
@@ -553,12 +623,54 @@ fn main() {
             println!(
                 "\nonset delay, split {split}, condition {cond} (share of onsets, %)\n\n\
                  | set | onsets | <= 50 ms | 50-75 | 75-100 | 100-150 | 150-250 | later or never \
-                 | p50 / p75 / p90 ms |\n|---|---|---|---|---|---|---|---|---|"
+                 | p50 / p75 / p90 ms | > 100 ms: on the note / on the reference curve / any pitch \
+                 |\n|---|---|---|---|---|---|---|---|---|---|"
             );
             for (ds, s) in &by_ds {
                 println!("{}", delay_row(ds, s));
             }
             println!("{}", delay_row("**all**", &total));
+        }
+        if bands {
+            println!(
+                "\nreference-voiced frames by pitch band, split {split}, condition {cond}: \
+                 shown % / within 50 cents % (frames)\n"
+            );
+            let mut head = String::from("| set |");
+            let mut rule = String::from("|---|");
+            for (_, name) in BANDS {
+                let _ = write!(head, " {name} |");
+                rule += "---|";
+            }
+            head += " C2-160 Hz |";
+            rule += "---|";
+            println!("{head}\n{rule}");
+            let band_row = |name: &str, s: &Stats| {
+                let mut line = format!("| {name} |");
+                for i in 0..BANDS.len() {
+                    let _ = write!(
+                        line,
+                        " {:.1} / {:.1} ({}) |",
+                        pct(s.band_shown[i], s.band_n[i]),
+                        pct(s.band_hit[i], s.band_n[i]),
+                        s.band_n[i]
+                    );
+                }
+                // C2 to 160 Hz (below C2 is outside the tracker's range).
+                let (n, sh, h) = (1..6).fold((0, 0, 0), |a, i| {
+                    (
+                        a.0 + s.band_n[i],
+                        a.1 + s.band_shown[i],
+                        a.2 + s.band_hit[i],
+                    )
+                });
+                let _ = write!(line, " {:.1} / {:.1} ({n}) |", pct(sh, n), pct(h, n));
+                line
+            };
+            for (ds, st) in &by_ds {
+                println!("{}", band_row(ds, st));
+            }
+            println!("{}", band_row("**all**", &total));
         }
         let mut m = BTreeMap::new();
         for (ds, s) in by_ds {
