@@ -87,7 +87,7 @@ Read this first in every session. Then DECISIONS.md, then docs/ARCHITECTURE.md.
 
 ## Notes for a fresh session
 
-- 2026-11-20 ~00:57: relaying a message to a workflow agent by its id RESUMED A DUPLICATE COPY of it; stopping the duplicate also interrupted the workflow's own instance (same id). Lesson: never SendMessage to workflow agents; harvest their results from the journal. The quality-round tracker item in wf_171f937d-ff8 is therefore hung (score and echo items still fine: read their results from its journal, then TaskStop that workflow). The tracker stream was relaunched as `wo2-quality-tracker-resume` (wf_8bd71af6-311).
+- 2026-11-20 ~00:57: relaying a message to a workflow agent by its id RESUMED A DUPLICATE COPY of it as a standalone background agent (a169eb8e0854df3fb, transcript in subagents/ not subagents/workflows/). TaskStop on that id stopped the WORKFLOW's instance instead; the standalone copy kept working and is now the tracker quality builder (it has the full context and the demo-low-key regression report). The relaunch wf_8bd71af6-311 was stopped at 01:49 to keep one editor. When the standalone copy reports (task notification), run an independent tracker verifier. Lesson: never SendMessage to workflow agents. The quality-round workflow wf_171f937d-ff8 will never finish (its tracker item is dead): harvest the score and echo results from its journal, then TaskStop it.
 
 - 2026-11-19 ~23:05 -> 2026-11-20 ~00:30: usage limit again; the Stage 3b builder and the 3 quality-round builders were restarted automatically by their workflows (they resume from files on disk).
 
