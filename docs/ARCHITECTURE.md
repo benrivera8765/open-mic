@@ -586,6 +586,17 @@ lyrics already use), else 0, and the scorer's timing tolerance absorbs the rest.
 measured delay is this residual and is never added to the declared latencies twice
 (APP_API 12.7 "Timing").
 
+**The echo reference in the app** (app core `src/practice/align.rs`, Stage 3b). The output
+tap's pieces are stamped with the host time each leaves the DAC, but a timer-driven device
+thread wakes with a few milliseconds of jitter, so the reference is lined up once through a
+least-squares line over the last ~2 s of stamps and then read continuously (the drift
+between the two devices reaches the canceller as the slow slide it follows), lined up again
+only after a discontinuity. It is handed 20 ms early (`reference_lead_s`: a return that
+comes back up to 20 ms sooner than the declared latencies predict is still found); an input
+block waits (at most 120 ms) until the tap holds its reference, which adds roughly
+`20 ms - output latency` (usually nothing) to the marker's delay. The tap is converted to
+the input rate with the engine's own resampler when the rates differ.
+
 **Key and segment.** Each tracker value is graded against `key_at(song_time, segment)`
 from the engine's bounded history, so a note sung before a key change keeps the key it
 was sung in, in both key modes (in render ahead the switch is the crossover onto the
@@ -608,8 +619,10 @@ starts a new segment, and values are never mapped across it.
   audio (practice-tracker.md section 8), echo removal a few ms per second; the M1 is
   estimated at 2-3 times that. It allocates only at session start and on a device
   change.
-- Guide builder thread (below normal priority, one build at a time): about 1.2 s per
-  4-minute song on the build PC (estimated 1.7-2 s on the M1), then the atomic rewrite.
+- Guide builder thread (one build at a time; below normal priority for the batch and new
+  songs, normal for a one-song `guide_build` someone waits for, never above normal): about
+  1.2 s per 4-minute song on the build PC (estimated 1.7-2 s on the M1), then the atomic
+  rewrite.
 - Slot writes (practice settings, exclusions, results) go through the existing debounced
   per-song save (section 11 "Playback"), never from the analysis thread directly.
 

@@ -27,6 +27,7 @@ pub mod library;
 pub mod medialink;
 pub mod playback;
 pub mod portable;
+pub mod practice;
 pub mod recorder;
 pub mod recsession;
 pub mod screenshot;
@@ -71,6 +72,10 @@ pub const MAIN_WINDOW_RETRY: &str = "main-retry";
 pub const SELFCHECK_FLAG: &str = "--selfcheck";
 /// With `--selfcheck`: play digital silence instead of the -60 dBFS test tone.
 pub const SILENT_FLAG: &str = "--silent";
+/// (WO2, internal) Accept `practice_test_input` (generated singers instead of the
+/// microphone) without `--smoke-test`, whose watchdog ends the app within a minute: the
+/// real-app runs of WO2 section 9 (20 minutes, key changes, missing things) need longer.
+pub const PRACTICE_TEST_FLAG: &str = "--practice-test";
 
 /// State shared with every command.
 pub struct AppState {
@@ -111,9 +116,11 @@ pub fn run(plugins: BuilderHook) -> i32 {
         .map(|v| v.to_string_lossy().into_owned());
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let smoke_enabled = args.iter().any(|a| a == smoke::FLAG);
+    let practice_test = args.iter().any(|a| a == PRACTICE_TEST_FLAG);
     let selfcheck_cli = args.iter().any(|a| a == SELFCHECK_FLAG).then(|| selfcheck::Options {
         user_agent: None,
         silent: args.iter().any(|a| a == SILENT_FLAG),
+        lane: None,
     });
     startup::set_unattended(smoke_enabled || selfcheck_cli.is_some());
     // Deliberately not canonicalised: on Windows that resolves a subst or mapped
@@ -156,6 +163,7 @@ pub fn run(plugins: BuilderHook) -> i32 {
                 app,
                 started,
                 smoke_enabled,
+                practice_test,
                 exe_for_setup.clone(),
                 selfcheck_for_setup.clone(),
                 webview_env_ignored.clone(),
@@ -189,6 +197,7 @@ fn setup(
     app: &mut tauri::App,
     started: Instant,
     smoke_enabled: bool,
+    practice_test: bool,
     exe: Option<PathBuf>,
     selfcheck_cli: Option<selfcheck::Options>,
     webview_env_ignored: Option<String>,
@@ -268,6 +277,11 @@ fn setup(
         webview_env_ignored,
     });
 
+    // (WO2) practice_test_input only in the test modes (APP_API 12.1).
+    core.practice.allow_test_input(smoke_enabled || practice_test);
+    if practice_test {
+        applog::info("practice test mode: practice_test_input accepted");
+    }
     let selfcheck_mode = selfcheck_cli.is_some();
     app.manage(AppState {
         layout: layout.clone(),
@@ -350,8 +364,11 @@ fn create_main_window(app: &AppHandle, label: &str, hidden: bool) -> tauri::Resu
                     if selfcheck {
                         // --selfcheck: the report records the real web engine. The page
                         // reports navigator.userAgent through the normal IPC.
+                        // (WO2, APP_API 10.1) The practice lane's drawing cost in this web view,
+                        // measured by the page and reported through selfcheck_lane; the run
+                        // starts once the page has reported it (or after 8 s without the hook).
                         let _ = webview.eval(
-                            "window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('selfcheck_user_agent', { user_agent: navigator.userAgent })",
+                            "(function(){var t0=Date.now();function done(){window.__TAURI_INTERNALS__&&window.__TAURI_INTERNALS__.invoke('selfcheck_user_agent',{user_agent:navigator.userAgent});}function go(){if(window.__jkSelfcheckLane){window.__jkSelfcheckLane().catch(function(){}).then(done);}else if(Date.now()-t0<8000){setTimeout(go,200);}else{done();}}go();})()",
                         );
                     }
                 }

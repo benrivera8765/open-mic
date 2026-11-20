@@ -29,7 +29,7 @@ source scripts/devenv.sh
 cargo run -p jk-format --example jksong-verify -- tests/fixtures/generated/tiny.jksong --strict
 ```
 
-## `demo-song.jksong` (2,425,490 bytes)
+## `demo-song.jksong` (2,483,029 bytes)
 
 The demo song: bundled with the app for the self-check, and the ground truth for the
 lyrics-ticker test. It is the one exception to the 600 KB rule above (the work order
@@ -37,8 +37,18 @@ allows this fixture up to 3 MB: a 40 s song with four stems cannot be smaller wi
 losing what it is for).
 
 - Made by `jukeoke-cli make-demo-song` (code: `crates/jk-engine/src/demo.rs`).
-  Deterministic: the same bytes every run (sha256 `1ddb91d8...9f06e0786` on Windows
-  x86-64; sines come from the pure-Rust `libm` crate, the noise from an integer PRNG).
+  Deterministic: the same bytes every run (2,425,489 bytes, sha256 `d350ad64...3aef9eb37`
+  on Windows x86-64 since the writer stamps `format_version` 1.1; `1ddb91d8...9f06e0786`
+  with 1.0 before Work Order 2; sines come from the pure-Rust `libm` crate, the noise from
+  an integer PRNG).
+- Since 2026-11-20 (Work Order 2) it also carries its melody guide, added by
+  `jukeoke-cli guide add` (SONG_FORMAT 1.1 `guide` + `guide.curve`: 42 notes, builder
+  `jk-pitch pyin+notes 0.2.0`), so the self-check's "Practice guide" item reads a stored
+  guide from the bundled copy. Every other chunk and both settings slots are byte-identical
+  to the generated song (the guide is added by the raw-copy rewrite of SONG_FORMAT 7.1);
+  regenerate with `make-demo-song` and then `guide add` (crates/jk-engine/tests/demo.rs
+  checks exactly that). Regenerated 2026-11-20 (Stage 3b) after the 1.1 writer: the earlier
+  copy still had the 1.0 manifest; its guide's notes are identical.
 - "Twinkle, Twinkle, Little Star": words by Jane Taylor (1806), melody the traditional
   French tune; both public domain. All audio is synthesised: a sine-and-harmonics
   "voice" (`lead_vocal`), a quiet harmony a third below in lines 3-6 (`backing_vocals`),

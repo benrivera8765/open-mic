@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Settings: look (skin, bubbles, motion), lyrics (display, next line, progress bar,
-// motion, text size, marker position, colours), timing offsets per output device, and
-// information about this computer.
+// motion, text size, marker position, colours), practice mode (WO2: where the piano keys
+// sit, the words and lyrics, the simple lane, how strict, the octave, the timing), timing
+// offsets per output device, and information about this computer.
 // Saved by the core into <root>/Settings/settings.json.
-import type { KeyModeSetting, LyricsDisplay, LyricsMotion, MotionSetting } from "../api/types";
-import { DEFAULT_APP_SETTINGS } from "../api/defaults";
+import type { KeyModeSetting, LyricsDisplay, LyricsMotion, MotionSetting, OctaveMode, RigCheckReport, RigCheckStep, Strictness } from "../api/types";
+import { errorMessage } from "../api/client";
+import { DEFAULT_APP_SETTINGS, DEFAULT_PRACTICE_SETTINGS } from "../api/defaults";
+import { setLatency } from "../state/practice";
+import { useEffect, useState } from "preact/hooks";
 import { formatOffset } from "../lib/format";
-import { changeSettings, deviceOffsetKey, setOverlay, useApp } from "../state/app";
+import { changeSettings, deviceOffsetKey, getApiSync, setOverlay, useApp } from "../state/app";
 import { Section, Select, Slider, Toggle, useId } from "./common";
 
 function ColorField({ label, value, onChange, disabled }: { label: string; value: string; onChange: (v: string) => void; disabled?: boolean }) {
@@ -19,6 +23,143 @@ function ColorField({ label, value, onChange, disabled }: { label: string; value
       <input id={id} type="color" value={value} disabled={disabled} onInput={(e) => onChange((e.currentTarget as HTMLInputElement).value)} />
       <code class="field__value">{value}</code>
     </div>
+  );
+}
+
+/**
+ * The practice rig check (WO2 4.8, APP_API 10.2): the one check that MAKES A SOUND, so it is
+ * started by hand only, after the owner confirmed with the in-ears on. It plays three short
+ * test bursts through the current output, listens to the input and writes what came back
+ * into a report next to the self-check reports.
+ */
+function RigCheck() {
+  const api = getApiSync();
+  const [stage, setStage] = useState<"idle" | "confirm" | "running" | "done">("idle");
+  const [label, setLabel] = useState("");
+  const [step, setStep] = useState<RigCheckStep | null>(null);
+  const [report, setReport] = useState<RigCheckReport | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => api.on("practice://rigcheck", (s) => setStep(s)), [api]);
+  if (!api.practiceRigCheck) return null;
+  const start = async () => {
+    setStage("running");
+    setError(null);
+    setReport(null);
+    try {
+      setReport(await api.practiceRigCheck!({ audible_confirmed: true, label: label.trim() || undefined }));
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+    setStage("done");
+  };
+  return (
+    <div class="rigcheck">
+      <h4 class="rigcheck__title">
+        Practice rig check <span class="rigcheck__audible">Makes a sound</span>
+      </h4>
+      <p class="hint">
+        With the mixer plugged in and your in-ear monitors on: measures each input channel, asks you to say a few words, plays three short test bursts through the
+        current output and listens whether the mixer sends them back, and how late. The result goes into a report for the next session.
+      </p>
+      {stage === "idle" || stage === "done" ? (
+        <button type="button" class="button button--small" onClick={() => setStage("confirm")}>
+          Run the rig check…
+        </button>
+      ) : null}
+      {stage === "confirm" && (
+        <div class="rigcheck__confirm" role="alertdialog" aria-label="The rig check makes a sound">
+          <p>
+            <strong>This plays a test sound</strong> (three short bursts at -24 dBFS, through the current output at the app's volume). Put your in-ear monitors on first.
+          </p>
+          <label class="field">
+            <span class="field__label">Note for this run (optional)</span>
+            <input type="text" value={label} placeholder="for example: loopback on" onInput={(e) => setLabel((e.currentTarget as HTMLInputElement).value)} />
+          </label>
+          <div class="rigcheck__actions">
+            <button type="button" class="button button--primary" onClick={() => void start()}>
+              Start (makes a sound)
+            </button>
+            <button type="button" class="button" onClick={() => setStage("idle")}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {stage === "running" && <p role="status">{step?.message ?? "Starting…"}</p>}
+      {error && <p class="note note--error">{error}</p>}
+      {report && (
+        <div class="rigcheck__report" role="status">
+          <ul>
+            {report.findings.map((f) => (
+              <li key={f}>{f}</li>
+            ))}
+          </ul>
+          <p class="hint">Report: {report.report_path}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Practice mode (WO2, APP_API 12.7): per computer, saved in settings.json on the stick. */
+function PracticeSettings() {
+  const settings = useApp((s) => s.settings);
+  const [manual, setManual] = useState(0);
+  if (!settings) return null;
+  const pr = { ...DEFAULT_PRACTICE_SETTINGS, ...(settings.practice ?? {}) };
+  return (
+    <Section title="Practice">
+      <Select<"left" | "right">
+        label="Piano keys"
+        value={pr.piano_side}
+        options={[
+          { value: "left", label: "At the left edge of the notes" },
+          { value: "right", label: "At the right edge of the notes" },
+        ]}
+        onChange={(v) => changeSettings({ practice: { piano_side: v } })}
+      />
+      <Toggle label="Words under the notes" checked={pr.words_under_notes} onChange={(v) => changeSettings({ practice: { words_under_notes: v } })} hint="Each word rides under its note in the lane." />
+      <Toggle label="Lyrics under the lane" checked={pr.lyrics_below} onChange={(v) => changeSettings({ practice: { lyrics_below: v } })} hint="The usual karaoke lyrics, in the display chosen above." />
+      <Toggle
+        label="Simple lane"
+        checked={pr.simple_lane}
+        onChange={(v) => changeSettings({ practice: { simple_lane: v } })}
+        hint="No glow and no tail behind the marker: lighter work for a slow computer. Reduce motion also drops the tail."
+      />
+      <Select<Strictness>
+        label="How strict"
+        value={pr.strictness}
+        options={[
+          { value: "relaxed", label: "Relaxed (full marks within 3/4 of a semitone)" },
+          { value: "standard", label: "Standard (full marks within half a semitone)" },
+          { value: "strict", label: "Strict (full marks within a third of a semitone)" },
+        ]}
+        onChange={(v) => changeSettings({ practice: { strictness: v } })}
+      />
+      <Select<OctaveMode>
+        label="Octave for songs not practised yet"
+        value={pr.octave_mode}
+        options={[
+          { value: "auto", label: "Automatic: follow the octave I sing in" },
+          { value: "fixed", label: "As written (change it per song in practice)" },
+          { value: "strict", label: "Strict: the written octave is required" },
+        ]}
+        onChange={(v) => changeSettings({ practice: { octave_mode: v } })}
+      />
+      <p class="hint">Singing the right note an octave higher or lower counts as right, except with Strict. Each song remembers its own octave and strictness.</p>
+      <Toggle
+        label="Measure the delay automatically"
+        checked={pr.auto_latency}
+        onChange={(v) => changeSettings({ practice: { auto_latency: v } })}
+        hint="Uses the delay measured when the mixer sends the app's music back, or by the practice rig check."
+      />
+      <Slider label="Manual delay for this microphone" value={manual} min={-300} max={300} step={5} format={formatOffset} onInput={(v) => setManual(v)} />
+      <button type="button" class="button button--small" onClick={() => void setLatency(manual)}>
+        Use this delay
+      </button>
+      <p class="hint">Only if your voice seems late or early against the notes and nothing could be measured. Small delays are forgiven anyway and never cost points.</p>
+      <RigCheck />
+    </Section>
   );
 }
 
@@ -112,6 +253,8 @@ export function Settings() {
           </button>
         </div>
       </Section>
+
+      <PracticeSettings />
 
       <Section title="Key change">
         <Select<KeyModeSetting>

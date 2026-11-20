@@ -25,19 +25,38 @@
 //!   values within `smooth_s` (80 ms) either side: about one vibrato period at 5.5-6 Hz,
 //!   so a vibrato around the note is judged by its centre, not by its peaks. A moment where
 //!   the singer is silent earns nothing.
-//! - **What the tracker could not hear.** A moment where the tracker named no pitch but the
-//!   singer was making sound (level at least `excuse_dbfs`, -50 dBFS, and not returned
-//!   music) is excused, up to a quarter of the note (`excuse_share`): it neither earns nor
-//!   costs. The live tracker shows about four in five of the frames real singers sing
-//!   (DECISIONS D-244), losing onsets, consonants and low, breathy notes; the original
-//!   singer must not lose points for that. Silence is never excused, a note with no pitch
-//!   at all scores 0, and a note sung for only half its length earns at most two thirds.
-//!   Tracker dropouts of up to 40 ms between voiced values are bridged (`bridge_s`).
-//! - **Timing.** The whole note may be matched with the singer's pitch from up to the
-//!   strictness's timing tolerance earlier or later (150 ms by default): the offset that
-//!   gives the note the most credit is used. Being a little early or late, a delay the
-//!   system could not measure, and a short scoop at the start of the singer's note (which
-//!   the offset and the median absorb) cost no pitch points.
+//! - **Timing** (scorer 0.2.0). Being a little early or late, a delay the system could not
+//!   measure, a scoop or a fall at the ends of the singer's note and the tracker's own
+//!   onset delay cost no pitch points. The singer's *rendition* of a note may start and end
+//!   up to the strictness's timing tolerance (150 ms by default) away from the guide's
+//!   note, the two ends independently, and be as short as half the note (`min_rendition`);
+//!   moment `k` of the note is compared with the singer at the same relative place in the
+//!   rendition. The renditions of consecutive pitched notes keep their order and do not
+//!   overlap (by more than `overlap_s`, 10 ms), so one stretch of singing is credited to
+//!   one note only: a note cannot take its neighbour's singing. Each pitched note's timing
+//!   is decided together with the next pitched note's (when their renditions could meet),
+//!   choosing what gives the two the most credit, so one note cannot take the start of the
+//!   next one's rendition unless that gains more than the next note loses. Ties: the
+//!   least stretch, then the timing closest to the previous note's. Per-note timing that
+//!   differs by up to the tolerance from note to note (rubato) thus costs nothing, while
+//!   a part of a note's middle that was not sung is never forgiven. (Scorer 0.1.0 matched
+//!   each note by one shift and, once a "usual timing" was known, only within 80 ms of it,
+//!   which made rubato cost points.) The finished-note entry of a note that waits for the
+//!   next one comes out with it.
+//! - **What the tracker could not resolve** (the excusal rule, 0.2.0). A moment where the
+//!   tracker named no pitch while the input was **periodic** sound (tracker clarity at least
+//!   `excuse_clarity`, 0.7, level at least `excuse_dbfs`, -50 dBFS, not returned music)
+//!   is excused, up to a quarter of the note's moments (`excuse_share`): it neither earns
+//!   nor costs. Such frames are a voice the tracker heard but did not commit to (a low or
+//!   rough voice, an onset), which is not the singer's fault: on the original vocals of the
+//!   development songs 54-64 % of the frames where the guide's own curve is voiced but the
+//!   tracker named no pitch have clarity 0.7 or more. Breath, whispers, consonants and noise
+//!   stay below it (generated breath, fricatives and speech-shaped noise in the middle of
+//!   notes never score more than silence there, docs/benchmarks/practice-score.md), so
+//!   they are never excused, nor is silence; a note with no pitch named at all scores 0,
+//!   and a note whose middle half was not resolved earns at most about two thirds.
+//!   (Scorer 0.1.0 excused any sound of -50 dBFS or more.) Tracker dropouts of up to 40 ms
+//!   between voiced values are bridged (`bridge_s`).
 //! - **Octaves.** In `auto` and `fixed` a pitch a whole number of octaves from the target is
 //!   on the target; `strict` requires the written octave. `auto` also decides, from the
 //!   first sung phrases (`settle_s` of voiced singing near the pitch classes of graded
@@ -65,7 +84,7 @@ use serde::{Deserialize, Serialize};
 /// The scorer's name and version, stored with every result (SONG_FORMAT section 11
 /// `scorer`), so a later change never makes old and new results look comparable.
 pub const SCORER: &str = "jk-pitch score";
-pub const SCORER_VERSION: &str = "0.1.0";
+pub const SCORER_VERSION: &str = "0.2.0";
 
 /// How close is close enough (APP_API 12.6, owner decision 4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -406,15 +425,17 @@ pub struct ScoreConfig {
     /// time before and after it (0: never). Short (40 ms): longer gaps are left to the
     /// excusal rule below, which needs the singer to be making sound.
     pub bridge_s: f64,
-    /// Moments of a note where the tracker named no pitch although the singer was making
-    /// sound (input level at least `excuse_dbfs`, not returned music) are excused, up to
-    /// `excuse_share` of the note's judged moments: they neither earn nor cost. The
-    /// tracker hears about 79 % of the frames real singers sing (DECISIONS D-244: onsets,
-    /// consonants, breathy and low notes), and that is not the singer's fault. Silence
-    /// never earns (a note with no pitch at all scores 0), a spoken or whispered note
-    /// scores 0, and a note half sung earns at most two thirds.
+    /// The excusal rule (see the module documentation, "What the tracker could not
+    /// resolve"): a moment of a note where the tracker named no pitch while the singer made
+    /// **periodic** sound (input level at least `excuse_dbfs`, tracker clarity at least
+    /// `excuse_clarity`, not returned music) neither earns nor costs, up to `excuse_share`
+    /// of the note's judged moments. Silence, breath, whispers and other unvoiced sound
+    /// are never excused, a note with no pitch named at all scores 0, and a note half sung
+    /// earns at most two thirds. `excuse_share` 0 turns the rule off.
     pub excuse_dbfs: f32,
     pub excuse_share: f64,
+    /// Lowest tracker clarity of an excused moment (0 = any sound, scorer 0.1.0's rule).
+    pub excuse_clarity: f32,
     /// Voiced singing near graded notes' pitch classes needed before `auto` decides the
     /// octave.
     pub settle_s: f64,
@@ -432,16 +453,17 @@ pub struct ScoreConfig {
     pub sound_dbfs: f32,
     /// Keep the per-note outcomes in the result (diagnostics, the harness).
     pub detail: bool,
-    /// How far (s) one note's timing may differ from the singer's usual timing. The usual
-    /// timing (a delay nobody measured, a singer who is always a little late) is found
-    /// within the strictness's timing tolerance from the notes already sung
-    /// (`lag_memory_s`), and each note is then matched within this much of it. One note
-    /// thus cannot borrow a neighbour's pitch by moving the whole tolerance away, while a
-    /// steady delay of up to the tolerance still costs nothing.
+    /// Timing (see the module documentation, "Timing"): the singer's rendition of a note
+    /// may start and end up to the strictness's timing tolerance away from the guide's,
+    /// independently, and be as short as this share of the note's judged length; it is
+    /// stretched onto the note. Renditions of consecutive graded notes must not overlap
+    /// by more than `overlap_s`, so one stretch of singing is credited to one note only.
+    pub min_rendition: f64,
+    pub overlap_s: f64,
+    /// Scorer 0.1.0 only ("usual timing"); ignored since 0.2.0, kept so settings that
+    /// name them still build.
     pub jitter_s: f64,
-    /// Time constant (s) of the memory of the singer's usual timing.
     pub lag_memory_s: f64,
-    /// Note time (s, on pitch) that must support the usual timing before it is used.
     pub lag_evidence_s: f64,
 }
 
@@ -456,6 +478,7 @@ impl Default for ScoreConfig {
             bridge_s: 0.040,
             excuse_dbfs: -50.0,
             excuse_share: 0.25,
+            excuse_clarity: 0.7,
             settle_s: 3.0,
             tendency_window_cents: 150.0,
             tendency_min_s: 1.0,
@@ -463,6 +486,8 @@ impl Default for ScoreConfig {
             quiet_dbfs: -55.0,
             sound_dbfs: -70.0,
             detail: false,
+            min_rendition: 0.5,
+            overlap_s: 0.010,
             jitter_s: 0.080,
             lag_memory_s: 20.0,
             lag_evidence_s: 0.5,
@@ -489,6 +514,11 @@ pub struct SingerSample {
     /// The echo stage said the input held only returned music here
     /// ([`crate::echo::Trust::Music`]): any pitch was dropped.
     pub music: bool,
+    /// The tracker's clarity for this value (MPM NSDF at its best period, 0..1, 1 =
+    /// perfectly periodic), given also when it named no pitch
+    /// ([`crate::tracker::PitchEvent::clarity`]); 0 when unknown. Added in scorer 0.2.0.
+    #[serde(default)]
+    pub clarity: f32,
 }
 
 const F_UNKNOWN: u8 = 1;
@@ -500,6 +530,7 @@ struct Stored {
     t: f64,
     midi: f32,
     level: f32,
+    clarity: f32,
     flags: u8,
 }
 
@@ -528,7 +559,8 @@ pub struct NoteOutcome {
     pub key: i32,
     /// Mean folded error of the moments near the target (cents), if any.
     pub mean_err: Option<f64>,
-    /// The timing offset used (s, positive: the singer was late).
+    /// The timing used (s, positive: the singer was late): the mean of `start_shift_s` and
+    /// `end_shift_s` since 0.2.0.
     pub delta_s: f64,
     /// Covered length (s) of the judged part.
     pub weight_s: f64,
@@ -540,10 +572,16 @@ pub struct NoteOutcome {
     pub covered: u32,
     #[serde(default)]
     pub voiced: u32,
-    /// Moments excused: no pitch named while the singer was making sound
+    /// Moments excused: no pitch named while the singer was making periodic sound
     /// (`ScoreConfig::excuse_share`).
     #[serde(default)]
     pub excused: u32,
+    /// Where the singer's rendition of the note started and ended relative to the guide
+    /// (s, positive: later; see "Timing"). `delta_s` is their mean. Added in 0.2.0.
+    #[serde(default)]
+    pub start_shift_s: f64,
+    #[serde(default)]
+    pub end_shift_s: f64,
     #[serde(skip)]
     sound: u32,
     #[serde(skip)]
@@ -691,14 +729,49 @@ pub struct Scorer {
     sc_val: Vec<f64>,
     sc_cov: Vec<u8>,
     sc_med: Vec<f64>,
-    /// Per offset of the note being finished: (sum of credits, excusable moments).
-    sc_lag: Vec<(f64, usize)>,
-    /// The singer's usual timing: on-pitch note time supporting each offset (index
-    /// `offset_hops + lag_max`), decayed with `lag_memory_s`, and the song time of its last
-    /// update.
-    lag_hist: Vec<f64>,
-    lag_max: usize,
-    lag_t: f64,
+    /// Target (MIDI, key heard) of each moment of the note being judged.
+    sc_tgt: Vec<f64>,
+    /// The next note's best credit per earliest start shift (resolution scratch).
+    sc_next: Vec<f64>,
+    /// Fast table filling: prefix sums of position credits and excusable positions, and
+    /// the positions skipped or landed on twice under one stretch.
+    sc_csum: Vec<f64>,
+    sc_esum: Vec<u32>,
+    sc_corr: Vec<(i64, i8)>,
+    /// Two credit tables of `tab_size` entries (one per timing `alpha`, `beta` within
+    /// `tab_j` steps): the pitched note waiting for its successor, and the note being
+    /// judged.
+    tab: Vec<f64>,
+    tab_size: usize,
+    tab_j: usize,
+    pending: Option<Pending>,
+    /// The monotone alignment (see "Timing"): where the rendition of the last pitched note
+    /// finished in run `chain_run` ended (song time; NaN: none yet in that run), and its end
+    /// shift (s).
+    chain_end: f64,
+    chain_shift: f64,
+    chain_run: usize,
+}
+
+/// A judged note whose timing is decided when the next pitched note has been judged.
+#[derive(Clone, Copy, Debug)]
+struct Pending {
+    note: usize,
+    /// Index of the run (attempt) it was judged in.
+    run: usize,
+    /// Credit table slot (0 or 1).
+    slot: usize,
+    /// Margin in steps, moments, moment spacing (s), judged start and end (song time).
+    j: usize,
+    k_n: usize,
+    h: f64,
+    a: f64,
+    end: f64,
+    judged: usize,
+    covered: usize,
+    max_excused: usize,
+    /// Judged length (s): the note's weight when two notes' timings are decided together.
+    weight: f64,
 }
 
 /// `sc_cov` bits.
@@ -707,8 +780,8 @@ const C_VOICED: u8 = 2;
 const C_UNKNOWN: u8 = 4;
 const C_SOUND: u8 = 8;
 const C_QUIET: u8 = 16;
-/// The singer was making sound loud enough to be excused when no pitch was named
-/// (`ScoreConfig::excuse_dbfs`).
+/// The singer was making periodic sound loud enough to be excused when no pitch was named
+/// (`ScoreConfig::excuse_dbfs`, `ScoreConfig::excuse_clarity`).
 const C_LOUD: u8 = 32;
 
 impl Scorer {
@@ -764,10 +837,18 @@ impl Scorer {
             sc_val: vec![0.0; scratch],
             sc_cov: vec![0; scratch],
             sc_med: vec![0.0; 64],
-            sc_lag: vec![(0.0, 0); 2 * j + 1],
-            lag_hist: vec![0.0; 2 * j + 1],
-            lag_max: j,
-            lag_t: f64::NAN,
+            sc_tgt: vec![0.0; longest + 1],
+            sc_next: vec![0.0; 2 * j + 1],
+            sc_csum: vec![0.0; scratch + 1],
+            sc_esum: vec![0; scratch + 1],
+            sc_corr: vec![(0, 0); scratch + 4 * j + 4],
+            tab: vec![0.0; 2 * (2 * j + 1) * (2 * j + 1)],
+            tab_size: (2 * j + 1) * (2 * j + 1),
+            tab_j: j,
+            pending: None,
+            chain_end: f64::NAN,
+            chain_shift: 0.0,
+            chain_run: usize::MAX,
             guide,
             cfg,
         }
@@ -844,6 +925,7 @@ impl Scorer {
                     level_db: s.level,
                     unknown: s.flags & F_UNKNOWN != 0,
                     music: s.flags & F_MUSIC != 0,
+                    clarity: s.clarity,
                 });
             }
         }
@@ -875,6 +957,7 @@ impl Scorer {
             // it): finish them from that segment now, as `finish` does at the end of a take,
             // so a note sung right before a seek is graded and counted.
             self.finish_reached();
+            self.flush_pending();
             // Notes reaching into the new segment may be attempted again: start finishing
             // from the first note that ends after the tolerance before this point.
             let tol = self.strictness.bands().tolerance_s;
@@ -895,7 +978,7 @@ impl Scorer {
             flags |= F_MUSIC;
         }
         let midi = s.midi.filter(|m| m.is_finite()).map(|m| m as f32).unwrap_or(f32::NAN);
-        self.samples.push(Stored { t, midi, level: s.level_db, flags });
+        self.samples.push(Stored { t, midi, level: s.level_db, clarity: s.clarity, flags });
 
         // Live: the note sounding now, hit or miss, and the octave votes.
         while self.live_note < self.guide.notes.len() && self.guide.notes[self.live_note].end <= t {
@@ -962,21 +1045,6 @@ impl Scorer {
         best
     }
 
-    /// The singer's usual timing in hops (the offset most supported by the notes already
-    /// sung), once at least `lag_evidence_s` of on-pitch note time supports it.
-    fn usual_lag(&self) -> Option<i64> {
-        let mut best: Option<(i64, f64)> = None;
-        let lm = self.lag_max as i64;
-        for (idx, &v) in self.lag_hist.iter().enumerate() {
-            let off = idx as i64 - lm;
-            match best {
-                Some((bo, bv)) if v < bv + 1e-12 && !(((v - bv).abs() <= 1e-12) && off.abs() < bo.abs()) => {}
-                _ => best = Some((off, v)),
-            }
-        }
-        best.filter(|&(_, v)| v >= self.cfg.lag_evidence_s).map(|(o, _)| o)
-    }
-
     /// The error in cents for a raw difference by the octave mode in use (the target's
     /// shift is irrelevant when octaves are forgiven).
     fn error(&self, raw_cents: f64) -> f64 {
@@ -1025,7 +1093,7 @@ impl Scorer {
             if v.level < self.cfg.quiet_dbfs && v.midi.is_nan() {
                 bits |= C_QUIET;
             }
-            if v.level >= self.cfg.excuse_dbfs {
+            if v.level >= self.cfg.excuse_dbfs && v.clarity >= self.cfg.excuse_clarity {
                 bits |= C_LOUD;
             }
         }
@@ -1067,115 +1135,195 @@ impl Scorer {
         (Some(value), bits)
     }
 
-    /// Judges note `i` from the newest run's samples (see the module documentation). An
-    /// attempt covering less than half of the note leaves an earlier attempt in place.
+    /// Judges note `i` from the newest run's samples and passes it on: an unpitched note is
+    /// finished at once; a pitched note waits until the next pitched note has been judged,
+    /// and the timing of the one waiting is then decided together with it ("Timing" in the
+    /// module documentation). An attempt covering less than half of the note leaves an
+    /// earlier attempt in place. Allocates nothing.
     fn finish_note(&mut self, i: usize) {
-        let Some(r) = self.newest_run() else { return };
+        let slot = match &self.pending {
+            Some(p) => 1 - p.slot,
+            None => 0,
+        };
+        let Some(p) = self.judge(i, slot) else { return };
+        if !self.guide.notes[i].pitched {
+            self.resolve(p, None);
+            return;
+        }
+        if let Some(q) = self.pending.take() {
+            let next = (q.run == p.run).then_some(p);
+            self.resolve(q, next);
+        }
+        // Nothing to wait for when no pitched note follows close enough for the two
+        // renditions to meet (both shifted by the tolerance): decide it now.
+        let reach = 2.0 * p.j as f64 * p.h + self.cfg.overlap_s.max(0.0);
+        let coupled = self.guide.notes[i + 1..]
+            .iter()
+            .find(|n| n.pitched)
+            .is_some_and(|n| Self::judged_start(n, self.cfg.hop_s) < p.end + reach);
+        if coupled {
+            self.pending = Some(p);
+        } else {
+            self.resolve(p, None);
+        }
+    }
+
+    /// Finishes the note still waiting for its successor (the run ended: end of the take or
+    /// a seek).
+    fn flush_pending(&mut self) {
+        if let Some(q) = self.pending.take() {
+            self.resolve(q, None);
+        }
+    }
+
+    /// Fills the judging scratch for note `n` (`j` steps of margin, moment spacing `h` from
+    /// the judged start `a`) from run `r`.
+    fn fill_scratch(&mut self, r: &Run, n: &ScoreNote, a: f64, h: f64, k_n: usize, j: usize) {
+        for m in 0..k_n + 2 * j {
+            let x = a + (m as f64 - j as f64 + 0.5) * h;
+            let (v, bits) = self.singer_at(r, x);
+            self.sc_val[m] = v.unwrap_or(f64::NAN);
+            self.sc_cov[m] = bits;
+        }
+        for k in 0..k_n {
+            let tau = a + (k as f64 + 0.5) * h;
+            self.sc_tgt[k] = n.midi + f64::from(self.keys.key_at(tau, Some(r.segment)));
+        }
+    }
+
+    /// Judges note `i` in the newest run: the credit of every timing (`alpha`, `beta`) into
+    /// table `slot` (`f64::NEG_INFINITY` where the rendition would be shorter than
+    /// `min_rendition`). `None` when the run covers less than half of the note.
+    fn judge(&mut self, i: usize, slot: usize) -> Option<Pending> {
+        let r = self.newest_run()?;
+        let run = self.runs.len() - 1;
         let hop = self.cfg.hop_s;
         let bands = self.strictness.bands();
         let n = self.guide.notes[i].clone();
         let a = Self::judged_start(&n, hop);
         let k_n = Self::moments(&n, hop);
         let h = (n.end - a) / k_n as f64;
-        let j = ((bands.tolerance_s / hop).round() as usize).min((self.sc_val.len() - k_n) / 2);
-        let positions = k_n + 2 * j;
-        // Moment k at a + (k + 0.5) h; position m = k + j + d is moment k shifted by d hops.
-        for m in 0..positions {
-            let x = a + (m as f64 - j as f64 + 0.5) * h;
-            let (v, bits) = self.singer_at(&r, x);
-            self.sc_val[m] = v.unwrap_or(f64::NAN);
-            self.sc_cov[m] = bits;
-        }
+        let j = ((bands.tolerance_s / hop).round() as usize).min((self.sc_val.len() - k_n) / 2).min(self.tab_j);
+        self.fill_scratch(&r, &n, a, h, k_n, j);
         let covered = (0..k_n).filter(|&k| self.sc_cov[k + j] & C_COVERED != 0).count();
         if covered * 2 < k_n {
-            return;
+            return None;
         }
         // Only covered moments the input could be judged at count.
         let judged = (0..k_n).filter(|&k| self.sc_cov[k + j] & (C_COVERED | C_UNKNOWN) == C_COVERED).count();
-        // At most this many moments without a named pitch are excused (the singer was
-        // making sound: `ScoreConfig::excuse_share`).
+        // At most this many moments without a named pitch are excused.
         let max_excused = (self.cfg.excuse_share.clamp(0.0, 1.0) * judged as f64).floor() as usize;
-        // Each offset d (the singer's version of moment k is at position k + d): the sum of
-        // the moments' credits against the target with the key heard at each moment of this
-        // attempt, and the excusable moments; the note's credit at that offset is the sum
-        // over the moments not excused.
-        for d in 0..=2 * j {
-            let mut sum = 0.0;
-            let mut excusable = 0usize;
-            for k in 0..k_n {
-                if self.sc_cov[k + j] & (C_COVERED | C_UNKNOWN) != C_COVERED {
+        // The rendition is at least `min_rendition` of the judged length:
+        // beta - alpha >= -(1 - min_rendition) k_n.
+        let min_len = -(((1.0 - self.cfg.min_rendition.clamp(0.0, 1.0)) * k_n as f64).floor() as i64);
+        let ji = j as i64;
+        let w = 2 * j + 1;
+        let base = slot * self.tab_size;
+        let one_target = (1..k_n).all(|k| self.sc_tgt[k] == self.sc_tgt[0]);
+        if judged == k_n && one_target {
+            self.fill_table_fast(base, k_n, j, min_len, judged, max_excused, bands);
+        } else {
+            for alpha in -ji..=ji {
+                for beta in -ji..=ji {
+                    let idx = base + (alpha + ji) as usize * w + (beta + ji) as usize;
+                    self.tab[idx] = if beta - alpha < min_len {
+                        f64::NEG_INFINITY
+                    } else {
+                        let (sum, excusable) = self.warped_sum(k_n, j, alpha, beta, bands);
+                        let denom = judged - excusable.min(max_excused);
+                        if denom > 0 { sum / denom as f64 } else { 0.0 }
+                    };
+                }
+            }
+        }
+        Some(Pending { note: i, run, slot, j, k_n, h, a, end: n.end, judged, covered, max_excused, weight: judged as f64 * h })
+    }
+
+    /// Decides the timing of judged note `q` and finishes it. A pitched note's rendition
+    /// starts no earlier than the previous pitched note's rendition of the same run ended
+    /// (less `overlap_s`); with `next` (the next pitched note of the run, already judged)
+    /// the timing that gives the two notes together the most credit is taken, so a note
+    /// cannot take the start of the next note's rendition unless that gains more than the
+    /// next note loses. Ties: the least stretch, then the shift closest to the previous
+    /// note's.
+    fn resolve(&mut self, q: Pending, next: Option<Pending>) {
+        let ji = q.j as i64;
+        let w = 2 * q.j + 1;
+        let pitched = self.guide.notes[q.note].pitched;
+        let chained = pitched && q.judged > 0;
+        let ov = self.cfg.overlap_s.max(0.0);
+        let mut alpha_min = -ji;
+        let mut d_prev = 0.0;
+        if chained && self.chain_run == q.run && self.chain_end.is_finite() {
+            alpha_min = ((((self.chain_end - ov - q.a) / q.h) - 1e-9).ceil() as i64).clamp(-ji, ji);
+            d_prev = self.chain_shift;
+        }
+        // The next note's best credit for each earliest start it may take (suffix maximum
+        // over its start shift of the best over its end shift).
+        if let Some(p) = next.as_ref() {
+            let pj = p.j as i64;
+            let pw = 2 * p.j + 1;
+            let pb = p.slot * self.tab_size;
+            let mut run_max = f64::NEG_INFINITY;
+            for alpha in (-pj..=pj).rev() {
+                let row = pb + (alpha + pj) as usize * pw;
+                let best = self.tab[row..row + pw].iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                run_max = run_max.max(best);
+                self.sc_next[(alpha + pj) as usize] = run_max;
+            }
+        }
+        let qb = q.slot * self.tab_size;
+        let mut best = (f64::NEG_INFINITY, 0i64, 0i64);
+        // Ties: the least stretch (a plain shift explains a steady delay), then the shift
+        // closest to the previous note's (in steps of this note's spacing).
+        let mut best_cost = (i64::MAX, i64::MAX);
+        let d = (d_prev / q.h).round() as i64;
+        for alpha in alpha_min..=ji {
+            for beta in -ji..=ji {
+                let c = self.tab[qb + (alpha + ji) as usize * w + (beta + ji) as usize];
+                if c == f64::NEG_INFINITY {
                     continue;
                 }
-                let v = self.sc_val[k + d];
-                if v.is_nan() {
-                    if self.sc_cov[k + d] & (C_COVERED | C_UNKNOWN | C_LOUD) == (C_COVERED | C_LOUD) {
-                        excusable += 1;
+                let mut total = q.weight * c;
+                if let Some(p) = next.as_ref() {
+                    let pj = p.j as i64;
+                    let e = q.end + beta as f64 * q.h;
+                    let a_next = ((((e - ov - p.a) / p.h) - 1e-9).ceil() as i64).clamp(-pj, pj);
+                    let s = self.sc_next[(a_next + pj) as usize];
+                    if s.is_finite() {
+                        total += p.weight * s;
                     }
-                    continue;
                 }
-                let tau = a + (k as f64 + 0.5) * h;
-                let key = self.keys.key_at(tau, Some(r.segment));
-                let e = self.error(100.0 * (v - (n.midi + f64::from(key))));
-                sum += bands.credit(e);
-            }
-            self.sc_lag[d] = (sum, excusable);
-        }
-        let credit_at = |sum: f64, excusable: usize| {
-            let denom = judged - excusable.min(max_excused);
-            if denom > 0 { sum / denom as f64 } else { 0.0 }
-        };
-        // The singer's usual timing, once enough on-pitch singing supports it: this note
-        // is matched within `jitter_s` of it (see `ScoreConfig::jitter_s`).
-        let lm = self.lag_max as i64;
-        let (lo, hi) = match self.usual_lag() {
-            Some(u) => {
-                // A short note gets less room (a third of its length, at least two hops):
-                // otherwise most of it could be matched with a neighbour.
-                let len = n.end - n.start;
-                let jit = (self.cfg.jitter_s.min((len / 3.0).max(2.0 * hop)) / hop).round() as i64;
-                let lo = (u - jit).clamp(-(j as i64), j as i64);
-                let hi = (u + jit).clamp(-(j as i64), j as i64);
-                (lo, hi)
-            }
-            None => (-(j as i64), j as i64),
-        };
-        let mut best_credit = -1.0f64;
-        let mut best_d = j;
-        let mut best_excused = 0usize;
-        for off in lo..=hi {
-            let d = (off + j as i64) as usize;
-            let (sum, excusable) = self.sc_lag[d];
-            let c = credit_at(sum, excusable);
-            // Ties: the smaller offset (on time first, then early before late).
-            let better = c > best_credit + 1e-12
-                || ((c - best_credit).abs() <= 1e-12 && (d as i64 - j as i64).abs() < (best_d as i64 - j as i64).abs());
-            if better {
-                best_credit = c;
-                best_d = d;
-                best_excused = excusable.min(max_excused);
-            }
-        }
-        let credit = if judged > 0 { best_credit.clamp(0.0, 1.0) } else { 0.0 };
-        // Learn the usual timing from graded notes (decayed by the song time between them).
-        if self.gradable[i] && !in_spans(&self.excluded, n.midpoint()) && judged > 0 {
-            let t = n.midpoint();
-            if self.lag_t.is_finite() {
-                let f = libm::exp(-((t - self.lag_t).max(0.0)) / self.cfg.lag_memory_s.max(1e-3));
-                for x in &mut self.lag_hist {
-                    *x *= f;
-                }
-            }
-            self.lag_t = t;
-            let w = judged as f64 * h;
-            for d in 0..=2 * j {
-                let idx = d as i64 - j as i64 + lm;
-                if idx >= 0 && (idx as usize) < self.lag_hist.len() {
-                    let (sum, excusable) = self.sc_lag[d];
-                    self.lag_hist[idx as usize] += w * credit_at(sum, excusable);
+                let cost = ((beta - alpha).abs(), (alpha - d).abs() + (beta - d).abs());
+                if total > best.0 + 1e-9 || ((total - best.0).abs() <= 1e-9 && cost < best_cost) {
+                    best = (total, alpha, beta);
+                    best_cost = cost;
                 }
             }
         }
-        // Errors near the target at the chosen offset, for the tendency.
+        let (alpha, beta) = if best.0 == f64::NEG_INFINITY { (0, 0) } else { (best.1, best.2) };
+        if chained {
+            self.chain_run = q.run;
+            self.chain_end = q.end + beta as f64 * q.h;
+            self.chain_shift = beta as f64 * q.h;
+        }
+        self.finalize(q, alpha, beta);
+    }
+
+    /// Records the outcome of note `q` at the chosen timing (credit, tendency errors, the
+    /// live "done" entry).
+    fn finalize(&mut self, q: Pending, alpha: i64, beta: i64) {
+        let i = q.note;
+        let Some(r) = self.runs.get(q.run).copied() else { return };
+        let n = self.guide.notes[i].clone();
+        let (k_n, j, h) = (q.k_n, q.j, q.h);
+        self.fill_scratch(&r, &n, q.a, h, k_n, j);
+        let bands = self.strictness.bands();
+        let (sum, excusable) = self.warped_sum(k_n, j, alpha, beta, bands);
+        let excused = excusable.min(q.max_excused);
+        let denom = q.judged - excused;
+        let credit = if q.judged > 0 && denom > 0 { (sum / denom as f64).clamp(0.0, 1.0) } else { 0.0 };
+        // Errors near the target at the chosen timing, for the tendency.
         let (e0, e1) = (self.err_slot[i], self.err_slot[i + 1]);
         let mut ne = 0usize;
         let mut sum_e = 0.0;
@@ -1198,20 +1346,18 @@ impl Scorer {
             if c & C_QUIET != 0 {
                 quiet += 1;
             }
-            let v = self.sc_val[k + best_d];
+            let v = self.sc_val[Self::warp_pos(k, k_n, j, alpha, beta)];
             if v.is_nan() {
                 continue;
             }
-            let tau = a + (k as f64 + 0.5) * h;
-            let key = self.keys.key_at(tau, Some(r.segment));
-            let e = self.error(100.0 * (v - (n.midi + f64::from(key))));
+            let e = self.error(100.0 * (v - self.sc_tgt[k]));
             if e.abs() <= self.cfg.tendency_window_cents && e0 + ne < e1 {
                 self.errs[e0 + ne] = e;
                 ne += 1;
                 sum_e += e;
             }
         }
-        let unknown_note = unknown * 2 >= covered;
+        let unknown_note = unknown * 2 >= q.covered;
         let key = self.keys.key_at(n.midpoint(), Some(r.segment));
         let graded = self.gradable[i] && !unknown_note;
         let o = NoteOutcome {
@@ -1221,12 +1367,14 @@ impl Scorer {
             unknown: unknown_note,
             key,
             mean_err: (ne > 0).then(|| sum_e / ne as f64),
-            delta_s: (best_d as f64 - j as f64) * h,
-            weight_s: judged as f64 * h,
+            delta_s: 0.5 * (alpha + beta) as f64 * h,
+            weight_s: q.judged as f64 * h,
             segment: r.segment,
-            covered: judged as u32,
+            covered: q.judged as u32,
             voiced,
-            excused: best_excused as u32,
+            excused: excused as u32,
+            start_shift_s: alpha as f64 * h,
+            end_shift_s: beta as f64 * h,
             sound,
             quiet,
             errs: (e0, e0 + ne),
@@ -1234,6 +1382,140 @@ impl Scorer {
         let shown = graded && !in_spans(&self.excluded, n.midpoint());
         self.live.done.push((i, shown.then_some(credit), key, o.mean_err));
         self.outcomes[i] = Some(o);
+    }
+
+    /// The credit table of a note whose moments are all judged against one target, in
+    /// O(positions + stretches x moments) instead of O(timings x moments): the credit of
+    /// each scratch position and whether it is excusable are summed into prefix arrays;
+    /// for each stretch `d = beta - alpha` the moments land on one contiguous run of
+    /// positions, less the positions skipped (stretch) or plus those landed on twice
+    /// (compression), the same for every start shift. Gives the sums `warped_sum` gives,
+    /// up to the order of the additions.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_table_fast(&mut self, base: usize, k_n: usize, j: usize, min_len: i64, judged: usize, max_excused: usize, bands: Bands) {
+        let ji = j as i64;
+        let w = 2 * j + 1;
+        let positions = k_n + 2 * j;
+        let tgt = self.sc_tgt[0];
+        self.sc_csum[0] = 0.0;
+        self.sc_esum[0] = 0;
+        for m in 0..positions {
+            let v = self.sc_val[m];
+            let (c, e) = if v.is_nan() {
+                (0.0, u32::from(self.sc_cov[m] & (C_COVERED | C_UNKNOWN | C_LOUD) == (C_COVERED | C_LOUD)))
+            } else {
+                (bands.credit(self.error(100.0 * (v - tgt))), 0)
+            };
+            self.sc_csum[m + 1] = self.sc_csum[m] + c;
+            self.sc_esum[m + 1] = self.sc_esum[m] + e;
+        }
+        for d in -2 * ji..=2 * ji {
+            // Timings with this stretch: alpha in -j..=j with beta = alpha + d in -j..=j.
+            let (a_lo, a_hi) = ((-ji).max(-ji - d), ji.min(ji - d));
+            if a_lo > a_hi {
+                continue;
+            }
+            if d < min_len {
+                for alpha in a_lo..=a_hi {
+                    self.tab[base + (alpha + ji) as usize * w + (alpha + d + ji) as usize] = f64::NEG_INFINITY;
+                }
+                continue;
+            }
+            // Where the moments land (relative to the start shift) and the corrections.
+            let g0 = Self::warp_step(0, k_n, d);
+            let g1 = Self::warp_step(k_n - 1, k_n, d);
+            let mut nc = 0usize;
+            let mut prev = g0;
+            let mut ok = true;
+            for k in 1..k_n {
+                let g = Self::warp_step(k, k_n, d);
+                match g - prev {
+                    1 => {}
+                    0 if nc < self.sc_corr.len() => {
+                        self.sc_corr[nc] = (g, 1);
+                        nc += 1;
+                    }
+                    step if step >= 2 && nc + (step as usize - 1) <= self.sc_corr.len() => {
+                        for q in prev + 1..g {
+                            self.sc_corr[nc] = (q, -1);
+                            nc += 1;
+                        }
+                    }
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+                prev = g;
+            }
+            for alpha in a_lo..=a_hi {
+                let beta = alpha + d;
+                let idx = base + (alpha + ji) as usize * w + (beta + ji) as usize;
+                let off = ji + alpha;
+                let (lo, hi) = (off + g0, off + g1);
+                if !ok || lo < 0 || hi >= positions as i64 {
+                    // Outside the scratch (clamped positions): the plain sum.
+                    let (sum, excusable) = self.warped_sum(k_n, j, alpha, beta, bands);
+                    let denom = judged - excusable.min(max_excused);
+                    self.tab[idx] = if denom > 0 { sum / denom as f64 } else { 0.0 };
+                    continue;
+                }
+                let (lo, hi) = (lo as usize, hi as usize);
+                let mut sum = self.sc_csum[hi + 1] - self.sc_csum[lo];
+                let mut exc = i64::from(self.sc_esum[hi + 1]) - i64::from(self.sc_esum[lo]);
+                for &(q, sign) in &self.sc_corr[..nc] {
+                    let m = (off + q) as usize;
+                    let v = self.sc_val[m];
+                    if v.is_nan() {
+                        if self.sc_cov[m] & (C_COVERED | C_UNKNOWN | C_LOUD) == (C_COVERED | C_LOUD) {
+                            exc += i64::from(sign);
+                        }
+                    } else {
+                        sum += f64::from(sign) * bands.credit(self.error(100.0 * (v - tgt)));
+                    }
+                }
+                let excusable = exc.max(0) as usize;
+                let denom = judged - excusable.min(max_excused);
+                self.tab[idx] = if denom > 0 { sum / denom as f64 } else { 0.0 };
+            }
+        }
+    }
+
+    /// Position (index into the judging scratch) of moment `k` of `k_n` under the shifts
+    /// `alpha` (start) and `beta` (end), in steps of the moment spacing, with `j` steps of
+    /// margin on each side.
+    #[inline]
+    fn warp_pos(k: usize, k_n: usize, j: usize, alpha: i64, beta: i64) -> usize {
+        (j as i64 + alpha + Self::warp_step(k, k_n, beta - alpha)).clamp(0, (k_n + 2 * j - 1) as i64) as usize
+    }
+
+    /// Where moment `k` of `k_n` lands, relative to its start shift, under a stretch of
+    /// `d` steps: `k + round(d (k + 0.5) / k_n)`.
+    #[inline]
+    fn warp_step(k: usize, k_n: usize, d: i64) -> i64 {
+        k as i64 + (d as f64 * ((k as f64 + 0.5) / k_n as f64)).round() as i64
+    }
+
+    /// Sum of the credits of the judged moments of the note being finished under the shifts
+    /// `alpha`, `beta`, and how many of them could be excused (no pitch, periodic sound).
+    fn warped_sum(&self, k_n: usize, j: usize, alpha: i64, beta: i64, bands: Bands) -> (f64, usize) {
+        let mut sum = 0.0;
+        let mut excusable = 0usize;
+        for k in 0..k_n {
+            if self.sc_cov[k + j] & (C_COVERED | C_UNKNOWN) != C_COVERED {
+                continue;
+            }
+            let m = Self::warp_pos(k, k_n, j, alpha, beta);
+            let v = self.sc_val[m];
+            if v.is_nan() {
+                if self.sc_cov[m] & (C_COVERED | C_UNKNOWN | C_LOUD) == (C_COVERED | C_LOUD) {
+                    excusable += 1;
+                }
+                continue;
+            }
+            sum += bands.credit(self.error(100.0 * (v - self.sc_tgt[k])));
+        }
+        (sum, excusable)
     }
 
     /// Takes the live output gathered since the last call (the vectors keep their capacity
@@ -1316,6 +1598,7 @@ impl Scorer {
     /// Ends the take: finishes the notes still open (by what was sung of them) and grades.
     pub fn finish(&mut self, ctx: &FinishContext) -> ScoreResult {
         self.finish_reached();
+        self.flush_pending();
         let spans = self.covered_spans();
         let mut total = 0u32;
         let mut graded = 0u32;

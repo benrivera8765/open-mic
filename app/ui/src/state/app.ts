@@ -29,8 +29,10 @@ import type {
 } from "../api/types";
 import { clampKey } from "../lib/keys";
 import { exportGainNotice, formatBytes } from "../lib/format";
+import { DEFAULT_PRACTICE_SETTINGS } from "../api/defaults";
 import { PlaybackClock } from "../lib/clock";
 import { Store, useSelector } from "./store";
+import { initPractice } from "./practice";
 
 export type Screen = "library" | "stage" | "sync" | "recorder" | "studio" | "settings";
 export type Overlay = null | "help" | "selfcheck";
@@ -233,6 +235,8 @@ export async function init(theApi: Api): Promise<void> {
     store.set((s) => ({ exports: { ...s.exports, [job_id]: { progress: 0, path: null, error: message, notice: null } } }));
     toast(message, "error");
   });
+  // WO2: practice mode's events (state/practice.ts).
+  initPractice(api);
 
   try {
     const [info, settings] = await Promise.all([api.appInfo(), api.settingsGet()]);
@@ -539,8 +543,11 @@ export async function setFullscreen(on: boolean): Promise<void> {
 
 function mergeSettings(base: AppSettings, ch: AppSettingsChanges): AppSettings {
   return {
+    ...base,
     ui: { ...base.ui, ...(ch.ui ?? {}), colors: { ...base.ui.colors, ...(ch.ui?.colors ?? {}) } },
     audio: { ...base.audio, ...(ch.audio ?? {}), device_offsets_ms: { ...base.audio.device_offsets_ms, ...(ch.audio?.device_offsets_ms ?? {}) } },
+    // WO2 (APP_API 12.7): practice settings, one level deep (the maps are written by the core).
+    ...(base.practice || ch.practice ? { practice: { ...DEFAULT_PRACTICE_SETTINGS, ...(base.practice ?? {}), ...(ch.practice ?? {}) } } : {}),
   };
 }
 
@@ -564,6 +571,7 @@ function mergeChanges(a: AppSettingsChanges, b: AppSettingsChanges): AppSettings
       a.audio || b.audio
         ? { ...(a.audio ?? {}), ...(b.audio ?? {}), ...(a.audio?.device_offsets_ms || b.audio?.device_offsets_ms ? { device_offsets_ms: { ...(a.audio?.device_offsets_ms ?? {}), ...(b.audio?.device_offsets_ms ?? {}) } } : {}) }
         : undefined,
+    practice: a.practice || b.practice ? { ...(a.practice ?? {}), ...(b.practice ?? {}) } : undefined,
   };
 }
 

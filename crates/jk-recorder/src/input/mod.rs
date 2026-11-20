@@ -477,6 +477,41 @@ pub fn mic_permission() -> MicPermission {
     platform::mic_permission()
 }
 
+/// Windows' microphone privacy switches, read only (never changed): "allow", "deny" or
+/// "unset" (absent, which Windows treats as allowed). App core section 12.4
+/// `MicPermission.windows`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct MicPrivacySwitches {
+    /// "Microphone access" for this computer.
+    pub microphone_access: &'static str,
+    /// "Microphone access" for this user.
+    pub user_access: &'static str,
+    /// "Let desktop apps access your microphone".
+    pub desktop_apps: &'static str,
+}
+
+/// The switches on Windows; `None` on other systems.
+pub fn mic_privacy_switches() -> Option<MicPrivacySwitches> {
+    #[cfg(windows)]
+    {
+        let word = |v: &Option<String>| match v.as_deref() {
+            Some(s) if s.eq_ignore_ascii_case("Deny") => "deny",
+            Some(s) if s.eq_ignore_ascii_case("Allow") => "allow",
+            _ => "unset",
+        };
+        let [machine, user, desktop] = win::privacy_switches();
+        Some(MicPrivacySwitches {
+            microphone_access: word(&machine),
+            user_access: word(&user),
+            desktop_apps: word(&desktop),
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// Ask the OS for microphone access. macOS shows its prompt the first time
 /// only (afterwards this returns the stored answer), and the answer arrives
 /// asynchronously: this returns at once and the caller polls

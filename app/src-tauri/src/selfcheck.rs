@@ -22,6 +22,11 @@
 //!    playback), with the right length and a finite, non-silent output.
 //! 8. Key change: the test tone rendered at +2 and -5 semitones; the measured pitch
 //!    must be within 5 cents of the target and the length unchanged.
+//! 9-14. (WO2, APP_API 10.1) Practice: microphone permission, a 3-second microphone
+//!    capture (analysed in memory, never written), the pitch tracker on generated tones
+//!    through the real input path with its speed, the demo song's guide (read and built
+//!    again), generated singers scored through the whole practice path, and the lane's
+//!    drawing cost measured by the web view (src/practice/checks.rs). None makes a sound.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -53,6 +58,8 @@ pub struct Options {
     pub user_agent: Option<String>,
     /// Digital silence instead of the -60 dBFS tone.
     pub silent: bool,
+    /// (WO2) The practice lane's drawing cost the UI measured (APP_API 10.1).
+    pub lane: Option<crate::practice::checks::LaneCost>,
 }
 
 /// Peak of the audible test tone: -60 dBFS (WORK_ORDER: people are around).
@@ -143,6 +150,20 @@ pub fn run(core: &Core, opts: &Options) -> SelfcheckResult {
         items.push(check_key_change(core, &tone_path, &tmp));
     }
     let _ = std::fs::remove_file(&tone_path);
+
+    // (WO2, APP_API 10.1) The six practice items. None makes a sound.
+    {
+        use crate::practice::checks;
+        items.push(checks::permission(&core.practice));
+        items.push(checks::capture(&core.practice));
+        items.push(checks::tracker());
+        let demo = find_demo_song(core);
+        let (guide_item, demo_guide) = checks::demo_guide(&core.practice, demo.as_deref());
+        items.push(guide_item);
+        items.push(checks::score(demo_guide.as_ref()));
+        let lane = opts.lane.clone().or_else(|| core.practice.lane_cost.lock().unwrap_or_else(|e| e.into_inner()).clone());
+        items.push(checks::lane(lane.as_ref()));
+    }
 
     let passed = items.iter().all(|i| i.ok);
     let report_path = write_report(core, opts, &items, passed, started.elapsed());

@@ -242,6 +242,29 @@ pub struct PlayerState {
     pub key_preparing: Option<KeyPreparing>,
     /// Addition: why prerender was asked for but real time is used (plain words).
     pub key_note: Option<String>,
+    // ---- (added WO2, D-239) the key HEARD: practice mode draws and grades with it ----
+    /// Semitones sounding at the DAC now, i.e. at `position_s`.
+    pub key_heard: i32,
+    /// The key last asked for (= settings.semitones).
+    pub key_requested: i32,
+    /// The next change of the key heard: from song time `at_s` on (`None`: not
+    /// scheduled yet, render ahead still rendering).
+    pub key_pending: Option<KeyPendingView>,
+    /// Playback segment `position_s` and `key_heard` belong to.
+    pub key_segment: u64,
+    /// As `key_label`, for the key heard.
+    pub key_heard_label: Option<String>,
+    /// "sharps" | "flats": how to name notes in the key heard.
+    pub key_spelling: &'static str,
+    /// The same for `key_pending`.
+    pub key_pending_spelling: Option<&'static str>,
+}
+
+/// `PlayerState.key_pending` / `playback://clock` `key_pending` (APP_API 3, WO2).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct KeyPendingView {
+    pub semitones: i32,
+    pub at_s: Option<f64>,
 }
 
 /// `PlayerState.key_preparing`: the UI shows "Preparing key +2... 40%".
@@ -254,8 +277,17 @@ pub struct KeyPreparing {
     pub progress: f64,
 }
 
-/// What the clock thread compares to decide whether to emit `playback://state`.
-type StateKey = (&'static str, Option<String>, &'static str, Option<(i32, String, i32)>, Option<String>);
+/// What the clock thread compares to decide whether to emit `playback://state`
+/// (state, song, key mode, preparation, note, and (WO2) heard / requested / pending key and
+/// segment, with the pending switch time in whole milliseconds).
+type StateKey = (
+    &'static str,
+    Option<String>,
+    &'static str,
+    Option<(i32, String, i32)>,
+    Option<String>,
+    (i32, i32, Option<(i32, Option<i64>)>, u64),
+);
 
 /// Key-change mode inputs (the setting and this computer's measurements by rate).
 #[derive(Default)]
@@ -281,6 +313,11 @@ pub struct ClockEvent {
     pub position_s: f64,
     pub playing: bool,
     pub seq: u64,
+    /// (added WO2) The key heard at `position_s`, the next change and the segment, so the
+    /// practice lane moves its bars when the key that is heard changes.
+    pub key_heard: i32,
+    pub key_pending: Option<KeyPendingView>,
+    pub segment: u64,
 }
 
 /// `song_load` result (docs/APP_API.md `SongDetail`).
@@ -293,6 +330,31 @@ pub struct SongDetail {
     pub stems: Vec<jk_engine::StemInfo>,
     pub sample_rate: u32,
     pub channels: u16,
+    /// (added WO2) As in the summary (APP_API 3, 12.3).
+    pub guide: crate::guide::GuideStatus,
+}
+
+/// `PlayerState.key_pending` from the engine's key status.
+fn pending_view(k: &jk_engine::KeyStatus) -> Option<KeyPendingView> {
+    k.pending.map(|p| KeyPendingView { semitones: p.semitones, at_s: p.at_s })
+}
+
+/// The key heard at `position` and the change still to come, for an event that reports
+/// `position` (APP_API 3 / 12.1: `key_heard` is the key at `position_s`).
+///
+/// The engine's `KeyStatus::heard` is the key at the snapshot's own DAC position, while
+/// the events report that position moved on to the moment they are sent (`position_now`,
+/// up to 0.1 s further). A pending change whose `at_s` lies between the two has already
+/// been heard at the reported position. Without this, an event sent just after `at_s`
+/// paired the new position with the old key, and the practice lane, which trusts the
+/// pair, switched the bars to the new key at `at_s`, back to the old one, and to the new
+/// one again on the next event (measured in the real app: 60-95 ms of wrong bars at each
+/// key change, Stage 3b).
+pub(crate) fn heard_at(k: &jk_engine::KeyStatus, position: f64) -> (i32, Option<KeyPendingView>) {
+    match k.pending {
+        Some(p) if p.at_s.is_some_and(|t| t <= position) => (p.semitones, None),
+        _ => (k.heard, pending_view(k)),
+    }
 }
 
 /// The loaded song.
@@ -487,10 +549,13 @@ impl Player {
     fn state_from(&self, snap: &Snapshot) -> PlayerState {
         let cur = self.current();
         let loading = self.loading.load(Ordering::SeqCst);
+        // One position for the whole state, and the key heard AT that position.
+        let position_s = position_now(snap);
+        let (heard, pending) = heard_at(&snap.key, position_s);
         PlayerState {
             state: if loading { "loading" } else { state_name(snap.state) },
             song_id: cur.as_ref().map(|c| c.song_id.clone()),
-            position_s: position_now(snap),
+            position_s,
             duration_s: if snap.duration_s > 0.0 {
                 snap.duration_s
             } else {
@@ -521,7 +586,23 @@ impl Player {
                 progress: (p.progress as f64).clamp(0.0, 1.0),
             }),
             key_note: snap.key.note.clone(),
+            key_heard: heard,
+            key_requested: snap.key.requested,
+            key_segment: snap.key.segment,
+            key_heard_label: cur.as_ref().map(|c| key_label(c.key, heard)),
+            key_spelling: crate::keys::note_spelling(cur.as_ref().and_then(|c| c.key), heard),
+            key_pending_spelling: pending.map(|p| crate::keys::note_spelling(cur.as_ref().and_then(|c| c.key), p.semitones)),
+            key_pending: pending,
         }
+    }
+
+    /// `player_key_at(position_s, segment?)`: the key heard at that song time (APP_API 3,
+    /// WO2), from the engine's bounded history.
+    pub fn key_at(&self, position_s: f64, segment: Option<u64>) -> ApiResult<Option<i32>> {
+        if !position_s.is_finite() {
+            return Err(ApiError::bad_request("The position must be a number of seconds."));
+        }
+        Ok(self.engine.key_at(position_s, segment))
     }
 
     fn emit_state(&self) -> PlayerState {
@@ -534,10 +615,15 @@ impl Player {
     }
 
     fn emit_clock(&self, snap: &Snapshot) {
+        let position_s = position_now(snap);
+        let (key_heard, key_pending) = heard_at(&snap.key, position_s);
         let ev = ClockEvent {
-            position_s: position_now(snap),
+            position_s,
             playing: snap.state == PlaybackState::Playing,
             seq: self.seq.fetch_add(1, Ordering::SeqCst) + 1,
+            key_heard,
+            key_pending,
+            segment: snap.key.segment,
         };
         emit(&*self.sink, names::PLAYBACK_CLOCK, &ev);
     }
@@ -620,6 +706,7 @@ impl Player {
             duration_s: loaded.duration_s,
         }));
         Ok(SongDetail {
+            guide: summary.guide.clone(),
             summary,
             lyrics,
             lyrics_is_override: override_lyrics,
@@ -855,7 +942,13 @@ impl Player {
             let st = self.state_from(&snap);
             // Key preparation progress counts in whole percent (a few dozen events).
             let prep = st.key_preparing.as_ref().map(|p| (p.semitones, p.reason.clone(), (p.progress * 100.0).round() as i32));
-            let key: StateKey = (st.state, st.song_id.clone(), st.key_mode, prep, st.key_note.clone());
+            let heard = (
+                st.key_heard,
+                st.key_requested,
+                st.key_pending.map(|p| (p.semitones, p.at_s.map(|t| (t * 1000.0).round() as i64))),
+                st.key_segment,
+            );
+            let key: StateKey = (st.state, st.song_id.clone(), st.key_mode, prep, st.key_note.clone(), heard);
             let changed = last_state.as_ref() != Some(&key);
             if changed {
                 emit(&*self.sink, names::PLAYBACK_STATE, &st);
@@ -918,5 +1011,26 @@ mod tests {
         let view = SongSettings::from_format(&jk_format::Settings::default());
         assert_eq!(view.levels["drums"], 1.0);
         assert_eq!(view.levels["other"], 1.0);
+    }
+
+    #[test]
+    fn the_key_heard_belongs_to_the_reported_position() {
+        // The snapshot says key 0 at its DAC position, with -3 heard from 10.000 s.
+        let k = jk_engine::KeyStatus {
+            heard: 0,
+            requested: -3,
+            pending: Some(jk_engine::KeyPending { semitones: -3, at_s: Some(10.0) }),
+            ..Default::default()
+        };
+        // Reported before the change: the old key, the change still coming.
+        assert_eq!(heard_at(&k, 9.99), (0, Some(KeyPendingView { semitones: -3, at_s: Some(10.0) })));
+        // Reported at or after it (the event's position ran on past at_s): already heard.
+        assert_eq!(heard_at(&k, 10.0), (-3, None));
+        assert_eq!(heard_at(&k, 10.04), (-3, None));
+        // A change without a position yet (render ahead still rendering): the old key stays.
+        let r = jk_engine::KeyStatus { heard: 0, pending: Some(jk_engine::KeyPending { semitones: -3, at_s: None }), ..Default::default() };
+        assert_eq!(heard_at(&r, 50.0), (0, Some(KeyPendingView { semitones: -3, at_s: None })));
+        // Nothing pending: the snapshot's key.
+        assert_eq!(heard_at(&jk_engine::KeyStatus { heard: 2, ..Default::default() }, 1.0), (2, None));
     }
 }

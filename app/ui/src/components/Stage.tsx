@@ -3,7 +3,12 @@
 // with its colour wipe, or the scrolling ticker: settings.ui.lyrics_display, D-218);
 // full-screen mode shows only this. Class hooks: .stage, .stage--fullscreen,
 // .stage__info, .stage__title, .stage__artist, .stage__key, .stage__time,
-// .stage__lane, .stage__empty, .stage__unchecked, .stage__tools.
+// .stage__lane, .stage__empty, .stage__unchecked, .stage__tools, .stage__practice.
+//
+// Practice mode (WO2 4.5) is a mode of this screen, not a second player: the Practice
+// plate (or P) turns it on; the lane and the lyrics then share the lyrics area
+// (practice/PracticeView.tsx) and the transport, key dial and mixer keep working. With
+// practice off this screen is exactly as before.
 import { useState } from "preact/hooks";
 import { formatTime } from "../lib/format";
 import { keyLabel } from "../lib/keys";
@@ -11,6 +16,8 @@ import { deviceOffsetMs, go, saveMetadata, setFullscreen, useApp } from "../stat
 import { PageLyrics } from "../ticker/PageLyrics";
 import { Ticker } from "../ticker/Ticker";
 import { usePosition } from "./Transport";
+import { PracticeTools, PracticeView } from "../practice/PracticeView";
+import { togglePractice, usePractice } from "../state/practice";
 
 function MetadataEditor({ onClose }: { onClose: () => void }) {
   const song = useApp((s) => s.song);
@@ -53,6 +60,7 @@ export function Stage() {
   const fullscreen = useApp((s) => s.fullscreen);
   const pos = usePosition(2);
   const [editing, setEditing] = useState(false);
+  const practising = usePractice((p) => p.on);
 
   if (!song || !st || !ui) {
     return (
@@ -79,7 +87,17 @@ export function Stage() {
           {formatTime(pos)} / {formatTime(s.duration_s)}
         </p>
         <div class="stage__tools">
-          {!fullscreen && (
+          <button
+            type="button"
+            class="button button--small stage__practice"
+            aria-pressed={practising}
+            onClick={() => togglePractice()}
+            title={practising ? "Leave practice mode (P)" : "Practice: sing into your microphone and see your pitch on the notes (P)"}
+          >
+            Practice
+          </button>
+          {practising && <PracticeTools />}
+          {!fullscreen && !practising && (
             <>
               <button type="button" class="button button--small" onClick={() => setEditing((v) => !v)} aria-expanded={editing}>
                 Edit details
@@ -101,11 +119,14 @@ export function Stage() {
         </div>
       </div>
       {editing && <MetadataEditor onClose={() => setEditing(false)} />}
-      {song.lyrics && !song.lyrics.checked && (
+      {song.lyrics && !song.lyrics.checked && !practising && (
         <p class="stage__unchecked" role="note">
           These lyrics were {song.lyrics.source === "transcribed" ? "transcribed by the computer" : "added automatically"} and nobody has checked them yet. You can correct them with “Fix lyrics timing”.
         </p>
       )}
+      {practising ? (
+        <PracticeView song={song} lyricsOffsetS={offsetS} deviceOffsetS={devOffset / 1000} />
+      ) : (
       <div class="stage__lane">
         {song.lyrics && song.lyrics.lines.length > 0 ? (
           ui.lyrics_display === "scroll" ? (
@@ -117,6 +138,7 @@ export function Stage() {
           <p class="stage__empty">This song has no lyrics (an instrumental). Sing along by ear, or add lyrics in the Studio.</p>
         )}
       </div>
+      )}
     </div>
   );
 }

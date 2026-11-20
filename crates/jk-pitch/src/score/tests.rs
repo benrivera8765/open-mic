@@ -52,7 +52,15 @@ fn guide_at(g: &ScoreGuide, t: f64, key: f64) -> Option<f64> {
 /// One tracker value at song time `t`: a singer at -20 dBFS while they have a pitch, the
 /// quiet of a room (-90 dBFS) when they have none.
 fn at(t: f64, segment: u64, midi: Option<f64>) -> SingerSample {
-    SingerSample { t, segment, midi, level_db: if midi.is_some() { -20.0 } else { -90.0 }, unknown: false, music: false }
+    SingerSample {
+        t,
+        segment,
+        midi,
+        level_db: if midi.is_some() { -20.0 } else { -90.0 },
+        unknown: false,
+        music: false,
+        clarity: if midi.is_some() { 0.95 } else { 0.1 },
+    }
 }
 
 /// Grades a singer given as a function of song time over the whole song, one segment.
@@ -273,7 +281,7 @@ fn a_note_sung_again_after_a_seek_keeps_its_latest_attempt() {
     // First pass: silent through the whole song (segment 0).
     for i in 0..(g.duration_s / HOP) as usize {
         let t = i as f64 * HOP;
-        s.push(SingerSample { t, segment: 0, midi: None, level_db: -80.0, unknown: false, music: false });
+        s.push(SingerSample { t, segment: 0, midi: None, level_db: -80.0, unknown: false, music: false, clarity: 0.1 });
     }
     // Seek back to 0 (segment 1) and sing perfectly.
     for i in 0..(g.duration_s / HOP) as usize {
@@ -403,84 +411,185 @@ fn key_timeline_rules() {
     assert_eq!(k.shifted(1).key_at(12.0, Some(0)), -2);
 }
 
-/// Grades with per-moment levels: `singer` gives (pitch, level dBFS).
-fn grade_lv(g: &ScoreGuide, cfg: ScoreConfig, singer: impl Fn(f64) -> (Option<f64>, f32)) -> ScoreResult {
+/// Grades with per-moment levels and clarity: `singer` gives (pitch, level dBFS, clarity).
+fn grade_lc(g: &ScoreGuide, cfg: ScoreConfig, singer: impl Fn(f64) -> (Option<f64>, f32, f32)) -> ScoreResult {
     let mut s = Scorer::new(cfg, g.clone(), KeyTimeline::constant(0), Vec::new(), g.duration_s);
     for i in 0..(g.duration_s / HOP) as usize {
         let t = i as f64 * HOP;
-        let (midi, level_db) = singer(t);
-        s.push(SingerSample { t, segment: 0, midi, level_db, unknown: false, music: false });
+        let (midi, level_db, clarity) = singer(t);
+        s.push(SingerSample { t, segment: 0, midi, level_db, unknown: false, music: false, clarity });
     }
     s.finish(&FinishContext { completed: true, flags: vec![] })
 }
 
 #[test]
-fn moments_the_tracker_could_not_hear_are_excused_only_while_the_singer_makes_sound() {
+fn only_periodic_sound_the_tracker_could_not_resolve_is_excused() {
     let g = melody(20);
     // The pitch of the note sounding at t, and how far into it t is (0..1).
     let note = |t: f64| g.notes.iter().find(|n| t >= n.start && t < n.end).map(|n| (n.midi, (t - n.start) / (n.end - n.start)));
-    // The tracker names no pitch for the first fifth of every note (a slow onset), while
-    // the singer is singing loudly: excused, full marks.
-    let onset = grade_lv(&g, std_cfg(), |t| match note(t) {
-        Some((m, u)) => (if u < 0.2 { None } else { Some(m) }, -20.0),
-        None => (None, -90.0),
-    });
-    assert_eq!(onset.overall, Some(100.0), "slow onsets");
-    assert!(onset.voiced_share < 0.85, "the raw voiced share still says what was heard: {}", onset.voiced_share);
-    assert!(onset.notes.iter().all(|n| n.excused > 0));
-    // The same with silence instead of sound: not excused.
-    let late_entry = grade_lv(&g, std_cfg(), |t| match note(t) {
-        Some((m, u)) if u >= 0.45 => (Some(m), -20.0),
-        _ => (None, -90.0),
-    });
-    let o = late_entry.overall.unwrap();
-    assert!(o < 75.0, "silence is never excused: {o}");
-    // A note spoken or whispered (sound, never a pitch) scores nothing.
-    let spoken = grade_lv(&g, std_cfg(), |t| (None, if note(t).is_some() { -20.0 } else { -90.0 }));
-    assert_eq!(spoken.overall, Some(0.0));
-    // Half sung on pitch, half spoken: at most two thirds.
-    let half = grade_lv(&g, std_cfg(), |t| match note(t) {
-        Some((m, u)) => (if u < 0.5 { Some(m) } else { None }, -20.0),
-        None => (None, -90.0),
+    // The middle 23 % of every note (90 ms): no pitch named. The timing tolerance cannot
+    // skip the middle of a note and the 40 ms bridge cannot span it, so only the excusal
+    // rule decides.
+    let mid = |u: f64| (0.385..0.615).contains(&u);
+    let with = |level: f32, clarity: f32| {
+        grade_lc(&g, std_cfg(), move |t| match note(t) {
+            Some((_, u)) if mid(u) => (None, level, clarity),
+            Some((m, _)) => (Some(m), -20.0, 0.95),
+            None => (None, -90.0, 0.1),
+        })
+    };
+    // Periodic sound the tracker did not resolve (a low or rough voice): excused.
+    let voiced = with(-20.0, 0.85);
+    assert_eq!(voiced.overall, Some(100.0), "voiced but unresolved");
+    assert!(voiced.voiced_share < 0.85, "the raw voiced share still says what was heard: {}", voiced.voiced_share);
+    assert!(voiced.notes.iter().all(|n| n.excused > 0));
+    // Breath, whisper or a consonant (sound, but not periodic), and periodic sound too
+    // quiet to be the singer: never excused, they score exactly what silence scores (the
+    // 70 of 90 ms not reached by the samples either side lost).
+    let silence = with(-90.0, 0.1).overall.unwrap();
+    assert!((80.0..=85.0).contains(&silence), "silence: {silence}");
+    for (what, level, clarity) in [("breath", -20.0, 0.45), ("quiet", -56.0, 0.85)] {
+        assert_eq!(with(level, clarity).overall, Some(silence), "{what}");
+    }
+    // A note with no pitch named at all scores nothing, whatever the sound.
+    let unresolved = grade_lc(&g, std_cfg(), |t| if note(t).is_some() { (None, -20.0, 0.9) } else { (None, -90.0, 0.1) });
+    assert_eq!(unresolved.overall, Some(0.0));
+    // Half of every note's middle unresolved: at most a quarter of the moments excused
+    // (20 of the 40 moments sung, 10 excused: 20 / 30, and the moment either side of the
+    // gap takes the sample next to it: 22 / 30).
+    let half = grade_lc(&g, std_cfg(), |t| match note(t) {
+        Some((m, u)) => if (0.25..0.75).contains(&u) { (None, -20.0, 0.9) } else { (Some(m), -20.0, 0.95) },
+        None => (None, -90.0, 0.1),
     });
     let o = half.overall.unwrap();
-    // (20 of 40 moments sung, 10 excused: 20/30, plus one moment the 10 ms offset gains.)
-    assert!((60.0..=70.5).contains(&o), "half sung: {o}");
-    // Returned music is never "sound" of the singer.
+    assert!((65.0..=74.0).contains(&o), "half unresolved: {o}");
+    assert!(half.notes.iter().all(|n| n.excused * 4 <= n.covered), "the cap holds");
+    // The old rule (any sound, scorer 0.1.0) would have excused the breath.
+    let old = ScoreConfig { excuse_clarity: 0.0, ..std_cfg() };
+    let breath_old = grade_lc(&g, old, |t| match note(t) {
+        Some((_, u)) if mid(u) => (None, -20.0, 0.45),
+        Some((m, _)) => (Some(m), -20.0, 0.95),
+        None => (None, -90.0, 0.1),
+    });
+    assert_eq!(breath_old.overall, Some(100.0));
+    // Returned music is never the singer's sound.
     let mut s = Scorer::new(std_cfg(), g.clone(), KeyTimeline::constant(0), Vec::new(), g.duration_s);
     for i in 0..(g.duration_s / HOP) as usize {
         let t = i as f64 * HOP;
         let (midi, music, level_db) = match note(t) {
-            Some((m, u)) if u >= 0.2 => (Some(m), false, -20.0),
-            Some(_) => (None, true, -20.0),
+            Some((_, u)) if mid(u) => (None, true, -20.0),
+            Some((m, _)) => (Some(m), false, -20.0),
             None => (None, false, -90.0),
         };
-        s.push(SingerSample { t, segment: 0, midi, level_db, unknown: false, music });
+        s.push(SingerSample { t, segment: 0, midi, level_db, unknown: false, music, clarity: 0.9 });
     }
     let r = s.finish(&FinishContext { completed: true, flags: vec![] });
-    assert!(r.overall.unwrap() < 85.0, "music is not excused: {:?}", r.overall);
+    assert_eq!(r.overall, Some(silence), "music is not excused");
 }
 
 #[test]
-fn a_steady_delay_costs_nothing_and_one_note_cannot_move_the_whole_tolerance() {
+fn being_early_or_late_up_to_the_tolerance_costs_nothing() {
     let g = melody(20);
-    // A singer (or an unmeasured device delay) steadily 140 ms late: full marks, and every
-    // note after the first ones is matched at the usual timing.
+    // A singer (or an unmeasured device delay) steadily 140 ms late: full marks, every note
+    // matched by a plain shift of 140 ms.
     let r = grade(&g, std_cfg(), KeyTimeline::constant(0), |t| guide_at(&g, t - 0.14, 0.0));
     assert_eq!(r.overall, Some(100.0));
-    for n in r.notes.iter().skip(2) {
-        assert!((n.delta_s - 0.14).abs() < 0.011, "note {} offset {}", n.note, n.delta_s);
+    for n in &r.notes {
+        assert!((n.start_shift_s - 0.14).abs() < 0.011 && (n.end_shift_s - 0.14).abs() < 0.011, "note {}: {} {}", n.note, n.start_shift_s, n.end_shift_s);
     }
-    // On time, but one note sung 150 ms late: once the usual timing (0) is known that note
-    // is matched within 80 ms of it, and loses the rest.
+    // On time, but one note sung 150 ms late (held until the next note starts): full marks.
     let one_late = 12usize;
     let r = grade(&g, std_cfg(), KeyTimeline::constant(0), |t| {
-        let late = if t >= g.notes[one_late].start && t < g.notes[one_late].end + 0.2 { 0.15 } else { 0.0 };
+        let late = if t >= g.notes[one_late].start && t < g.notes[one_late].end + 0.15 { 0.15 } else { 0.0 };
         guide_at(&g, t - late, 0.0)
     });
-    let n = r.notes.iter().find(|n| n.note == one_late).unwrap();
-    assert!((n.delta_s - 0.08).abs() < 0.011, "jitter limit: {}", n.delta_s);
-    assert!(n.credit > 0.8 && n.credit < 0.9, "credit {}", n.credit);
+    assert_eq!(r.overall, Some(100.0), "one note late");
+    // Rubato: every note's onset moved by its own offset in +-150 ms, each note held until
+    // the next one starts (and kept for at least half its length): full marks.
+    let mut rng = 0x2545_f491_4f6c_dd1du64;
+    let mut spans: Vec<(f64, f64, f64)> = Vec::new();
+    for n in &g.notes {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        let o = 0.15 * ((rng >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0);
+        let s0 = spans.last().map_or(f64::NEG_INFINITY, |p| p.0 + 0.5 * 0.4);
+        let s = (n.start + o).max(s0);
+        if let Some(p) = spans.last_mut() {
+            p.1 = p.1.min(s);
+        }
+        spans.push((s, n.end + o, n.midi));
+    }
+    let rubato = grade(&g, std_cfg(), KeyTimeline::constant(0), |t| spans.iter().find(|p| t >= p.0 && t < p.1).map(|p| p.2));
+    assert_eq!(rubato.overall, Some(100.0), "rubato +-150 ms");
+    // A note sung for only part of its length: the tolerance forgives up to 150 ms at its
+    // ends, never its middle, and never a rendition shorter than half the note.
+    let late_entry = grade(&g, std_cfg(), KeyTimeline::constant(0), |t| {
+        let n = g.notes.iter().find(|n| t >= n.start + 0.18 && t < n.end)?;
+        Some(n.midi)
+    });
+    // (180 ms late into a 400 ms note: the 30 ms beyond the tolerance are lost, of 250:
+    // 88 %, and up to one moment more is gained where the sampling grid meets the onset.)
+    let o = late_entry.overall.unwrap();
+    assert!((86.0..=93.0).contains(&o), "late entry by 180 ms: {o}");
+    let staccato = grade(&g, std_cfg(), KeyTimeline::constant(0), |t| {
+        let n = g.notes.iter().find(|n| t >= n.start && t < n.start + 0.1)?;
+        Some(n.midi)
+    });
+    // (100 ms of 400: stretched at most to a 250 ms rendition, 100 / 250 = 40 %, and up to
+    // one moment more at the sampling grid.)
+    let o = staccato.overall.unwrap();
+    assert!((38.0..=43.0).contains(&o), "100 ms of each 400 ms note: {o}");
+}
+
+#[test]
+fn one_stretch_of_singing_is_credited_to_one_note_only() {
+    // Two back-to-back notes sung in the wrong order: each note's pitch is sung, but in the
+    // other note's place. Matched each on its own, both would take 150 ms of the other's
+    // place; renditions must keep their order, so only one of them can.
+    let notes = vec![
+        ScoreNote { start: 1.0, end: 1.2, midi: 60.0, pitched: true, confidence: 1.0, octave_flagged: false, glide_in: 0.0, line: None },
+        ScoreNote { start: 1.2, end: 1.4, midi: 64.0, pitched: true, confidence: 1.0, octave_flagged: false, glide_in: 0.0, line: None },
+    ];
+    let g = ScoreGuide { lines: ScoreGuide::phrases(&notes), notes, low_confidence: 0.5, basis: LineBasis::Phrases, outdated: false, duration_s: 2.5, label: "t".into() };
+    let swapped = grade(&g, std_cfg(), KeyTimeline::constant(0), |t| {
+        if (1.0..1.2).contains(&t) {
+            Some(64.0)
+        } else if (1.2..1.4).contains(&t) {
+            Some(60.0)
+        } else {
+            None
+        }
+    });
+    let credits: Vec<f64> = swapped.notes.iter().map(|n| n.credit).collect();
+    assert!(credits.iter().filter(|&&c| c > 0.05).count() <= 1, "both notes borrowed: {credits:?}");
+    assert!(swapped.overall.unwrap() < 40.0, "{:?}", swapped.overall);
+    // Each rendition starts after the previous one ended.
+    let n = &swapped.notes;
+    assert!(g.notes[1].start + n[1].start_shift_s >= g.notes[0].end + n[0].end_shift_s - 0.0101, "{n:?}");
+}
+
+#[test]
+fn the_borrowing_adversary_scores_low() {
+    let g = melody(20);
+    // Every note sung at the previous note's pitch, 150 ms early (the first note silent).
+    let behind_early = grade(&g, std_cfg(), KeyTimeline::constant(0), |t| {
+        let u = t + 0.15;
+        let i = g.notes.iter().position(|n| u >= n.start && u < n.end)?;
+        (i > 0).then(|| g.notes[i - 1].midi)
+    });
+    let o = behind_early.overall.unwrap();
+    assert!(o < 60.0, "behind, early: {o}");
+    // The same a whole note late, on time and one note ahead.
+    for (name, shift, step) in [("behind", 0.0, -1i64), ("ahead, late", -0.15, 1)] {
+        let r = grade(&g, std_cfg(), KeyTimeline::constant(0), |t| {
+            let u = t + shift;
+            let i = g.notes.iter().position(|n| u >= n.start && u < n.end)? as i64;
+            g.notes.get((i + step) as usize).filter(|_| i + step >= 0).map(|n| n.midi)
+        });
+        let o = r.overall.unwrap();
+        assert!(o < 60.0, "{name}: {o}");
+    }
 }
 
 #[test]
@@ -503,4 +612,47 @@ fn note_names_at_every_key() {
     assert_eq!((i, key, graded), (0, -3, true));
     assert!((target - 61.27).abs() < 1e-9);
     assert_eq!(note_name(target.round() as i32, true), "Db4");
+}
+
+#[test]
+fn the_fast_credit_table_equals_the_plain_sums() {
+    // Random singers (voiced on pitch, off pitch, unvoiced periodic, silent) under every
+    // timing: the prefix-sum table equals the moment-by-moment sums.
+    let mut rng = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        (rng >> 11) as f64 / (1u64 << 53) as f64
+    };
+    for &(len, strictness) in &[(0.05, Strictness::Standard), (0.23, Strictness::Strict), (0.4, Strictness::Standard), (1.37, Strictness::Relaxed), (3.0, Strictness::Standard)] {
+        let notes = vec![ScoreNote { start: 1.0, end: 1.0 + len, midi: 57.0, pitched: true, confidence: 1.0, octave_flagged: false, glide_in: 0.0, line: None }];
+        let g = ScoreGuide { lines: ScoreGuide::phrases(&notes), notes, low_confidence: 0.5, basis: LineBasis::Phrases, outdated: false, duration_s: len + 3.0, label: "t".into() };
+        let mut s = Scorer::new(ScoreConfig { strictness, ..std_cfg() }, g.clone(), KeyTimeline::constant(0), Vec::new(), g.duration_s);
+        let bands = strictness.bands();
+        let k_n = Scorer::moments(&g.notes[0], HOP);
+        let j = (bands.tolerance_s / HOP).round() as usize;
+        for m in 0..k_n + 2 * j {
+            let x = next();
+            s.sc_val[m] = if x < 0.6 { 57.0 + 1.5 * (next() - 0.5) } else { f64::NAN };
+            s.sc_cov[m] = C_COVERED | if x > 0.8 { C_LOUD } else { 0 };
+        }
+        s.sc_tgt[..k_n].fill(57.0);
+        let max_excused = k_n / 4;
+        let min_len = -((0.5 * k_n as f64).floor() as i64);
+        s.fill_table_fast(0, k_n, j, min_len, k_n, max_excused, bands);
+        let (ji, w) = (j as i64, 2 * j + 1);
+        for alpha in -ji..=ji {
+            for beta in -ji..=ji {
+                let fast = s.tab[(alpha + ji) as usize * w + (beta + ji) as usize];
+                let plain = if beta - alpha < min_len {
+                    f64::NEG_INFINITY
+                } else {
+                    let (sum, exc) = s.warped_sum(k_n, j, alpha, beta, bands);
+                    sum / (k_n - exc.min(max_excused)) as f64
+                };
+                assert!(fast == plain || (fast - plain).abs() < 1e-9, "len {len} ({alpha}, {beta}): fast {fast} plain {plain}");
+            }
+        }
+    }
 }

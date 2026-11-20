@@ -15,6 +15,7 @@ mod app;
 mod guide;
 mod library;
 mod player;
+mod practice;
 mod recorder;
 mod studio;
 
@@ -22,6 +23,7 @@ pub use app::*;
 pub use guide::*;
 pub use library::*;
 pub use player::*;
+pub use practice::*;
 pub use recorder::*;
 pub use studio::*;
 
@@ -108,6 +110,29 @@ macro_rules! all_commands {
             $crate::commands::guide_build_all,
             $crate::commands::guide_cancel,
             $crate::commands::guide_queue,
+            // practice mode (WO2)
+            $crate::commands::player_key_at,
+            $crate::commands::mic_permission,
+            $crate::commands::mic_request_permission,
+            $crate::commands::mic_open_settings,
+            $crate::commands::mic_list,
+            $crate::commands::mic_choose,
+            $crate::commands::mic_meter,
+            $crate::commands::practice_start,
+            $crate::commands::practice_stop,
+            $crate::commands::practice_state,
+            $crate::commands::practice_guide,
+            $crate::commands::practice_suspend_input,
+            $crate::commands::practice_finish,
+            $crate::commands::practice_again,
+            $crate::commands::practice_song_set,
+            $crate::commands::practice_exclude,
+            $crate::commands::practice_history,
+            $crate::commands::practice_latency_set,
+            $crate::commands::practice_target_at,
+            $crate::commands::practice_test_input,
+            $crate::commands::practice_rig_check,
+            $crate::commands::selfcheck_lane,
         ]
     };
 }

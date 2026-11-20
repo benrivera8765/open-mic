@@ -10,7 +10,11 @@
 //! - **Existing songs**: `guide_build` (one song; Practice on a song without a guide) and
 //!   `guide_build_all` ("Add practice data to all songs").
 //!
-//! One build at a time, on one below-normal-priority thread, never an audio thread. A
+//! One build at a time, on one builder thread, never an audio thread: below normal priority
+//! for the batch and for new songs after the Studio, normal priority for a one-song build
+//! (`guide_build`: the singer pressed Practice and waits at the progress display; on a busy
+//! computer a below-normal build waited over a minute, docs/benchmarks/practice-app.md
+//! section 8). Playback is safe either way: the engine's threads run far above normal. A
 //! build reads the song's own lead vocal and lyrics (jk-guide, the same code as
 //! `jukeoke-cli guide add`), writes the temporary file next to the song (the song may
 //! keep playing: the file is only read), then swaps it in:
@@ -354,7 +358,7 @@ impl GuideService {
         *w = std::thread::Builder::new()
             .name("guide-builder".into())
             .spawn(move || {
-                below_normal_priority();
+                set_builder_priority(false);
                 me.run();
             })
             .ok();
@@ -768,7 +772,16 @@ impl GuideService {
             };
             self.try_pending_swaps();
             if let Some(e) = next {
+                // Someone is waiting for a one-song build (Practice on a song without a
+                // guide): normal priority for it; the batch and new songs stay below normal.
+                let waited_for = e.origin == Origin::User;
+                if waited_for {
+                    set_builder_priority(true);
+                }
                 self.build_one(e);
+                if waited_for {
+                    set_builder_priority(false);
+                }
                 self.try_pending_swaps();
             }
         }
@@ -1176,15 +1189,21 @@ fn file_is_free(path: &Path) -> bool {
     }
 }
 
-/// The builder never competes with playback for the processor.
-fn below_normal_priority() {
+/// The builder thread's priority: below normal (the batch, new songs after the Studio)
+/// or normal (`waited_for`: a one-song build the singer is waiting for). Never above
+/// normal, so it never competes with the engine's audio threads (MMCSS / time-critical).
+/// On other systems a no-op (the thread keeps the default priority).
+fn set_builder_priority(waited_for: bool) {
     #[cfg(windows)]
     // SAFETY: GetCurrentThread returns a pseudo handle for this thread; changing its own
     // priority has no other effect.
     unsafe {
-        use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL};
-        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL};
+        let p = if waited_for { THREAD_PRIORITY_NORMAL } else { THREAD_PRIORITY_BELOW_NORMAL };
+        let _ = SetThreadPriority(GetCurrentThread(), p);
     }
+    #[cfg(not(windows))]
+    let _ = waited_for;
 }
 
 /// `guide_build` with an unknown song id and similar: plain errors.

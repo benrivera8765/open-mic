@@ -21,10 +21,32 @@ fn demo_song_is_valid_small_and_reproducible() {
     let rep = jk_format::verify_file(&p, &Default::default());
     assert!(rep.errors.is_empty(), "{:?}", rep.errors);
     assert!(rep.warnings.is_empty(), "{:?}", rep.warnings);
-    // The committed copy is byte-identical to a fresh generation.
-    let a = std::fs::read(&p).unwrap();
-    let b = std::fs::read(fixture()).expect("tests/fixtures/generated/demo-song.jksong");
-    assert!(a == b, "the committed demo song differs from `jukeoke-cli make-demo-song` output; regenerate it");
+    // The committed copy is a fresh generation plus its melody guide (Work Order 2: the
+    // self-check reads a stored guide from the bundled copy; tests/fixtures/generated/
+    // README.md). `jukeoke-cli guide add` is a raw-copy rewrite (SONG_FORMAT 7.1), so every
+    // generated chunk is there unchanged (same id, type, length and CRC-32; read back
+    // byte-identical), both settings slots are byte-identical, and the only chunks added
+    // are `guide` and `guide.curve`. Before the guide this was a whole-file comparison.
+    let fresh = jk_format::SongFile::open(&p).unwrap();
+    let fixture_path = fixture();
+    let committed = jk_format::SongFile::open(&fixture_path).expect("tests/fixtures/generated/demo-song.jksong");
+    let regenerate = "the committed demo song differs from `jukeoke-cli make-demo-song` + `jukeoke-cli guide add`; regenerate it";
+    for c in &fresh.toc().chunks {
+        let d = committed.chunk(&c.id).unwrap_or_else(|| panic!("{regenerate}: chunk '{}' missing", c.id));
+        assert!((d.mime == c.mime && d.length == c.length && d.crc32 == c.crc32), "{regenerate}: chunk '{}' changed", c.id);
+        assert!(fresh.read_chunk(&c.id).unwrap() == committed.read_chunk(&c.id).unwrap(), "{regenerate}: chunk '{}' bytes", c.id);
+    }
+    let mut added: Vec<&str> =
+        committed.toc().chunks.iter().map(|c| c.id.as_str()).filter(|id| fresh.chunk(id).is_none()).collect();
+    added.sort_unstable();
+    assert_eq!(added, ["guide", "guide.curve"], "{regenerate}: unexpected chunks");
+    let (a, b) = (std::fs::read(&p).unwrap(), std::fs::read(&fixture_path).unwrap());
+    let (h, k) = (fresh.header(), committed.header());
+    assert_eq!((h.slot_a_offset, h.slot_b_offset, h.slot_size), (k.slot_a_offset, k.slot_b_offset, k.slot_size), "{regenerate}: slot layout");
+    for off in [h.slot_a_offset as usize, h.slot_b_offset as usize] {
+        let slot = off..off + h.slot_size as usize;
+        assert!(a[slot.clone()] == b[slot], "{regenerate}: settings slot at {off}");
+    }
 }
 
 #[test]

@@ -174,3 +174,30 @@ fn song_time_follows_the_clock_anchors_and_declared_latency() {
     let steps: Vec<f64> = live.pitch.windows(2).map(|w| w[1].0 - w[0].0).collect();
     assert!(steps.iter().all(|s| (s - 0.01).abs() < 1e-6), "10 ms apart");
 }
+
+#[test]
+fn music_flags_and_ungraded_moments_come_only_from_the_echo_stage() {
+    // The app plays music (the reference) but nothing comes back in the input: the echo
+    // stage never says "present", so the result carries no music flag and the timing is
+    // not taken from it. Moments are left ungraded only while the echo stage itself says
+    // it does not know yet (its first seconds): every later note is graded, as without an
+    // echo stage.
+    let g = guide();
+    let rate = 48_000;
+    let music = testpath::synth_music(rate, g.duration_s, -20.0, None, 13);
+    let v = singer(&g, rate, 0.0, 0.0);
+    let cfg = ChainConfig { score: ScoreConfig { detail: true, ..ScoreConfig::default() }, ..ChainConfig::new(rate, 1, 0) };
+    let (r, _, chain) = run(&g, cfg, &v, Some(&music));
+    let clean = run(&g, no_ref(rate, 1, 0), &v, None).0;
+    for f in ["music_in_input", "removal_active", "removal_marginal", "untrusted"] {
+        assert!(!r.trust.iter().any(|x| x == f), "{f} in {:?}", r.trust);
+    }
+    assert_ne!(chain.music().presence, Presence::Present);
+    assert_eq!(chain.stats().music_present_s, 0.0);
+    assert_ne!(chain.latency().source, LatencySource::ReturnedMusic);
+    assert_eq!(r.graded + r.unknown_notes, 16, "{r:?}");
+    for n in r.notes.iter().filter(|n| n.unknown) {
+        assert!(g.notes[n.note].start < 4.0, "note {} ungraded at {} s", n.note, g.notes[n.note].start);
+    }
+    assert!(r.overall.unwrap() >= clean.overall.unwrap() - 1.0, "{:?} vs {:?}", r.overall, clean.overall);
+}

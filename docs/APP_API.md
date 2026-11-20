@@ -274,7 +274,10 @@ Events:
   lane moves its bars when the key that is heard changes, at the right song time.
   `position_s` is the song time of the sample now leaving the DAC (device latency
   already subtracted), extrapolated from the engine's last device callback to the
-  moment the event is sent (at most 100 ms). The UI interpolates between events with
+  moment the event is sent (at most 100 ms); `key_heard` and `key_pending` are taken at that
+  extrapolated position too (a pending change whose `at_s` it has passed is reported as
+  heard, with no `key_pending`; the same in `PlayerState`; Stage 3b, docs/benchmarks/
+  practice-app.md section 6). The UI interpolates between events with
   `performance.now()` and re-anchors on each event (ARCHITECTURE section 4); the lyric
   offsets are applied by the UI:
   `lyric_time = position_s - (song.lyrics_offset_ms + device_offset_ms) / 1000`, where
@@ -740,16 +743,34 @@ error_cents     = 100 * (singer(t) - target(note, t))             // octave-fold
 (internal, for the screen checks and tests): the scorer's target at that song time, by
 the rule above.
 
-`practice_test_input(source: { kind: "wav"; path: string } | { kind: "silence" } | null) -> { ok: boolean }`
-(internal, accepted only under `--smoke-test`, like `smoke_report`; refused with
-`bad_request` otherwise): the next `practice_start` takes its input from a WAV of
-**generated** sound (a scripted singer, a mixer-shaped two-channel file, music fed back)
-or from digital silence instead of the microphone, through the same
-`jk_recorder::input::InputSource` path, rings, meters and analysis thread, at real-time
-pace and stamped with the host clock; `null` returns to the real input. A WAV that ends
-behaves like an unplugged device (`input_lost`). This is how WO2 section 9's real-app runs
-are fed (the 20-minute run with the generated singer, the input unplugged during a song);
-microphone sound is never written, so no recorded file ever goes in here.
+`practice_test_input(source: TestInput | null) -> { ok: boolean }`
+(internal, accepted only under `--smoke-test` or the internal `--practice-test` flag;
+refused with `bad_request` otherwise. **Stage 3b:** `--practice-test` was added because the
+smoke test's watchdog ends the app within a minute, too short for the 20-minute run): the
+next `practice_start` takes its input from **generated** sound instead of the microphone,
+through the same `jk_recorder::input::InputSource` path, rings, meters and analysis thread,
+at real-time pace and stamped with the host clock; `null` returns to the real input and
+clears every simulation. `TestInput` (src/practice/mod.rs, src/practice/testsource.rs):
+
+```ts
+type TestInput =
+  | { kind: "wav"; path: string;      // a WAV of generated sound (any rate, any channels)
+      sync?: boolean;                 // default true: a singer who sings along: sample k is song time k / rate,
+                                      // following the song heard (seeks, pauses); false: plays from practice_start
+      late_ms?: number;               // sync: the singer is this late (negative: early)
+      unplug_after_s?: number }       // reports an unplugged device after this long (WO2 9 "unplugged")
+  | { kind: "silence" }               // digital silence, 48 kHz mono
+  | { kind: "return"; delay_ms?: number; level_db?: number; voice?: string }
+                                      // a mixer's loopback: the app's own playback (the output tap) back
+                                      // delay_ms late at level_db, plus an optional generated singer WAV
+  | { kind: "permission_denied" | "not_determined" | "permission_granted" }   // simulated permission
+  | { kind: "no_device" };            // simulated "no input device at all"
+```
+
+A WAV with `sync: false` that ends behaves like an unplugged device (`input_lost`). This is
+how WO2 section 9's real-app runs are fed (the 20-minute run with the generated singer,
+the input unplugged during a song, the music coming back); microphone sound is never
+written, so no recorded file ever goes in here.
 
 ### 12.2 Lifecycle
 
@@ -832,8 +853,11 @@ has no separate lead vocal, so there is no melody to practise").
   (`song_id` absent). A cancelled build leaves the file as it was.
 - `guide_queue() -> { items: { song_id: string; state: "queued" | "building"; progress: number | null }[]; running: boolean }`.
 
-One build at a time, below-normal priority, never on an audio thread (about 1.2 s of CPU
-for a 4-minute song, plus one copy of the file). The queue survives a restart
+One build at a time, never on an audio thread (about 1.2 s of CPU for a 4-minute song,
+plus one copy of the file): below-normal priority for the batch and for new songs from the
+Studio, normal priority for a one-song `guide_build` (the singer pressed Practice and waits
+at the progress display: at below normal, a busy computer kept that wait above a minute;
+at normal it took 2.3 s under the same load. Stage 3b, docs/benchmarks/practice-app.md). The queue survives a restart
 (`Settings/guide-queue.json`, STUDIO_PROTOCOL 12.2). New songs from the Studio enter it
 automatically (STUDIO_PROTOCOL section 12; `StudioJob.guide`, section 9).
 
@@ -1028,16 +1052,23 @@ interface PracticeLive {
 ```
 
   The UI draws the marker at the newest value and the tail from the last second of values,
-  placed by `song_time_s` against the clock it already interpolates. The sound-to-event
-  time is a median of 36 ms and at most 62 ms on generated voices (practice-tracker.md
-  section 5), so the marker may show a value that much late; that never costs points,
-  because grading uses `song_time_s`, not the moment of display. **Delay budget** (WO2
-  4.4: aim 50 ms from the sound reaching the app to the marker moving, never more than
-  100 ms): tracker (36 / 62 ms) + waiting for the next batch (8 / 16 ms) + the event's
-  trip to the web view (a few ms) + the next frame (8 / 17 ms at 60 fps). That is why the
-  batches go out every 16 ms and not slower; a batch is sent early when a tracker value
-  changes the marker's visibility (singing starts or stops). Stage 4 measures the whole
-  chain in the real app on both systems.
+  placed by `song_time_s` against the clock it already interpolates. The tracker's own
+  pipeline delay is 31.3 ms (half its 42.7 ms window plus one 10 ms hop of look-ahead:
+  an event exists 31.3 ms after the moment it describes); from a note's onset to the
+  first event on the note it is a median of 35 ms and at most 62 ms on generated voices
+  (practice-tracker.md section 22), so the marker may show a value that much late; that
+  never costs points, because grading uses `song_time_s`, not the moment of display.
+  **Delay budget** (WO2 4.4: aim 50 ms from the sound reaching the app to the marker
+  moving, never more than 100 ms): tracker (35 / 62 ms) + waiting for the next batch
+  (8 / 16 ms) + the event's trip to the web view (a few ms) + the next frame (8 / 17 ms
+  at 60 fps): about 55 ms typical and 95-100 ms worst case on clean onsets. Real sung
+  onsets need more evidence than generated ones: 6.0 % (development set) and 6.2 %
+  (held-out) of real onsets are shown on the note more than 100 ms after they begin at
+  the tracker alone (14-15 % under a strong room reverb, 14-16 % for low voices shifted
+  down 7-12 semitones), so the 100 ms ceiling is met for the pipeline, not for every real
+  onset. That is why the batches go out every 16 ms and not slower; a batch is sent early
+  when a tracker value changes the marker's visibility (singing starts or stops). Stage 4
+  measures the whole chain in the real app on both systems.
 - `practice://state`: a full `PracticeState` whenever something in it changes (phase,
   input state, music in the input, the octave decided, the running score), at most 4
   times a second.

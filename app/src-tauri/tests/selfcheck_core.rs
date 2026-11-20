@@ -53,6 +53,16 @@ fn selfcheck_on_the_null_device() {
         &selfcheck::Options {
             user_agent: Some("test-agent".into()),
             silent: true,
+            // (WO2) As the page would report it (APP_API 10.1).
+            lane: Some(jukeoke_lib::practice::checks::LaneCost {
+                frames: 600,
+                avg_ms: 1.2,
+                p95_ms: 2.0,
+                simple_avg_ms: 0.8,
+                width: 1224.0,
+                height: 324.0,
+                dpr: 1.0,
+            }),
         },
     );
     for i in &r.items {
@@ -65,6 +75,19 @@ fn selfcheck_on_the_null_device() {
     assert!(get("Test tone").detail.contains("digital silence"));
     assert!(get("Key change").detail.contains("+2 semitones"));
     assert!(get("Recorder").detail.len() > 10);
+    // (WO2, APP_API 10.1) The six practice items follow "Key change", in order, and pass
+    // here (no microphone on a build machine is "no input", not a failure).
+    let names: Vec<&str> = r.items.iter().map(|i| i.name.as_str()).collect();
+    let k = names.iter().position(|n| *n == "Key change").unwrap();
+    assert_eq!(
+        &names[k + 1..k + 7],
+        ["Microphone permission", "Microphone capture", "Pitch tracker", "Practice guide", "Practice score", "Practice lane"]
+    );
+    for name in ["Pitch tracker", "Practice guide", "Practice score", "Practice lane"] {
+        assert!(get(name).ok, "{name}: {}", get(name).detail);
+    }
+    assert!(get("Practice score").detail.contains("perfect"), "{}", get("Practice score").detail);
+    assert!(get("Practice lane").detail.contains("1.20 ms"));
     // The report is in Settings, named selfcheck-<local time>.txt, and says the result.
     let report = std::path::PathBuf::from(&r.report_path);
     assert!(report.starts_with(root.join("Settings")));

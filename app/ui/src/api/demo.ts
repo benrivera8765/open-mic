@@ -16,9 +16,9 @@ import type { LyricChar, LyricLine, LyricWord, Lyrics, SongSettings, SongSummary
 import { roundTime, segmentGraphemes } from "../lib/lyrics";
 
 /** A word of the score: its text and how many beats it lasts. */
-type ScoreWord = [text: string, beats: number];
+export type ScoreWord = [text: string, beats: number];
 /** A sung line: the beat it starts on and its words. */
-interface ScoreLine {
+export interface ScoreLine {
   beat: number;
   words: ScoreWord[];
 }
@@ -132,7 +132,7 @@ const TWINKLE_B = [
   "How I wonder(2) what you are!(2)",
 ];
 
-function twinkleScore(): ScoreLine[] {
+export function twinkleScore(): ScoreLine[] {
   // Intro 13 beats (7.8 s), verse 1, a 20-beat (12 s) instrumental break, verse 2,
   // a short 5-beat break, verse 1 again. Lines follow each other with no rest.
   const out: ScoreLine[] = [];
@@ -163,7 +163,7 @@ function frereScore(): ScoreLine[] {
 }
 
 // --- Row, Row, Row Your Boat (traditional, 1852), 104 BPM: a fast "merrily" line ---
-function rowScore(): ScoreLine[] {
+export function rowScore(): ScoreLine[] {
   const verse = [
     "Row,(1.5) row,(1.5) row(1) your(0.5) boat,(1.5)",
     "Gently(1) down(0.5) the(1) stream.(3.5)",

@@ -45,6 +45,10 @@ export interface AppInfo {
     recorder: { available: boolean; reason: string | null; permission: RecorderPermission };
     /** Windows only. */
     exclusive_mode: boolean;
+    /** (added WO2) Practice mode's input (APP_API 12.4); absent from an older core. */
+    microphone?: MicCapability;
+    /** (added WO2) This app's guide builder. */
+    practice?: { guide_method: string; guide_version: string };
   };
 }
 
@@ -265,6 +269,8 @@ export interface SongDetail {
   stems: StemInfo[];
   sample_rate: number;
   channels: number;
+  /** (added WO2, APP_API 3) As in the summary; absent from an older core. */
+  guide?: GuideStatus;
 }
 
 export type PlayerStateName = "empty" | "loading" | "paused" | "playing" | "ended" | "error";
@@ -293,7 +299,33 @@ export interface PlayerState {
   key_preparing?: KeyPreparing | null;
   /** Addition: why prerender was asked for but real time is used. */
   key_note?: string | null;
+  // ---- (added WO2, D-239) the key HEARD: practice mode draws and grades with it, never with the request.
+  // Optional here so an older core (and older fakes) still type-check; absent = the requested key.
+  /** Semitones sounding at the DAC now, i.e. at position_s (-12..12). */
+  key_heard?: number;
+  /** The key last asked for (= settings.semitones). */
+  key_requested?: number;
+  /** The next change of the key heard: from song time at_s on (null: not scheduled yet). */
+  key_pending?: KeyPending | null;
+  /** Playback segment position_s and key_heard belong to (new at every load, seek, device switch). */
+  key_segment?: number;
+  /** As key_label, for the key heard. */
+  key_heard_label?: string | null;
+  /** How to name notes in the key heard (agrees with key_heard_label). */
+  key_spelling?: NoteSpelling;
+  /** The same for key_pending. */
+  key_pending_spelling?: NoteSpelling | null;
 }
+
+/** `PlayerState.key_pending` / `playback://clock` `key_pending` (APP_API 3, WO2). */
+export interface KeyPending {
+  semitones: number;
+  /** Song time from which the key is heard; null = not scheduled yet (render ahead still rendering). */
+  at_s: number | null;
+}
+
+/** Note spelling for the key heard (APP_API 3): flats in flat-signature keys, sharps otherwise. */
+export type NoteSpelling = "sharps" | "flats";
 
 /** "Preparing key +2... 40%" (render ahead and cache, WORK_ORDER 4.5). */
 export interface KeyPreparing {
@@ -313,6 +345,10 @@ export interface ClockEvent {
   position_s: number;
   playing: boolean;
   seq: number;
+  /** (added WO2) The key heard at position_s, the next change and the playback segment. */
+  key_heard?: number;
+  key_pending?: KeyPending | null;
+  segment?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -374,12 +410,15 @@ export interface AppSettings {
     /** Measured Rubber Band speed per computer and sample rate (written by the core). */
     key_benchmarks?: Record<string, number>;
   };
+  /** (added WO2, APP_API 12.7) Practice mode's per-computer settings; absent from an older core. */
+  practice?: PracticeAppSettings;
 }
 
 /** `settings_set` takes a deep partial (deep-merged by the core). */
 export type AppSettingsChanges = {
   ui?: Partial<Omit<AppSettings["ui"], "colors">> & { colors?: Partial<AppSettings["ui"]["colors"]> };
   audio?: Partial<AppSettings["audio"]>;
+  practice?: Partial<PracticeAppSettings>;
 };
 
 // ---------------------------------------------------------------------------
@@ -690,6 +729,283 @@ export interface SelfCheckResult {
   items: SelfCheckItem[];
 }
 
+/** (added WO2, APP_API 10.1) The practice lane's drawing cost, measured by the UI for the self-check. */
+export interface LaneCost {
+  frames: number;
+  avg_ms: number;
+  p95_ms: number;
+  simple_avg_ms: number;
+  width: number;
+  height: number;
+  dpr: number;
+}
+
+// ---------------------------------------------------------------------------
+// 12. Practice mode (added WO2, docs/APP_API.md section 12)
+// ---------------------------------------------------------------------------
+
+/** 12.4 */
+export interface MicPermission {
+  state: "granted" | "denied" | "not_determined" | "restricted";
+  /** The app's own words, shown BEFORE the OS asks. */
+  explanation: string;
+  /** denied / restricted: the exact steps to allow it on this system. */
+  steps: string | null;
+  settings_url: string | null;
+  /** Windows privacy switches (read only, never changed); null on macOS. */
+  windows: { microphone_access: "allow" | "deny" | "unset"; user_access: "allow" | "deny" | "unset"; desktop_apps: "allow" | "deny" | "unset" } | null;
+}
+
+export interface MicCapability {
+  available: boolean;
+  reason: string | null;
+  permission: MicPermission;
+  backend: "WASAPI" | "Core Audio";
+}
+
+export type MicKind = "usb" | "built_in" | "wired_external" | "bluetooth" | "display" | "virtual" | "unknown";
+
+export interface MicInput {
+  id: string;
+  name: string;
+  adapter: string | null;
+  kind: MicKind;
+  channels: number;
+  sample_rate: number;
+  sample_format: string | null;
+  is_default: boolean;
+  bluetooth: boolean;
+  /** The automatic choice (never Bluetooth or virtual). */
+  preferred: boolean;
+  declared_latency_ms: number | null;
+  same_device_as_output: boolean;
+  warning: string | null;
+}
+
+/** channel 0-based; null = the suggested voice channel. */
+export interface InputChoice {
+  device_id: string | null;
+  device_name: string | null;
+  channel: number | null;
+}
+
+export interface ChannelMeter {
+  index: number;
+  peak_db: number;
+  rms_db: number;
+  noise_floor_db: number | null;
+  active_db: number | null;
+  clipping: boolean;
+  clipped_samples: number;
+  advice: "good" | "waiting" | "too_quiet" | "clipping" | "silent";
+  message: string | null;
+}
+
+export interface InputError {
+  kind: "no_device" | "unplugged" | "permission_denied" | "stalled" | "format" | "device";
+  message: string;
+}
+
+export interface MicList {
+  inputs: MicInput[];
+  chosen: InputChoice;
+  automatic: string | null;
+}
+
+/** `mic://levels` */
+export interface MicLevelsEvent {
+  device_id: string;
+  seconds: number;
+  channels: ChannelMeter[];
+  suggested_channel: number | null;
+  chosen_channel: number | null;
+}
+
+/** 12.5 */
+export type PracticePhase = "off" | "preparing" | "not_ready" | "watch_only" | "listening" | "result";
+export type OctaveMode = "auto" | "fixed" | "strict";
+export type Strictness = "relaxed" | "standard" | "strict";
+
+export interface PracticeInput {
+  device: MicInput;
+  channel: number;
+  sample_rate: number;
+  state: "starting" | "running" | "unplugged" | "stalled" | "failed" | "suspended";
+  message: string | null;
+  meter: ChannelMeter | null;
+  dropped_blocks: number;
+}
+
+export interface MusicInInput {
+  presence: "searching" | "absent" | "present";
+  level_db: number | null;
+  delay_ms: number | null;
+  stability: "unknown" | "stable" | "wandering";
+  drift_ppm: number | null;
+  removal: "not_needed" | "checking" | "good" | "marginal" | "unusable";
+  suppression_db: number | null;
+  grading: "normal" | "less_certain" | "not_graded";
+  message: string | null;
+}
+
+export interface ExcludedSpan {
+  line: number | null;
+  start: number;
+  end: number;
+}
+
+export interface PracticeState {
+  active: boolean;
+  song_id: string | null;
+  seq: number;
+  phase: PracticePhase;
+  guide: GuideStatus;
+  not_ready: { code: string; message: string; can_retry: boolean } | null;
+  watch_only: { code: "chosen" | "no_device" | "permission_denied" | "not_determined" | "restricted" | "input_lost"; message: string } | null;
+  input: PracticeInput | null;
+  music: MusicInInput;
+  /** settled: auto has decided. */
+  octave: { mode: OctaveMode; shift: number; settled: boolean };
+  strictness: Strictness;
+  latency: { applied_ms: number; source: "returned_music" | "rig_check" | "manual" | "none"; measured_ms: number | null; manual_ms: number };
+  take: { running: boolean; started_s: number; covered: number; graded: number; total: number; overall: number | null; seeks: number; key_changes: number } | null;
+  excluded: ExcludedSpan[];
+  last_result: PracticeResult | null;
+}
+
+export interface PracticeStartOptions {
+  song_id?: string;
+  watch_only?: boolean;
+}
+
+/** One note of `practice_guide` (the guide as the lane draws it). */
+export interface PracticeGuideNote {
+  start: number;
+  end: number;
+  midi: number;
+  kind: "pitched" | "unpitched";
+  confidence: number;
+  /** Low confidence or octave-flagged: drawn dimmer. */
+  dim: boolean;
+  /** SONG_FORMAT 10.1's rule, exclusions included. */
+  graded: boolean;
+  glide_in: number;
+  /** [line, word] of the effective lyrics. */
+  word: [number, number] | null;
+}
+
+export interface PracticeGuide {
+  song_id: string;
+  status: GuideStatus;
+  tuning_cents: number;
+  /** Pitched notes, original key, no octave shift. */
+  range: { low: number; high: number } | null;
+  notes: PracticeGuideNote[];
+  /** spoken / breath: "speak" bars, never graded. */
+  spans: { start: number; end: number; kind: string }[];
+  /** 0 = unvoiced; two decimals. */
+  curve: { hop_s: number; t0_s: number; midi: number[] } | null;
+  /** Rows of the breakdown (lyric lines, else phrases). */
+  lines: { line: number; start: number; end: number }[];
+}
+
+/** `practice://live` (about 60 per second while the input runs). */
+export interface PracticeLive {
+  seq: number;
+  segment: number;
+  /** [song_time_s, midi | null, level_db], one per 10 ms. Not snapped, not octave-shifted. */
+  pitch: [number, number | null, number][];
+  /** [note, from_s, to_s, where]: 0 on pitch (lit), 1 above, -1 below. */
+  hits: [number, number, number, -1 | 0 | 1][];
+  /** [note, credit 0..1 (null: not graded), key heard, mean error in cents]. */
+  done: [number, number | null, number, number | null][];
+}
+
+/** 12.6 */
+export interface PracticeResult {
+  date: string;
+  key: number;
+  key_changes: number;
+  seeks: number;
+  octave: number;
+  octave_mode: OctaveMode;
+  strictness: Strictness;
+  overall: number | null;
+  grade: string | null;
+  graded: number;
+  total: number;
+  tendency_cents: number | null;
+  sung_share: number;
+  voiced_share: number;
+  completed: boolean;
+  trust: string[];
+  guide: string;
+  scorer: string;
+  app: string;
+  /** Rows: [line, start, score, graded, tendency]. */
+  lines: { basis: "lyrics" | "phrases"; rows: [number, number, number | null, number, number | null][] };
+  // added for the screen, not stored:
+  trust_messages: string[];
+  best: boolean;
+  saved: boolean;
+  key_label: string | null;
+}
+
+export interface PracticeHistory {
+  best: PracticeResult | null;
+  recent: PracticeResult[];
+}
+
+/** 12.7 */
+export interface PracticeAppSettings {
+  piano_side: "left" | "right";
+  simple_lane: boolean;
+  words_under_notes: boolean;
+  lyrics_below: boolean;
+  strictness: Strictness;
+  octave_mode: OctaveMode;
+  auto_latency: boolean;
+  inputs: Record<string, InputChoice>;
+  latency_offsets_ms: Record<string, number>;
+  measured_latency_ms: Record<string, { ms: number; how: "returned_music" | "rig_check"; utc: string }>;
+}
+
+/** 10.2 The practice rig check (AUDIBLE, started by hand only). */
+export interface RigCheckOptions {
+  audible_confirmed: boolean;
+  output_device_id?: string | null;
+  input_device_id?: string | null;
+  label?: string;
+  voice_step?: boolean;
+}
+export interface RigCheckReport {
+  report_path: string;
+  ok: boolean;
+  label: string | null;
+  output: { name: string; kind: string; sample_rate: number; channels: number; format: string; latency_ms: number | null };
+  input: { name: string; kind: string; sample_rate: number; channels: number; format: string; declared_latency_ms: number | null; same_device_as_output: boolean };
+  channels: { index: number; noise_floor_db: number; voice_rms_db: number | null; test_rms_db: number | null; carries: "voice" | "test_sound" | "both" | "nothing" }[];
+  returned: { detected: boolean; channel: number | null; level_db: number | null; delay_ms: number | null; delay_spread_ms: number | null };
+  findings: string[];
+}
+/** `practice://rigcheck` */
+export interface RigCheckStep {
+  step: "silence" | "voice" | "test_sound" | "analysing" | "done";
+  progress: number;
+  message: string;
+}
+
+/** `practice_target_at` (internal, screen checks). */
+export interface PracticeTarget {
+  note: number | null;
+  midi: number | null;
+  lane: number | null;
+  name: string | null;
+  key: number | null;
+  octave: number;
+  graded: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Events (name -> payload)
 // ---------------------------------------------------------------------------
@@ -718,6 +1034,16 @@ export interface ApiEvents {
   "guide://status": { song_id: string; status: GuideStatus };
   /** (added WO2) "Add practice data to all songs" progress. */
   "guide://batch": GuideBatchEvent;
+  /** (added WO2, APP_API 12.4) Per-channel input meters, about 20 per second while a meter or practice input is open. */
+  "mic://levels": MicLevelsEvent;
+  "mic://permission": MicPermission;
+  "mic://devices": null;
+  /** (added WO2, APP_API 12.5) */
+  "practice://state": PracticeState;
+  "practice://live": PracticeLive;
+  "practice://result": PracticeResult;
+  /** (added WO2, APP_API 10.2) One per step of the rig check. */
+  "practice://rigcheck": RigCheckStep;
 }
 export type ApiEventName = keyof ApiEvents;
 
