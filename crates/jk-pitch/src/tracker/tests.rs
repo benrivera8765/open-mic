@@ -75,8 +75,8 @@ fn geometry_is_sized_in_time() {
     ] {
         let t = Tracker::new(rate);
         assert_eq!((t.window_len(), t.hop_len()), (win, hop), "{rate} Hz");
-        // Half a window plus the two look-ahead frames.
-        assert_eq!(t.describe_delay(), (win / 2 + 2 * hop) as u64);
+        // Half a window plus the look-ahead frame (one since the WO2 quality round).
+        assert_eq!(t.describe_delay(), (win / 2 + hop) as u64);
     }
 }
 
@@ -774,4 +774,271 @@ fn mixer_effects_keep_the_note() {
             "{name}: {wrong} of {pitched} core events more than 50 cents off"
         );
     }
+}
+
+// --- WO2 quality round (docs/benchmarks/practice-tracker.md section 22) ---
+
+/// Three phrases of four legato notes (0.35 s each) that end abruptly, with 0.4 s rests,
+/// then a held note at `hz` from the returned time for `hold` seconds.
+fn phrases_then_note(rate: u32, v: Voice, hz: f64, hold: f64) -> (Vec<f32>, f64) {
+    let steps = [0i32, 2, 4, 2];
+    let t0 = 0.2 + 3.0 * 1.8 + 0.3;
+    let x = tv::sing(rate, t0 + hold + 1.0, v, |t| {
+        if (t0..t0 + hold).contains(&t) {
+            return Some(hz);
+        }
+        if !(0.2..5.6).contains(&t) {
+            return None;
+        }
+        let p = t - 0.2;
+        let phrase = (p / 1.8).floor();
+        let q = p - phrase * 1.8;
+        if phrase >= 3.0 || q >= 1.4 {
+            return None;
+        }
+        Some(hz * 0.9 * 2f64.powf(f64::from(steps[((q / 0.35) as usize).min(3)]) / 12.0))
+    });
+    (x, t0)
+}
+
+/// The reverb-tail rule is reverb-aware (the robustness verifier's finding: it cut dry
+/// fast fades): a dry note fading at 45-100 dB/s after dry phrases is shown on its pitch
+/// until it is 24 dB down, while through a room (RT60 0.8 s, wet -6 dB) the marker goes off
+/// soon after the note ends (with the rule off it stays on for most of the tail).
+#[test]
+fn dry_fades_are_shown_and_room_tails_end_the_note() {
+    let rate = 48_000;
+    for &m in &[45i32, 57, 69] {
+        let hz = tv::midi_hz(f64::from(m));
+        let v = Voice {
+            level_dbfs: -12.0,
+            ..Voice::default()
+        };
+        for fade in [45.0, 100.0] {
+            let (mut x, t0) = phrases_then_note(rate, v, hz, 2.0);
+            let at = t0 + 0.8;
+            for (i, s) in x.iter_mut().enumerate() {
+                let t = i as f64 / f64::from(rate);
+                *s *= 10f64.powf(-(fade * (t - at)).clamp(0.0, 30.0) / 20.0) as f32;
+            }
+            let ev = track(rate, &x);
+            let (errs, unvoiced) = errors_in(&ev, rate, at, at + 24.0 / fade, |_| hz);
+            assert!(
+                unvoiced == 0 && errs.iter().all(|c| c.abs() <= 50.0),
+                "{} dry fade {fade} dB/s: {unvoiced} events without a pitch",
+                tv::note_name(m)
+            );
+        }
+    }
+    let tail_share = |cfg: TrackerConfig| {
+        let (mut shown, mut n) = (0usize, 0usize);
+        for &m in &[45i32, 57, 69] {
+            for vowel in Vowel::ALL {
+                let hz = tv::midi_hz(f64::from(m));
+                let v = Voice {
+                    vowel,
+                    level_dbfs: -12.0,
+                    ..Voice::default()
+                };
+                let (x, t0) = phrases_then_note(rate, v, hz, 1.0);
+                let x = super::rig::reverb(&x, rate, 0.8, -6.0, m as u64 * 7 + 3);
+                let end = t0 + 1.0;
+                for e in track_with(rate, cfg.clone(), &x) {
+                    if (end + 0.05..end + 0.6).contains(&secs(&e, rate)) {
+                        n += 1;
+                        shown += usize::from(e.hz.is_some());
+                    }
+                }
+            }
+        }
+        shown as f64 / n as f64
+    };
+    let with_rule = tail_share(TrackerConfig::default());
+    let without = tail_share(TrackerConfig {
+        tail_drop_db: 0.0,
+        ..TrackerConfig::default()
+    });
+    // Measured 14 % and 95 %.
+    assert!(
+        with_rule <= 0.3 && without >= 0.6,
+        "room tail shown {:.0} % with the rule, {:.0} % without",
+        100.0 * with_rule,
+        100.0 * without
+    );
+}
+
+/// Whispered speech with seeds that were used neither for choosing the settings nor for
+/// the reports (the robustness verifier found 30-40 ms blips with fresh seeds): no pitch.
+#[test]
+fn whispers_with_other_seeds_give_no_pitch() {
+    for rate in [44_100, 48_000, 96_000] {
+        for i in 0..6u64 {
+            let seed = 8100 + i;
+            let level = -36.0 + 33.0 * ((seed * 7 % 11) as f64) / 10.0;
+            let x = tv::speech_noise(rate, 8.0, level, seed * 29 + 11);
+            let ev = track(rate, &x);
+            let n = ev.iter().filter(|e| e.hz.is_some()).count();
+            assert_eq!(n, 0, "{rate} Hz seed {seed}: {n} pitched events");
+        }
+    }
+}
+
+/// Low voices whose clarity stays under the confident start (vibrato +-60 cents, breath
+/// -12 dB, a light room): shown on the note for most of the held part (measured 83.5 %;
+/// 74 % with the start rules and clarity of Stage 3a).
+#[test]
+fn low_breathy_voices_in_a_room_are_shown() {
+    let rate = 48_000;
+    let (mut ok, mut n) = (0usize, 0usize);
+    for &m in &[40i32, 43, 45, 48] {
+        for vowel in Vowel::ALL {
+            let hz = tv::midi_hz(f64::from(m));
+            let v = Voice {
+                vowel,
+                level_dbfs: -18.0,
+                breath_db: Some(-12.0),
+                seed: m as u64,
+            };
+            let x = tv::sing(rate, 2.0, v, |t| {
+                (0.2..1.7)
+                    .contains(&t)
+                    .then(|| tv::vibrato_hz(hz, 60.0, 5.5, t, 0.2))
+            });
+            let x = super::rig::reverb(&x, rate, 0.5, -8.0, m as u64);
+            for e in track(rate, &x) {
+                let t = secs(&e, rate);
+                if (0.4..1.6).contains(&t) {
+                    n += 1;
+                    let truth = tv::vibrato_hz(hz, 60.0, 5.5, t, 0.2);
+                    ok += usize::from(
+                        e.hz.is_some_and(|h| tv::cents(f64::from(h), truth).abs() <= 50.0),
+                    );
+                }
+            }
+        }
+    }
+    let share = ok as f64 / n as f64;
+    assert!(share >= 0.8, "{:.1} % shown on the note", 100.0 * share);
+}
+
+/// The harmonic comb: a voice's harmonics stand out of the spectrum, a handling thump's
+/// and a whispered vowel's do not (the comb guard of every start, `start_comb_db`). Mean
+/// comb of the newest window over a stretch of each signal.
+#[test]
+fn harmonic_comb_tells_voices_from_noise() {
+    let rate = 48_000;
+    let mean_comb = |x: &[f32], from: f64, to: f64, hz: f32| -> f32 {
+        let mut t = Tracker::new(rate);
+        let hop = t.hop_len();
+        let (mut sum, mut n) = (0.0f32, 0u32);
+        for (i, block) in x.chunks(hop).enumerate() {
+            t.process(block, |_| {});
+            let end = ((i + 1) * hop) as f64 / f64::from(rate);
+            if (from..to).contains(&end) {
+                sum += t.comb(hz);
+                n += 1;
+            }
+        }
+        sum / n as f32
+    };
+    let voice = tv::note(rate, Voice::default(), 220.0, 0.1, 0.5, 0.1);
+    let low = tv::note(rate, Voice::default(), 98.0, 0.1, 0.5, 0.1);
+    let thump = tv::thump(rate, 0.4, 0.1, 100.0, -6.0);
+    let whisper = tv::speech_noise(rate, 3.0, -20.0, 77);
+    let (v, l) = (
+        mean_comb(&voice, 0.2, 0.6, 220.0),
+        mean_comb(&low, 0.2, 0.6, 98.0),
+    );
+    let (th, wh) = (
+        mean_comb(&thump, 0.11, 0.16, 100.0),
+        mean_comb(&whisper, 0.2, 2.8, 290.0),
+    );
+    assert!(
+        v >= 10.0 && l >= 6.0,
+        "voice comb {v:.1} dB at 220 Hz, {l:.1} dB at 98 Hz"
+    );
+    assert!(
+        th <= 3.0 && wh <= 6.0,
+        "thump comb {th:.1} dB, whisper {wh:.1} dB"
+    );
+}
+
+/// Breath through a narrow formant is not a note at any rate (the WO2 quality round's first
+/// pass let a 30 ms run through at 44.1 kHz: this clip, low-band clarity 0.96 at 359 Hz;
+/// fixed by `lowband_max_hz`), nor at the other rates.
+#[test]
+fn breath_through_a_formant_gives_no_pitch() {
+    for rate in RATES {
+        let x = tv::breath(rate, 15.0, -17.0, 33 * 17);
+        let n = track(rate, &x).iter().filter(|e| e.hz.is_some()).count();
+        assert_eq!(n, 0, "{rate} Hz: {n} pitched events");
+    }
+}
+
+/// The reverb judge (`ending_drop_db`): phrases sung dry leave the input judged dry, the
+/// same phrases through a room (RT60 0.8 s, wet -6 dB) judge it reverberant, and so the
+/// tail rule applies only there.
+#[test]
+fn reverb_judge_tells_a_room_from_dry_singing() {
+    let rate = 48_000;
+    let judge = |x: &[f32]| -> f32 {
+        let mut t = Tracker::new(rate);
+        t.process(x, |_| {});
+        t.reverberant
+    };
+    for &m in &[45i32, 57, 69] {
+        let hz = tv::midi_hz(f64::from(m));
+        let v = Voice {
+            level_dbfs: -12.0,
+            ..Voice::default()
+        };
+        let (x, _) = phrases_then_note(rate, v, hz, 0.5);
+        assert_eq!(
+            judge(&x),
+            0.0,
+            "{}: dry phrases judged reverberant",
+            tv::note_name(m)
+        );
+        let wet = super::rig::reverb(&x, rate, 0.8, -6.0, m as u64);
+        assert_eq!(
+            judge(&wet),
+            1.0,
+            "{}: phrases in a room judged dry",
+            tv::note_name(m)
+        );
+    }
+}
+
+/// Low lines start a note on less evidence (`evidence_low_hz`): rough low notes E2-B2
+/// (jitter 2 %, shimmer 10 %), whose clarity stays under the confident start, are shown
+/// for more of their length than with the evidence every pitch needed before.
+#[test]
+fn low_lines_start_on_less_evidence() {
+    let rate = 48_000;
+    let shown = |cfg: &TrackerConfig| -> usize {
+        let mut n = 0;
+        for &m in &[40i32, 42, 45, 47] {
+            for vowel in Vowel::ALL {
+                let (x, truth) = rough_note(rate, vowel, m, 0.02, 0.10);
+                n += track_with(rate, cfg.clone(), &x)
+                    .iter()
+                    .filter(|e| {
+                        e.hz.is_some_and(|h| {
+                            tv::cents(f64::from(h), truth(secs(e, rate))).abs() <= 50.0
+                        })
+                    })
+                    .count();
+            }
+        }
+        n
+    };
+    let with = shown(&TrackerConfig::default());
+    let without = shown(&TrackerConfig {
+        evidence_low_hz: 0.0,
+        ..TrackerConfig::default()
+    });
+    assert!(
+        with > without,
+        "low notes shown {with} events, {without} without the low rule"
+    );
 }

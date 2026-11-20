@@ -27,6 +27,13 @@ Tune on "dev" only; report "heldout".
 
 Run with the guide benchmark's overlay venv (torch + torchcrepe + librosa + soxr):
   $JK_BUILD/practice-guide/venv/Scripts/python.exe -I crates/jk-pitch/examples/tracker_eval_prep.py
+
+`--second` (WO2 quality round) writes a SECOND set instead (`manifest-second.tsv`, clips and
+references with ids ending in "~b"): for every long stem (ccMixter, MUSDB18-HQ, the three
+test songs) the best 60 s window that does not overlap the first one, with the same
+reference rule and the same singer split. Its dev part extends the tuning material (more
+low voices); its held-out part is fresh audio nobody has run a tracker on, for a final
+report. vocadito has no second window (its recordings are short).
 """
 
 from __future__ import annotations
@@ -85,17 +92,26 @@ def sources() -> list[dict]:
     return out
 
 
-def excerpt(x: np.ndarray, sr: int) -> tuple[np.ndarray, float]:
-    """The EXCERPT_S window with the most active 100 ms frames (within 30 dB of the loud level)."""
+def excerpt(x: np.ndarray, sr: int, second: bool = False) -> tuple[np.ndarray | None, float]:
+    """The EXCERPT_S window with the most active 100 ms frames (within 30 dB of the loud level).
+    With `second`, the best window that does not overlap that one (None when there is none
+    with at least a third of its frames active)."""
     if len(x) <= EXCERPT_S * sr:
-        return x, 0.0
+        return (None, 0.0) if second else (x, 0.0)
     hop = sr // 10
     n = len(x) // hop
     rms = np.sqrt(np.mean(x[: n * hop].reshape(n, hop).astype(np.float64) ** 2, axis=1) + 1e-20)
     db = 20 * np.log10(rms)
     act = (db > np.percentile(db, 95) - 30).astype(float)
     w = int(EXCERPT_S * 10)
-    best = int(np.argmax(np.convolve(act, np.ones(w), "valid")))
+    score = np.convolve(act, np.ones(w), "valid")
+    best = int(np.argmax(score))
+    if second:
+        # Windows starting within w of the first one overlap it.
+        score[max(0, best - w + 1): best + w] = -1
+        if score.max() < w / 3:
+            return None, 0.0
+        best = int(np.argmax(score))
     return x[best * hop: best * hop + int(EXCERPT_S * sr)], best * hop / sr
 
 
@@ -114,16 +130,23 @@ def main() -> None:
     os.makedirs(os.path.join(OUT, "clips"), exist_ok=True)
     os.makedirs(os.path.join(OUT, "ref"), exist_ok=True)
     os.makedirs(os.path.join(OUT, "tmp16k"), exist_ok=True)
+    second = "--second" in sys.argv[1:]
     todo = sources()
     rows = []
     pyin_jobs = []
     for s in todo:
+        if second and s["dataset"] == "vocadito":
+            continue
         x, sr = sf.read(s["path"], dtype="float32", always_2d=True)
         x = x[:, 0].copy()  # one channel, never a sum
         if s["dataset"] == "vocadito":
             start = 0.0
         else:
-            x, start = excerpt(x, sr)
+            x, start = excerpt(x, sr, second)
+            if x is None:
+                continue
+            if second:
+                s["id"] += "~b"
         clip = os.path.join(OUT, "clips", s["id"] + ".f32")
         x.astype("<f4").tofile(clip)
         n_frames = int(len(x) / sr / HOP_S) + 1
@@ -181,13 +204,14 @@ def main() -> None:
         s["ref_undecided"] = int(np.sum(flag == 2))
         print(s["id"], "voiced", s["ref_voiced"], "unvoiced", s["ref_unvoiced"], "undecided", s["ref_undecided"], file=sys.stderr)
 
-    with open(os.path.join(OUT, "manifest.tsv"), "w", newline="") as fh:
+    name = "manifest-second" if second else "manifest"
+    with open(os.path.join(OUT, name + ".tsv"), "w", newline="") as fh:
         fh.write("dataset\tsplit\tid\tgroup\trate\tclip\tref\n")
         for s in rows:
             fh.write(f"{s['dataset']}\t{s['split']}\t{s['id']}\t{s['group']}\t{s['rate']}\t{s['clip']}\t{s['ref']}\n")
     # Names stay outside the repository, next to the clips (for the evidence trail).
     json.dump([{k: v for k, v in s.items() if k not in ("p16",)} for s in rows],
-              open(os.path.join(OUT, "manifest.json"), "w"), indent=1)
+              open(os.path.join(OUT, name + ".json"), "w"), indent=1)
 
 
 if __name__ == "__main__":
