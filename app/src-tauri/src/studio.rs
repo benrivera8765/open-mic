@@ -242,6 +242,19 @@ pub struct StudioJob {
     pub error_code: Option<String>,
     /// (added WO2) The app's `guide` stage: the new song's melody guide.
     pub guide: Option<GuideStatus>,
+    /// Addition (owner, 2026-11-22): the job's lyrics mode, `auto`, `text` (the
+    /// singer's own, aligned to the singing), `lrc` or `none`.
+    pub lyrics: &'static str,
+}
+
+/// The `&'static` name of a lyrics mode in a job spec (unknown reads as `auto`).
+fn lyrics_mode(v: &Value) -> &'static str {
+    match v.get("mode").and_then(Value::as_str).unwrap_or("auto") {
+        "text" => "text",
+        "lrc" => "lrc",
+        "none" => "none",
+        _ => "auto",
+    }
 }
 
 /// How the Studio hands a finished song to the guide queue (src/guide.rs).
@@ -1070,6 +1083,7 @@ impl Studio {
             error: None,
             error_code: None,
             guide: None,
+            lyrics: lyrics_mode(&spec["lyrics"]),
         };
         lock(&self.state).jobs.push(Job {
             view: view.clone(),
@@ -1082,6 +1096,44 @@ impl Studio {
         self.emit_job(&view);
         self.wake.notify_all();
         Ok(job_id)
+    }
+
+    /// `studio_set_lyrics(job_id, lyrics)` (addition, owner 2026-11-22): changes the
+    /// lyrics of a song still waiting in the queue: `{"mode":"text","text":...}` for the
+    /// singer's own lyrics (the Studio aligns them to the singing), `{"mode":"auto"}` to
+    /// find them automatically. A song the Studio has started keeps what it had.
+    pub fn set_lyrics(&self, job_id: &str, lyrics: &Value) -> ApiResult<StudioJob> {
+        let mode = lyrics_mode(lyrics);
+        let text = lyrics.get("text").and_then(Value::as_str).unwrap_or("");
+        if mode == "text" && text.trim().is_empty() {
+            return Err(ApiError::new("lyrics_missing", "No lyrics were given. Paste them, or pick Automatic."));
+        }
+        if !matches!(mode, "auto" | "text") {
+            return Err(ApiError::bad_request("Lyrics can be \"auto\" or \"text\" here."));
+        }
+        let view = {
+            let mut st = lock(&self.state);
+            let job = st
+                .jobs
+                .iter_mut()
+                .find(|j| j.view.job_id == job_id)
+                .ok_or_else(|| ApiError::new("not_found", "This job is not in the queue."))?;
+            if job.sent || job.view.state != "queued" {
+                return Err(ApiError::new(
+                    "busy",
+                    "The Studio has already started this song, so its lyrics can no longer be changed here. Once it is made, fix them in Fix timing.",
+                ));
+            }
+            job.spec["lyrics"] = if mode == "text" {
+                json!({"mode": "text", "text": text, "lrc": null, "source": null})
+            } else {
+                json!({"mode": "auto", "text": null, "lrc": null, "source": null})
+            };
+            job.view.lyrics = mode;
+            job.view.clone()
+        };
+        self.emit_job(&view);
+        Ok(view)
     }
 
     /// `studio_cancel`.

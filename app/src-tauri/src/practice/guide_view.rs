@@ -103,6 +103,9 @@ impl SessionGuide {
         if !doc.word_refs_valid(lyrics.as_ref(), offset_ms) {
             jk_guide::set_word_refs(&mut doc, lyrics.as_ref(), is_override, offset_ms);
         }
+        // The melody as the singer reads it: notes on piano keys, slivers folded in (D-251).
+        // Lane and grade both read this, so what is drawn is what is graded.
+        jk_guide::singable::singable(&mut doc);
         let offset_s = offset_ms as f64 / 1000.0;
         let notes: Vec<ScoreNote> = doc
             .notes

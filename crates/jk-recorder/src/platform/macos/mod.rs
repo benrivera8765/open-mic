@@ -169,8 +169,8 @@ impl ErrInfo {
     fn into_error(self, doing: &str) -> RecorderError {
         if self.is_permission() {
             return RecorderError::PermissionDenied(format!(
-                "macOS refused screen capture while {doing} ({}). Turn Jukeoke on in System Settings > \
-                 Privacy & Security > Screen Recording, then quit and reopen Jukeoke.",
+                "macOS refused screen capture while {doing} ({}). Turn Open Mic on in System Settings > \
+                 Privacy & Security > Screen Recording, then quit and reopen Open Mic.",
                 self.description
             ));
         }
@@ -489,7 +489,7 @@ define_class!(
             let info = ErrInfo::from_ns(error);
             self.ivars().pipeline.fail(format!(
                 "macOS stopped the capture: {} (domain {}, code {}). If the Screen Recording permission \
-                 was switched off, switch it on again and reopen Jukeoke.",
+                 was switched off, switch it on again and reopen Open Mic.",
                 info.description, info.domain, info.code
             ));
         }

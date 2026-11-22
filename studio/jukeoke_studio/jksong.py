@@ -110,12 +110,12 @@ class JkSongError(Exception):
 
 class NotASongFile(JkSongError):
     kind = "not_a_song_file"
-    user_message = "This is not a Jukeoke song file (or it was damaged when it was copied as text)."
+    user_message = "This is not an Open Mic song file (or it was damaged when it was copied as text)."
 
 
 class NewerVersion(JkSongError):
     kind = "newer_version"
-    user_message = "This song was made by a newer version of Jukeoke; please update."
+    user_message = "This song was made by a newer version of Open Mic; please update."
 
 
 class Truncated(JkSongError):

@@ -12,7 +12,7 @@
 // are open are listed (read only) and never played or paused. The app plays nothing
 // itself (null:48000 device, master 0). Nothing above -60 dBFS is played.
 //
-//   node scripts/real-app-record-sessions.mjs <Jukeoke.exe> <root> <out dir> <player dir> [--no-studio]
+//   node scripts/real-app-record-sessions.mjs <Open Mic.exe> <root> <out dir> <player dir> [--no-studio]
 //
 // <player dir> holds album.wav, cover*.png, index.html and truth.json
 // ($JK_BUILD/recsessions-live/gen-player.mjs makes them). Report: <out dir>/record-sessions.json.
@@ -26,7 +26,7 @@ const args = process.argv.slice(2);
 const noStudio = args.includes("--no-studio");
 const [exe, root, outDir, playerDir] = args.filter((a) => !a.startsWith("--"));
 if (!exe || !root || !outDir || !playerDir) {
-  console.error("usage: node scripts/real-app-record-sessions.mjs <Jukeoke.exe> <root> <out dir> <player dir> [--no-studio]");
+  console.error("usage: node scripts/real-app-record-sessions.mjs <Open Mic.exe> <root> <out dir> <player dir> [--no-studio]");
   process.exit(2);
 }
 mkdirSync(outDir, { recursive: true });

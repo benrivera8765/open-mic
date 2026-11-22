@@ -420,7 +420,7 @@ def default_user_agent() -> str:
     """A generic User-Agent naming the app (LRCLIB asks clients to identify
     themselves). It carries no personal data. The name comes from branding.json when
     the repository is around, so a rename stays a one-file change."""
-    name, version = "Jukeoke", "0.1.0"
+    name, version = "Open Mic", "0.1.0"
     try:
         here = Path(__file__).resolve()
         for parent in list(here.parents)[:4]:

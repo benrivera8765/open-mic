@@ -35,6 +35,8 @@ import {
   useApp,
 } from "../state/app";
 import { Note, Progress, Section, useId } from "./common";
+import { ConfirmDialog } from "./Library";
+import { AUTO_LYRICS, LyricsChoice, type LyricsPick, lyricsRequest } from "./LyricsChoice";
 
 const METER_FLOOR_DB = -60;
 
@@ -172,7 +174,34 @@ function PreviewButton({ path, label }: { path: string; label: string }) {
   );
 }
 
-function SongRow({ song, studioOk }: { song: RecordedSong; studioOk: boolean }) {
+/** "Make a karaoke song" for one or several songs: each gets automatic or its own lyrics first. */
+function MakeSongsDialog({ songs, skin, onClose }: { songs: RecordedSong[]; skin: boolean; onClose: () => void }) {
+  const [picks, setPicks] = useState<LyricsPick[]>(() => songs.map(() => AUTO_LYRICS));
+  const name = (s: RecordedSong) => [s.artist, s.title].filter((x) => x.trim()).join(" – ") || s.name;
+  return (
+    <ConfirmDialog
+      skin={skin}
+      danger={false}
+      busyLabel="Adding…"
+      title={songs.length === 1 ? `Make a karaoke song of “${name(songs[0])}”` : `Make ${songs.length} karaoke songs`}
+      confirmLabel="Add to the Studio queue"
+      onConfirm={async () => {
+        await makeKaraokeSongs(songs, picks.map(lyricsRequest));
+        onClose();
+      }}
+      onCancel={onClose}
+    >
+      <p>Choose where each song's lyrics come from. Lyrics you paste are lined up with the singing. You can still change them in the Studio queue until the song's turn comes.</p>
+      <div class="make-songs__list">
+        {songs.map((s, k) => (
+          <LyricsChoice key={s.path} label={name(s)} value={picks[k]} onChange={(v) => setPicks((p) => p.map((x, j) => (j === k ? v : x)))} />
+        ))}
+      </div>
+    </ConfirmDialog>
+  );
+}
+
+function SongRow({ song, studioOk, onMake }: { song: RecordedSong; studioOk: boolean; onMake: (songs: RecordedSong[]) => void }) {
   const hint = cutHint(song);
   const label = [song.artist, song.title].filter((x) => x.trim()).join(" – ") || song.name;
   return (
@@ -194,7 +223,7 @@ function SongRow({ song, studioOk }: { song: RecordedSong; studioOk: boolean }) 
       <span class={`title-strip__badge rec-song__badge rec-song__badge--${song.status}${song.status === "partial" ? " title-strip__badge--warn" : ""}`}>{STATUS_TEXT[song.status]}</span>
       <PreviewButton path={song.path} label={label} />
       {studioOk && (
-        <button type="button" class="button button--small" onClick={() => void makeKaraokeSongs([song])}>
+        <button type="button" class="button button--small" onClick={() => onMake([song])}>
           Make a karaoke song
         </button>
       )}
@@ -221,18 +250,23 @@ const STOP_TEXT: Record<string, string> = {
   app_closed: "the app was closed while recording",
 };
 
-function SessionItem({ s, studioOk }: { s: RecordingSession; studioOk: boolean }) {
+function SessionItem({ s, studioOk, skin, onMake }: { s: RecordingSession; studioOk: boolean; skin: boolean; onMake: (songs: RecordedSong[]) => void }) {
   const [busy, setBusy] = useState(false);
-  const complete = s.songs.filter((x) => x.status === "complete");
-  const canSplit = s.master_present && (s.state === "kept_master" || s.state === "failed" || s.state === "stopped");
-  const makeAll = async () => {
-    setBusy(true);
+  const [asking, setAsking] = useState(false);
+  const canDelete = s.state !== "recording" && s.state !== "splitting";
+  const remove = async () => {
     try {
-      await makeKaraokeSongs(complete);
-    } finally {
-      setBusy(false);
+      await getApiSync().recorderPreviewStop?.();
+      await getApiSync().recorderSessionDelete?.(s.folder);
+      setAsking(false);
+      await refreshRecordingSessions();
+    } catch (err) {
+      toast(errorMessage(err), "error");
     }
   };
+  const complete = s.songs.filter((x) => x.status === "complete");
+  const canSplit = s.master_present && (s.state === "kept_master" || s.state === "failed" || s.state === "stopped");
+  const makeAll = () => onMake(complete);
   const splitAgain = async () => {
     setBusy(true);
     try {
@@ -266,11 +300,25 @@ function SessionItem({ s, studioOk }: { s: RecordingSession; studioOk: boolean }
             Split again
           </button>
         )}
+        {canDelete && getApiSync().recorderSessionDelete && (
+          <button type="button" class="button button--small rec-session__delete" disabled={busy} onClick={() => setAsking(true)}>
+            Delete
+          </button>
+        )}
       </div>
+      {asking && (
+        <ConfirmDialog skin={skin} title={`Delete the recording of ${s.created}?`} confirmLabel="Delete for good" onConfirm={remove} onCancel={() => setAsking(false)}>
+          <p>
+            Its {s.songs.length === 1 ? "song file" : `${s.songs.length} song files`}
+            {s.excluded.length > 0 ? " and the parts not used as songs" : ""} are deleted for good; this cannot be undone.
+          </p>
+          <p>Karaoke songs you already made from it stay in your Library.</p>
+        </ConfirmDialog>
+      )}
       {s.songs.length > 0 && (
         <ul class="rec-session__songs">
           {s.songs.map((song) => (
-            <SongRow key={song.path} song={song} studioOk={studioOk} />
+            <SongRow key={song.path} song={song} studioOk={studioOk} onMake={onMake} />
           ))}
         </ul>
       )}
@@ -299,7 +347,8 @@ function SessionItem({ s, studioOk }: { s: RecordingSession; studioOk: boolean }
 // The screen
 // ---------------------------------------------------------------------------
 
-export function Recorder() {
+export function Recorder({ skin = false }: { skin?: boolean }) {
+  const [making, setMaking] = useState<RecordedSong[] | null>(null);
   const info = useApp((s) => s.info);
   const status = useApp((s) => s.recorder);
   const recordings = useApp((s) => s.recordings);
@@ -580,12 +629,13 @@ export function Recorder() {
         )}
       </Section>
 
+      {making && <MakeSongsDialog songs={making} skin={skin} onClose={() => setMaking(null)} />}
       {playerLink && (
         <Section title="Songs recorded separately" class="rec-sessions">
           {sessions.length === 0 && <p>None yet. Press “Record songs separately”, play an album or a playlist, and the songs appear here, one file each.</p>}
           <ul class="rec-sessions__list">
             {sessions.map((s) => (
-              <SessionItem key={s.folder} s={s} studioOk={studioOk} />
+              <SessionItem key={s.folder} s={s} studioOk={studioOk} skin={skin} onMake={setMaking} />
             ))}
           </ul>
         </Section>

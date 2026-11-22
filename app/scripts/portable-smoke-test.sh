@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Portable-mode smoke test for the Windows app (WORK_ORDER section 9, "Portability").
 #
-#   1. Lays out a fake stick:  <root>/Windows/Jukeoke.exe  and  <root>/Library/
+#   1. Lays out a fake stick:  <root>/Windows/Open Mic.exe  and  <root>/Library/
 #   2. Snapshots everything named like the app in %LOCALAPPDATA% and %APPDATA%, and
 #      every HKCU registry key, value or data containing "jukeoke".
-#   3. Runs `Jukeoke.exe --smoke-test` from the normal path, then again through a
+#   3. Runs `Open Mic.exe --smoke-test` from the normal path, then again through a
 #      different drive letter made with `subst`, deleting <root>/Settings before
 #      each run so each run must create its own state (the delete is retried until
 #      the previous run's WebView2 processes have let go; see clear_settings).
@@ -32,13 +32,13 @@
 #      These entries are listed separately and do not fail the test.
 #
 # Usage (Git Bash, after `source scripts/devenv.sh`):
-#   app/scripts/portable-smoke-test.sh path/to/Jukeoke.exe [root]
+#   app/scripts/portable-smoke-test.sh path/to/Open Mic.exe [root]
 # root defaults to $JK_BUILD/portable-test; reports go to <root>-reports/.
 # Exit code 0 only if every run passed and nothing was written outside <root>.
 set -uo pipefail
 export MSYS_NO_PATHCONV=1 # keep `reg ... /s` and `subst X: /D` arguments intact
 
-exe="${1:?usage: portable-smoke-test.sh path/to/Jukeoke.exe [root]}"
+exe="${1:?usage: portable-smoke-test.sh path/to/Open Mic.exe [root]}"
 root="${2:-${JK_BUILD:?source scripts/devenv.sh first}/portable-test}"
 reports="$root-reports"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,7 +48,7 @@ failures=0
 
 rm -rf "$root" "$reports"
 mkdir -p "$root/Windows" "$root/Library" "$reports"
-cp "$exe" "$root/Windows/Jukeoke.exe"
+cp "$exe" "$root/Windows/Open Mic.exe"
 
 # Prints "key | value line" for every HKCU match, so sorting keeps the context.
 registry_matches() {
@@ -69,7 +69,7 @@ snapshot() { # $1: output file (audited), $2: output file (Explorer shell cache,
 }
 
 # Deletes <root>/Settings, retrying for up to 60 s. WebView2's browser processes outlive
-# Jukeoke.exe (about 0.2-0.3 s on an idle PC, 8-20 s under heavy CPU load) and hold
+# Open Mic.exe (about 0.2-0.3 s on an idle PC, 8-20 s under heavy CPU load) and hold
 # Settings/webview-windows/EBWebView/lockfile until they exit. A single `rm -rf` in that
 # window leaves a half-deleted profile with the lock still held, and the next start
 # through another path to the same folder (the subst run) then fails to create its
@@ -121,7 +121,7 @@ snapshot "$reports/before.txt" "$reports/muicache-before.txt"
 echo "== run 1: from $(cygpath -w "$root"), with WEBVIEW2_USER_DATA_FOLDER pointing elsewhere"
 elsewhere="$root-webview-elsewhere"
 rm -rf "$elsewhere"
-WEBVIEW2_USER_DATA_FOLDER="$(cygpath -w "$elsewhere")"   run_smoke "run1-original-path" "$root/Windows/Jukeoke.exe" "$(cygpath -w "$root")"
+WEBVIEW2_USER_DATA_FOLDER="$(cygpath -w "$elsewhere")"   run_smoke "run1-original-path" "$root/Windows/Open Mic.exe" "$(cygpath -w "$root")"
 if [[ -e "$elsewhere" ]]; then
   echo "[run1] FAIL: WEBVIEW2_USER_DATA_FOLDER was obeyed: $(cygpath -w "$elsewhere") exists"
   failures=$((failures + 1))
@@ -140,7 +140,7 @@ if [[ -z "$drive" ]]; then
 else
   subst "$drive" "$(cygpath -w "$root")"
   trap 'subst "$drive" /D >/dev/null 2>&1' EXIT
-  run_smoke "run2-subst-${drive%:}" "$drive/Windows/Jukeoke.exe" "$drive\\"
+  run_smoke "run2-subst-${drive%:}" "$drive/Windows/Open Mic.exe" "$drive\\"
   subst "$drive" /D && trap - EXIT
   echo "[subst] $drive removed"
 fi
@@ -149,7 +149,7 @@ echo "== run 3: start-up failure must be reported, not silent"
 if clear_settings "run3"; then
   mkdir -p "$root/Settings"
   printf 'not a folder' >"$root/Settings/webview-windows"
-  "$root/Windows/Jukeoke.exe" --smoke-test >"$reports/run3-startup-failure.stdout" 2>&1
+  "$root/Windows/Open Mic.exe" --smoke-test >"$reports/run3-startup-failure.stdout" 2>&1
   code=$?
   report="$root/Settings/logs/startup-error.txt"
   if [[ $code -eq 1 && -f "$report" ]] && grep -q "could not start" "$report"; then

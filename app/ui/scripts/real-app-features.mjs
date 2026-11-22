@@ -10,7 +10,7 @@
 // "null:48000" output device and master volume 0 before the app starts; the recorder
 // captures the real default device's system mix, which this run leaves silent.
 //
-//   node scripts/real-app-features.mjs <Jukeoke.exe> <root> <out dir> <input audio> <cover.jpg> [--no-ole]
+//   node scripts/real-app-features.mjs <Open Mic.exe> <root> <out dir> <input audio> <cover.jpg> [--no-ole]
 //
 // Every step is a PASS / FAIL line; the report is <out dir>/real-app-features.json.
 import { spawn, spawnSync } from "node:child_process";
@@ -25,7 +25,7 @@ const noOle = args.includes("--no-ole");
 const dropOnly = args.includes("--drop-only");
 const [exe, root, outDir, inputAudio, coverJpg] = args.filter((a) => !a.startsWith("--"));
 if (!exe || !root || !outDir || !inputAudio || !coverJpg) {
-  console.error("usage: node scripts/real-app-features.mjs <Jukeoke.exe> <root> <out dir> <input audio> <cover.jpg> [--no-ole]");
+  console.error("usage: node scripts/real-app-features.mjs <Open Mic.exe> <root> <out dir> <input audio> <cover.jpg> [--no-ole]");
   process.exit(2);
 }
 const here = dirname(fileURLToPath(import.meta.url));

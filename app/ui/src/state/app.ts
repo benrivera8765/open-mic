@@ -435,10 +435,10 @@ function upsertRecordingSession(sess: RecordingSession): void {
  * Studio form uses, with the cover given explicitly (`metadata.cover_path`).
  * Returns how many were queued.
  */
-export async function makeKaraokeSongs(songs: RecordedSong[]): Promise<number> {
+export async function makeKaraokeSongs(songs: RecordedSong[], lyrics?: ({ mode: "auto" | "text"; text: string | null; lrc: null } | undefined)[]): Promise<number> {
   if (!api || songs.length === 0) return 0;
   let queued = 0;
-  for (const song of songs) {
+  for (const [k, song] of songs.entries()) {
     try {
       await api.studioSubmit({
         input: song.path,
@@ -450,7 +450,7 @@ export async function makeKaraokeSongs(songs: RecordedSong[]): Promise<number> {
           album: song.album.trim() || null,
           ...(song.cover_path ? { cover_path: song.cover_path } : {}),
         },
-        lyrics: { mode: "auto", text: null, lrc: null },
+        lyrics: lyrics?.[k] ?? { mode: "auto", text: null, lrc: null },
       });
       queued += 1;
     } catch (err) {

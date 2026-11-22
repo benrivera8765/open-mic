@@ -322,7 +322,7 @@ def _download(wf: WeightFile, dest: Path, progress: Progress | None,
                         "A downloaded model file was not the expected one, so it was not used. Try the "
                         "download again later.",
                         f"{wf.filename}: SHA-256 mismatch (got {digest}, expected {wf.sha256}); "
-                        f"the file at {wf.url} is not the one Jukeoke was tested with")
+                        f"the file at {wf.url} is not the one Open Mic was tested with")
                 if wf.size and done != wf.size:
                     raise IOError(f"{wf.filename}: size {done} != expected {wf.size}")
                 out.flush()

@@ -93,13 +93,13 @@ pub fn write(path: &Path, spec: ToneSong) -> jk_format::Result<()> {
         .collect();
     let manifest: jk_format::Manifest = serde_json::from_value(json!({
         "format": "jksong", "format_version": jk_format::FORMAT_VERSION,
-        "title": "Test Tone", "artist": "Jukeoke", "album": null,
+        "title": "Test Tone", "artist": "Open Mic", "album": null,
         "sample_rate": spec.sample_rate, "channels": 2, "duration_frames": frames,
         "duration_seconds": frames as f64 / spec.sample_rate as f64,
         "cover": null, "lyrics": "lyrics",
         "analysis": {"key": {"tonic": "A", "mode": "major", "name": "A major", "confidence": 1.0}, "tempo_bpm": null},
         "preset": "full", "stems_sum_to_source": false, "stems": stems,
-        "provenance": {"app": {"name": "Jukeoke self-check", "version": env!("CARGO_PKG_VERSION")},
+        "provenance": {"app": {"name": "Open Mic self-check", "version": env!("CARGO_PKG_VERSION")},
                        "created_utc": jk_format::time::utc_now_iso8601(), "resampling": [], "models": [],
                        "source": {"filename": "generated", "lossy": false}}
     }))
@@ -127,7 +127,7 @@ mod tests {
             crate::fs_atomic::random_u32()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("Jukeoke - Test Tone.jksong");
+        let p = dir.join("Open Mic - Test Tone.jksong");
         write(&p, ToneSong { seconds: 3.0, ..Default::default() }).unwrap();
         let song = jk_format::SongFile::open(&p).unwrap();
         assert_eq!(song.manifest().duration_frames, 144_000);

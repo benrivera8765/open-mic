@@ -526,12 +526,12 @@ pub fn request_mic_permission() -> MicPermission {
 pub const MIC_PERMISSION_EXPLANATION: &str = "Practice mode listens to your microphone so it can \
 show the note you are singing and grade it. It listens only while the practice screen is open, \
 works out the pitch in memory on this computer, and never records, saves or sends your voice. \
-Your computer will now ask whether Jukeoke may use the microphone: choose Allow (OK on a Mac).";
+Your computer will now ask whether Open Mic may use the microphone: choose Allow (OK on a Mac).";
 
 /// The text macOS shows in its own permission prompt: the bundle's
 /// `NSMicrophoneUsageDescription` (app/src-tauri/Info.plist must carry exactly
 /// this; a test checks it).
-pub const MACOS_MIC_USAGE_DESCRIPTION: &str = "Jukeoke listens to your microphone only while \
+pub const MACOS_MIC_USAGE_DESCRIPTION: &str = "Open Mic listens to your microphone only while \
 practice mode is open, to show and grade the pitch you sing. The sound is analysed in memory on \
 this Mac and is never recorded, saved or sent anywhere.";
 
@@ -544,9 +544,9 @@ pub const WINDOWS_MICROPHONE_SETTINGS_URI: &str = "ms-settings:privacy-microphon
 /// The exact steps to allow the microphone after a refusal, for this system.
 pub fn mic_denied_steps() -> &'static str {
     if cfg!(target_os = "macos") {
-        "macOS is not letting Jukeoke use the microphone. Open System Settings > Privacy & \
-         Security > Microphone and switch on Jukeoke, then open practice mode again (if it still \
-         says no microphone, quit and reopen Jukeoke). Each new build of the app may have to be \
+        "macOS is not letting Open Mic use the microphone. Open System Settings > Privacy & \
+         Security > Microphone and switch on Open Mic, then open practice mode again (if it still \
+         says no microphone, quit and reopen Open Mic). Each new build of the app may have to be \
          allowed again, because it is signed ad hoc."
     } else {
         "Windows is not letting apps use the microphone. Open Settings > Privacy & security > \

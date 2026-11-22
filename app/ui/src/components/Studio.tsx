@@ -464,6 +464,61 @@ function ImportItem({ path }: { path: string }) {
 }
 
 /** One job of the queue (exported for tests). */
+/** A waiting song's lyrics: automatic, or the singer's own (owner 2026-11-22). */
+function JobLyrics({ job }: { job: StudioJob }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const api = getApiSync();
+  if (!api.studioSetLyrics || job.state !== "queued") return null;
+  const own = job.lyrics === "text";
+  const set = async (mode: "auto" | "text") => {
+    setBusy(true);
+    try {
+      await api.studioSetLyrics!(job.job_id, { mode, text: mode === "text" ? text : null });
+      setOpen(false);
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div class="studio__job-lyrics">
+      <span class="hint">Lyrics: {own ? "your own (lined up with the singing)" : job.lyrics === "lrc" ? "from an .lrc file" : job.lyrics === "none" ? "none" : "found automatically"}</span>{" "}
+      {!open && job.lyrics !== "lrc" && job.lyrics !== "none" && (
+        <button type="button" class="button button--small studio__job-lyrics-edit" onClick={() => setOpen(true)}>
+          {own ? "Change lyrics" : "Add your lyrics"}
+        </button>
+      )}
+      {open && (
+        <div class="studio__job-lyrics-editor">
+          <textarea
+            aria-label={`Lyrics for ${job.input_name}, one sung line per line`}
+            rows={7}
+            value={text}
+            placeholder="Paste or type the lyrics, one sung line per line. They are lined up with the singing."
+            onInput={(e) => setText((e.currentTarget as HTMLTextAreaElement).value)}
+          />
+          <div class="row">
+            <button type="button" class="button button--primary button--small" disabled={busy || !text.trim()} onClick={() => void set("text")}>
+              Use these lyrics
+            </button>
+            {own && (
+              <button type="button" class="button button--small" disabled={busy} onClick={() => void set("auto")}>
+                Find them automatically instead
+              </button>
+            )}
+            <button type="button" class="button button--small" disabled={busy} onClick={() => setOpen(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Job({ job }: { job: StudioJob & { stage_progress?: number } }) {
   // WO2: an app core that makes practice data adds its own last stage, "guide"
   // (STUDIO_PROTOCOL 12; the job carries `guide`).
@@ -488,6 +543,7 @@ export function Job({ job }: { job: StudioJob & { stage_progress?: number } }) {
       </ol>
       {(job.state === "running" || job.state === "queued") && <Progress value={job.overall} label={`${job.input_name}: overall progress`} />}
       {job.message && job.state === "running" && <p class="hint">{job.message}</p>}
+      <JobLyrics job={job} />
       {job.state === "failed" && job.error && <Note kind="error">{job.error}</Note>}
       {guideFailed && (
         <Note kind="warn">

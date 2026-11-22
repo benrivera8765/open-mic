@@ -72,18 +72,18 @@ export function Badge({ name, class: className, title }: BadgeProps) {
     >
       <defs>
         <linearGradient id={`${id}-chrome`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#ffffff" />
-          <stop offset="0.22" stop-color="#d4d7de" />
-          <stop offset="0.48" stop-color="#70737c" />
-          <stop offset="0.55" stop-color="#3b3d44" />
-          <stop offset="0.64" stop-color="#9da1aa" />
-          <stop offset="0.86" stop-color="#f1f2f5" />
-          <stop offset="1" stop-color="#8d9098" />
+          <stop offset="0" stop-color="#fff6d8" />
+          <stop offset="0.22" stop-color="#ecd38e" />
+          <stop offset="0.48" stop-color="#9a7228" />
+          <stop offset="0.55" stop-color="#563c0f" />
+          <stop offset="0.64" stop-color="#cca34a" />
+          <stop offset="0.86" stop-color="#f9e9b9" />
+          <stop offset="1" stop-color="#bc8e35" />
         </linearGradient>
         <linearGradient id={`${id}-chrome2`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#5d6068" />
-          <stop offset="0.5" stop-color="#f4f5f7" />
-          <stop offset="1" stop-color="#6b6e76" />
+          <stop offset="0" stop-color="#825f21" />
+          <stop offset="0.5" stop-color="#fbecc0" />
+          <stop offset="1" stop-color="#946d26" />
         </linearGradient>
         <linearGradient id={`${id}-enamel`} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0" stop-color="#ef3a55" />

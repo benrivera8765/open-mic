@@ -146,10 +146,10 @@ pub struct RestoreResult {
 }
 
 /// Shown when macOS runs the app from a translocated copy.
-pub const TRANSLOCATION_HELP: &str = "macOS opened Jukeoke from a temporary, read-only copy (this happens to apps \
+pub const TRANSLOCATION_HELP: &str = "macOS opened Open Mic from a temporary, read-only copy (this happens to apps \
 copied from a download or another computer), so it cannot see the songs next to it on the stick. Choose the \
-stick's main folder (the one that holds Library and Mac) and Jukeoke will remember it on this Mac. To stop this \
-happening, move Jukeoke.app out of the Mac folder and back in once with Finder, or open it once with Control-click > Open.";
+stick's main folder (the one that holds Library and Mac) and Open Mic will remember it on this Mac. To stop this \
+happening, move Open Mic.app out of the Mac folder and back in once with Finder, or open it once with Control-click > Open.";
 
 fn s(p: &Path) -> String {
     p.display().to_string()

@@ -12,11 +12,11 @@ export function CrestOrnament({ class: className }: { class?: string }) {
     <svg class={`jk-crest-ornament${className ? ` ${className}` : ""}`} viewBox="0 0 200 100" aria-hidden="true">
       <defs>
         <linearGradient id={`${id}-chrome`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#ffffff" />
-          <stop offset="0.35" stop-color="#bfc3cb" />
-          <stop offset="0.55" stop-color="#55585f" />
-          <stop offset="0.75" stop-color="#e6e8ec" />
-          <stop offset="1" stop-color="#7c7f87" />
+          <stop offset="0" stop-color="#fff6d8" />
+          <stop offset="0.35" stop-color="#e3c374" />
+          <stop offset="0.55" stop-color="#77571c" />
+          <stop offset="0.75" stop-color="#f5e0a4" />
+          <stop offset="1" stop-color="#a87d2c" />
         </linearGradient>
         <radialGradient id={`${id}-enamel`} cx="0.45" cy="0.35" r="0.7">
           <stop offset="0" stop-color="#ff5068" />
@@ -33,7 +33,7 @@ export function CrestOrnament({ class: className }: { class?: string }) {
         </g>
       </g>
       {/* A chrome stud above the oval. */}
-      <circle cx="100" cy="17" r="5" fill={`url(#${id}-chrome)`} stroke="#3a3c42" stroke-width="0.6" />
+      <circle cx="100" cy="17" r="5" fill={`url(#${id}-chrome)`} stroke="#543b0f" stroke-width="0.6" />
       <ellipse cx="100" cy="56" rx="35" ry="32" fill="#000" opacity="0.45" transform="translate(0 2)" />
       <ellipse cx="100" cy="55" rx="35" ry="32" fill={`url(#${id}-chrome)`} />
       <ellipse cx="100" cy="55" rx="29" ry="26.5" fill={`url(#${id}-enamel)`} />

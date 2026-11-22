@@ -291,6 +291,7 @@ export function PracticeView({ song, lyricsOffsetS, deviceOffsetS }: { song: Son
           <PracticeLane
             guide={p.guide!}
             lyrics={song.lyrics}
+            lyricsOffsetS={lyricsOffsetS}
             duration={song.summary.duration_s}
             offsetS={deviceOffsetS}
             pianoSide={pr.piano_side}

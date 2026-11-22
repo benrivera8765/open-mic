@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The practice lane across whole songs (WO2 section 9, "The screen"): at several window
 // sizes, at key 0 and shifted keys (-5, +3, every key -12..12 for the names) and with
-// octave shifts, each bar is at its note's height on the piano keys, each word is under its
-// note, the marker is at the sung pitch's height and the lit key is the right one; plus
+// octave shifts, each bar is at its note's height on the piano keys, every lyric word is in the strip at its
+// own time, the marker is at the sung pitch's height and the lit key is the right one; plus
 // reduce-motion and the simple lane, the key heard (not the dial) moving the bars, the
 // range rule, the countdown and the marker's honesty (hidden with nobody singing).
 //
@@ -58,7 +58,7 @@ describe("practice lane: the demo song's real guide, whole song", () => {
         expect(rep.barsChecked).toBeGreaterThan(500);
         expect(rep.targetChecked).toBeGreaterThan(400);
         expect(rep.markerChecked).toBe(rep.targetChecked);
-        if (size.words) expect(rep.wordsChecked).toBeGreaterThan(200);
+        if (size.words) expect(rep.wordsChecked).toBe(demo.lyrics.lines.reduce((k, l) => k + l.words.length, 0));
         expect(rep.wordOverlaps).toBe(0);
         expect(rep.outOfView).toBe(0);
         // WO2 4.5: at least 2 s of upcoming notes; the now line a quarter to a third of the way in.

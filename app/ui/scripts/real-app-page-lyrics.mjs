@@ -29,7 +29,7 @@
 // SAFETY: nothing is played aloud: Settings/settings.json selects the engine's silent
 // "null:48000" output device and master volume 0 before the app starts.
 //
-//   node scripts/real-app-page-lyrics.mjs <Jukeoke.exe> <root> <out dir> [seconds=25]
+//   node scripts/real-app-page-lyrics.mjs <Open Mic.exe> <root> <out dir> [seconds=25]
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -37,7 +37,7 @@ import { chromium } from "playwright-core";
 
 const [exe, root, outDir, secondsArg] = process.argv.slice(2);
 if (!exe || !root || !outDir) {
-  console.error("usage: node scripts/real-app-page-lyrics.mjs <Jukeoke.exe> <root> <out dir> [seconds=25]");
+  console.error("usage: node scripts/real-app-page-lyrics.mjs <Open Mic.exe> <root> <out dir> [seconds=25]");
   process.exit(2);
 }
 const seconds = Number(secondsArg ?? 25);

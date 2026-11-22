@@ -5,7 +5,7 @@
 # preinstalled"), and prints its size.
 #
 # Usage (Git Bash, after `source scripts/devenv.sh` for objdump):
-#   app/scripts/check-windows-exe.sh path/to/Jukeoke.exe
+#   app/scripts/check-windows-exe.sh path/to/Open Mic.exe
 #
 # A DLL passes when it is a Windows API set (api-ms-win-*, ext-ms-win-*) or exists in
 # %SystemRoot%\System32, and is not a known redistributable that only *happens* to
@@ -13,7 +13,7 @@
 # Exit code 1 if anything else is imported.
 set -euo pipefail
 
-exe="${1:?usage: check-windows-exe.sh path/to/Jukeoke.exe}"
+exe="${1:?usage: check-windows-exe.sh path/to/Open Mic.exe}"
 command -v objdump >/dev/null || { echo "objdump not found: source scripts/devenv.sh first" >&2; exit 2; }
 system32="$(cygpath -u "${SYSTEMROOT:-C:\\Windows}")/System32"
 

@@ -375,6 +375,13 @@ impl RecorderCtl {
         self.inner.session_split(folder)
     }
 
+    /// `recorder_session_delete(folder)`: deletes a finished session's folder for good
+    /// (owner, 2026-11-22: "a way to delete these so I don't have to keep seeing them").
+    /// Karaoke songs made from it are separate files in the Library and stay.
+    pub fn session_delete(&self, folder: &str) -> ApiResult<()> {
+        self.inner.session_delete(folder)
+    }
+
     /// Finish sessions a crash or a closed app left behind (at start, in the
     /// background).
     pub fn recover_sessions(&self) {
@@ -761,6 +768,25 @@ impl Inner {
 
     fn sessions_list(&self) -> ApiResult<Vec<SessionView>> {
         Ok(self.session_dirs().iter().filter_map(|d| self.session_view(d).ok()).collect())
+    }
+
+    fn session_delete(&self, folder: &str) -> ApiResult<()> {
+        if folder.is_empty() || folder.contains(['/', '\\', ':']) || folder == "." || folder == ".." {
+            return Err(ApiError::bad_request("That is not a session folder name."));
+        }
+        let dir = self.dir.join(folder);
+        if !dir.join(SESSION_FILE).is_file() {
+            return Err(ApiError::new("not_found", "That session could not be found."));
+        }
+        if self.running_dir().as_deref() == Some(dir.as_path()) || lock(&self.splitting).contains_key(&dir) {
+            return Err(ApiError::new("busy", "That session is still being recorded or split."));
+        }
+        std::fs::remove_dir_all(&dir).map_err(|e| {
+            ApiError::new(
+                "in_use",
+                format!("The session could not be deleted ({e}). If one of its songs is playing or being made into a karaoke song, wait for it to finish and try again."),
+            )
+        })
     }
 
     fn session_split(self: &Arc<Self>, folder: &str) -> ApiResult<SessionView> {

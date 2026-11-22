@@ -573,10 +573,10 @@ def _app_name() -> str:
         for parent in list(here.parents)[:5]:
             b = parent / "branding.json"
             if b.is_file():
-                return json.loads(b.read_text(encoding="utf-8")).get("name", "Jukeoke")
+                return json.loads(b.read_text(encoding="utf-8")).get("name", "Open Mic")
     except Exception:  # noqa: BLE001
         pass
-    return "Jukeoke"
+    return "Open Mic"
 
 
 def _json_default(o):

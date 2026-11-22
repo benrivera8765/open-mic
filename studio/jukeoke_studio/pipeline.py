@@ -300,7 +300,7 @@ class JobContext:
     models_dir: Path | None
     temp_dir: Path
     app_version: str | None = None
-    app_name: str = "Jukeoke"
+    app_name: str = "Open Mic"
     device: str | None = None
     stub: bool | None = None
     #: Held during GPU stages, so a ``realign`` waits instead of competing for VRAM.

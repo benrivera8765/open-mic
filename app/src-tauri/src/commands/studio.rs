@@ -68,6 +68,13 @@ pub async fn studio_submit(
     blocking(move || core.studio.submit(&spec).map(|job_id| Submitted { job_id })).await
 }
 
+/// `studio_set_lyrics(job_id, lyrics) -> StudioJob` (addition): lyrics of a waiting song.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn studio_set_lyrics(state: State<'_, AppState>, job_id: String, lyrics: serde_json::Value) -> ApiResult<crate::studio::StudioJob> {
+    let core = state.core.clone();
+    blocking(move || core.studio.set_lyrics(&job_id, &lyrics)).await
+}
+
 /// `studio_cancel(job_id)`.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn studio_cancel(state: State<'_, AppState>, job_id: String) -> ApiResult<()> {

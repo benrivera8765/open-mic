@@ -376,6 +376,10 @@ export function ConfirmDialog(props: {
   children: ComponentChildren;
   confirmLabel: string;
   skin: boolean;
+  /** Red "danger" OK button (default true). */
+  danger?: boolean;
+  /** OK button text while onConfirm runs (default "Deleting…"). */
+  busyLabel?: string;
   onConfirm: () => Promise<unknown> | void;
   onCancel: () => void;
 }) {
@@ -419,15 +423,15 @@ export function ConfirmDialog(props: {
   const buttons = props.skin ? (
     <>
       <PlateButton class="confirm__cancel" label="Cancel" disabled={busy} onClick={() => props.onCancel()} />
-      <PlateButton class="confirm__ok jk-plate--danger" label={busy ? "Deleting…" : props.confirmLabel} disabled={busy} onClick={() => void confirm()} />
+      <PlateButton class={`confirm__ok${props.danger === false ? "" : " jk-plate--danger"}`} label={busy ? (props.busyLabel ?? "Deleting…") : props.confirmLabel} disabled={busy} onClick={() => void confirm()} />
     </>
   ) : (
     <>
       <button type="button" class="button confirm__cancel" disabled={busy} onClick={() => props.onCancel()}>
         Cancel
       </button>
-      <button type="button" class="button button--danger confirm__ok" disabled={busy} onClick={() => void confirm()}>
-        {busy ? "Deleting…" : props.confirmLabel}
+      <button type="button" class={`button ${props.danger === false ? "button--primary" : "button--danger"} confirm__ok`} disabled={busy} onClick={() => void confirm()}>
+        {busy ? (props.busyLabel ?? "Deleting…") : props.confirmLabel}
       </button>
     </>
   );

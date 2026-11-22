@@ -181,12 +181,12 @@ fn write_test_song(path: &Path, rate: u32) -> jk_format::Result<()> {
         .collect();
     let manifest: jk_format::Manifest = serde_json::from_value(json!({
         "format": "jksong", "format_version": jk_format::FORMAT_VERSION,
-        "title": "Rig check test sound", "artist": "Jukeoke", "album": null,
+        "title": "Rig check test sound", "artist": "Open Mic", "album": null,
         "sample_rate": rate, "channels": 2, "duration_frames": frames,
         "duration_seconds": frames as f64 / f64::from(rate),
         "cover": null, "lyrics": null, "analysis": null,
         "preset": "full", "stems_sum_to_source": false, "stems": stems,
-        "provenance": {"app": {"name": "Jukeoke rig check", "version": env!("CARGO_PKG_VERSION")},
+        "provenance": {"app": {"name": "Open Mic rig check", "version": env!("CARGO_PKG_VERSION")},
                        "created_utc": jk_format::time::utc_now_iso8601(), "resampling": [], "models": [],
                        "source": {"filename": "generated", "lossy": false}}
     }))
@@ -615,7 +615,7 @@ impl PracticeService {
             self.settings_dir().join(format!("selfcheck-rig-{stamp}.txt"))
         });
         let mut t = String::new();
-        let _ = writeln!(t, "Jukeoke practice rig check ({}){}", jk_format::time::utc_now_iso8601(), r.label.as_deref().map(|l| format!(" - {l}")).unwrap_or_default());
+        let _ = writeln!(t, "Open Mic practice rig check ({}){}", jk_format::time::utc_now_iso8601(), r.label.as_deref().map(|l| format!(" - {l}")).unwrap_or_default());
         let _ = writeln!(t, "AUDIBLE CHECK: it played three short bursts of a test sound at -24 dBFS (before the master volume).");
         let o = &r.output;
         let _ = writeln!(t, "Output: {} ({}), {} Hz, {} ch, {}, latency {:?} ms", o.name, o.kind, o.sample_rate, o.channels, o.format, o.latency_ms);

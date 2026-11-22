@@ -65,6 +65,7 @@ import type {
   SongSettings,
   StudioModelsStatus,
   StudioPreset,
+  StudioJob,
   StudioStatus,
   StudioSubmitRequest,
 } from "./types";
@@ -133,6 +134,8 @@ export interface Api {
   studioLyricsLookup(query: LyricsLookupQuery): Promise<{ results: LookupResult[] }>;
   studioSubmit(request: StudioSubmitRequest): Promise<{ job_id: string }>;
   studioCancel(jobId: string): Promise<void>;
+  /** Lyrics of a song still waiting in the queue (addition). */
+  studioSetLyrics?(jobId: string, lyrics: { mode: "auto" | "text"; text: string | null }): Promise<StudioJob>;
   /** The models of one quality preset (the one chosen in the form), plus the lyrics models. */
   studioModelsStatus(preset: StudioPreset): Promise<StudioModelsStatus>;
   /** Downloads that preset's missing models; resolves when the download has finished. */
@@ -155,6 +158,7 @@ export interface Api {
   recorderSessionStop?(pausePlayer: boolean): Promise<RecordingSession>;
   recorderSessionsList?(): Promise<{ sessions: RecordingSession[] }>;
   recorderSessionSplit?(folder: string): Promise<RecordingSession>;
+  recorderSessionDelete?(folder: string): Promise<void>;
   /** Plays part of a recording natively (never in the web view). */
   recorderPreview?(path: string, startS: number, maxS: number): Promise<void>;
   recorderPreviewStop?(): Promise<void>;
@@ -302,6 +306,7 @@ export class TauriApi implements Api {
   recorderSessionStop = (pause_player: boolean) => call<RecordingSession>("recorder_session_stop", { pause_player });
   recorderSessionsList = () => call<{ sessions: RecordingSession[] }>("recorder_sessions_list");
   recorderSessionSplit = (folder: string) => call<RecordingSession>("recorder_session_split", { folder });
+  recorderSessionDelete = (folder: string) => call<void>("recorder_session_delete", { folder });
   recorderPreview = (path: string, start_s: number, max_s: number) => call<void>("recorder_preview", { path, start_s, max_s });
   recorderPreviewStop = () => call<void>("recorder_preview_stop");
   recorderRequestPermission = () => call<void>("recorder_request_permission");
@@ -313,6 +318,7 @@ export class TauriApi implements Api {
   studioSubmit = (request: StudioSubmitRequest) =>
     call<{ job_id: string }>("studio_submit", { [ARG_NAMES.studio_submit]: request });
   studioCancel = (job_id: string) => call<void>("studio_cancel", { job_id });
+  studioSetLyrics = (job_id: string, lyrics: { mode: "auto" | "text"; text: string | null }) => call<StudioJob>("studio_set_lyrics", { job_id, lyrics });
   studioModelsStatus = (preset: StudioPreset) => call<StudioModelsStatus>("studio_models_status", { preset });
   studioModelsDownload = (preset: StudioPreset) => call<void>("studio_models_download", { preset });
   pickFiles = () => call<string[]>("pick_files");
