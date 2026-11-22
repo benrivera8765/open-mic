@@ -84,10 +84,10 @@ impl FormatError {
     pub fn user_message(&self) -> String {
         match self {
             FormatError::NotASongFile => {
-                "This is not a Jukeoke song file (or it was damaged when it was copied as text).".into()
+                "This is not an Open Mic song file (or it was damaged when it was copied as text).".into()
             }
             FormatError::NewerVersion { .. } => {
-                "This song was made by a newer version of Jukeoke; please update.".into()
+                "This song was made by a newer version of Open Mic; please update.".into()
             }
             FormatError::Truncated { .. } => {
                 "This song file is incomplete, probably an unfinished copy. Copy it again from the original.".into()
@@ -105,7 +105,7 @@ impl FormatError {
             FormatError::Io(e) => match e.kind() {
                 io::ErrorKind::NotFound => "The song file could not be found.".into(),
                 io::ErrorKind::PermissionDenied => {
-                    "Jukeoke is not allowed to read or write this song file (permission denied, or the drive is read-only).".into()
+                    "Open Mic is not allowed to read or write this song file (permission denied, or the drive is read-only).".into()
                 }
                 _ => format!("The song file could not be read or written: {e}"),
             },

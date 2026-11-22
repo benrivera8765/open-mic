@@ -36,7 +36,6 @@
 // The renderer (lanerenderer.ts) draws exactly what `laneFrame` returns; laneverify.ts
 // checks a whole song against the rule independently.
 import type { NoteSpelling, OctaveMode, PracticeGuide } from "../api/types";
-import { wordText } from "./guide";
 import type { LiveStore } from "./live";
 import { foldCents, isBlackKey, type KeyView, keyAt, laneOf, noteName } from "./pitch";
 import type { Lyrics } from "../api/types";
@@ -68,6 +67,8 @@ const SMOOTH_AHEAD_S = 0.8;
 const CENTRE_STEP_S = 0.05;
 /** Scroll mode: the view moves at most this many semitones a second. */
 const MAX_SCROLL_ST = 7;
+/** Rows of words under the bars, at most. */
+const WORD_ROWS = 3;
 
 export interface LaneParams {
   /** The lane canvas, CSS px (piano + bars + word strip). */
@@ -98,11 +99,19 @@ export interface LaneNote {
   dim: boolean;
   graded: boolean;
   glideIn: number;
-  /** The word shown under this note (the first note of its word), or null. */
-  word: string | null;
-  /** Word row in the strip (0 or 1), -1 when no word. */
-  wordRow: number;
-  wordW: number;
+}
+
+/** A lyric word in the strip under the bars: every word of the lyrics, at its own time. */
+export interface LaneWord {
+  /** Song time the word starts (lyrics time + the song's lyrics offset), s. */
+  start: number;
+  text: string;
+  /** Row in the strip (0 = top). */
+  row: number;
+  /** Width at the word font, px. */
+  w: number;
+  /** Drawn this far right of its start (px) because the rows were full there (0 almost always). */
+  shift: number;
 }
 
 export interface LaneLayout {
@@ -110,6 +119,7 @@ export interface LaneLayout {
   duration: number;
   tuning: number;
   notes: LaneNote[];
+  words: LaneWord[];
   spans: { start: number; end: number; kind: string }[];
   curve: PracticeGuide["curve"];
   /** Pitched notes' lane range at key 0. */
@@ -158,11 +168,23 @@ export function firstNoteFrom(L: LaneLayout, t: number): number {
   return lo;
 }
 
+/** Index of the first word starting at or after `t` (L.words is in time order). */
+export function firstWordFrom(L: LaneLayout, t: number): number {
+  let lo = 0;
+  let hi = L.words.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (L.words[mid].start < t) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
 const ease = (p: number) => (p <= 0 ? 0 : p >= 1 ? 1 : 1 - (1 - p) * (1 - p) * (1 - p));
 
 /** Lays the lane out for a guide at a size. `measure` measures the word font (tests: the lyrics face's width table). */
-export function layoutLane(guide: PracticeGuide, lyrics: Lyrics | null, duration: number, params: LaneParams, measure: Measure): LaneLayout {
+export function layoutLane(guide: PracticeGuide, lyrics: Lyrics | null, duration: number, params: LaneParams, measure: Measure, lyricsOffsetS = 0): LaneLayout {
   const s = Math.max(0.35, params.scale);
   const tuning = guide.tuning_cents;
   const pianoW = Math.round(clamp(params.width * 0.065, 54 * s, 132 * s));
@@ -179,9 +201,6 @@ export function layoutLane(guide: PracticeGuide, lyrics: Lyrics | null, duration
     dim: n.dim,
     graded: n.graded,
     glideIn: n.glide_in,
-    word: null,
-    wordRow: -1,
-    wordW: 0,
   }));
   const pitched = notes.filter((n) => n.kind === "pitched" && Number.isFinite(n.lane));
   let lo = pitched.length ? Math.min(...pitched.map((n) => n.lane)) : 57;
@@ -196,31 +215,33 @@ export function layoutLane(guide: PracticeGuide, lyrics: Lyrics | null, duration
   const nowX = barX + nowOff;
   const pxPerSec = (barW - nowOff) / FUTURE_S;
 
-  // Words: under the first note of each word, second row when they would touch.
+  // Words: every lyric word at its own time (owner 2026-11-22: the strip must match the
+  // lyrics below it), in up to WORD_ROWS rows; a word that fits no row (very fast singing)
+  // moves right just enough to clear the row that frees first.
   let wordRows = 0;
+  const words: LaneWord[] = [];
   if (params.words && lyrics) {
     const gap = wordPx * 0.45;
-    const rowEnd = [-Infinity, -Infinity];
-    let lastRef = "";
-    guide.notes.forEach((g, i) => {
-      const key = g.word ? `${g.word[0]}:${g.word[1]}` : "";
-      if (!g.word || key === lastRef) {
-        if (!g.word) lastRef = "";
-        return;
+    const rowEnd = new Array<number>(WORD_ROWS).fill(-Infinity);
+    for (const line of lyrics.lines) {
+      for (const wd of line.words) {
+        const text = wd.chars.map((c) => c[0]).join("").trim();
+        if (!text) continue;
+        const start = wd.start + lyricsOffsetS;
+        const x = start * pxPerSec;
+        const w = measure(text, wordPx);
+        let row = rowEnd.findIndex((e) => x >= e + gap);
+        let shift = 0;
+        if (row < 0) {
+          row = rowEnd.indexOf(Math.min(...rowEnd));
+          shift = rowEnd[row] + gap - x;
+        }
+        rowEnd[row] = x + shift + w;
+        words.push({ start, text, row, w, shift });
+        wordRows = Math.max(wordRows, row + 1);
       }
-      lastRef = key;
-      const text = wordText(lyrics, g.word);
-      if (!text) return;
-      const n = notes[i];
-      const x = n.start * pxPerSec;
-      const w = measure(text, wordPx);
-      const row = x >= rowEnd[0] + gap ? 0 : x >= rowEnd[1] + gap ? 1 : rowEnd[0] <= rowEnd[1] ? 0 : 1;
-      rowEnd[row] = x + w;
-      n.word = text;
-      n.wordRow = row;
-      n.wordW = w;
-      wordRows = Math.max(wordRows, row + 1);
-    });
+    }
+    words.sort((a, b) => a.start - b.start);
   }
   const wordLine = Math.round(wordPx * 1.35);
   const stripH = wordRows > 0 ? wordRows * wordLine + Math.round(wordPx * 0.5) : 0;
@@ -293,6 +314,7 @@ export function layoutLane(guide: PracticeGuide, lyrics: Lyrics | null, duration
     duration,
     tuning,
     notes,
+    words,
     spans: guide.spans,
     curve: guide.curve,
     lo,

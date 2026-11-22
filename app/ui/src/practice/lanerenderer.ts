@@ -30,7 +30,7 @@
 // same dx / dy as the bars under them.
 import { formatCountdown } from "../lib/format";
 import type { TickerStats } from "../ticker/renderer";
-import { firstNoteFrom, type LaneFrame, type LaneInputs, type LaneLayout, laneFrame, xOf, yOf } from "./lane";
+import { firstNoteFrom, firstWordFrom, type LaneFrame, type LaneInputs, type LaneLayout, laneFrame, xOf, yOf } from "./lane";
 import { displayName, isBlackKey, noteName } from "./pitch";
 
 export interface LaneStyle {
@@ -267,29 +267,13 @@ export class LaneRenderer {
       const y = this.tileY(n.lane);
       const x0 = x(n.start);
       const x1 = x(n.end);
-      if (n.kind === "unpitched") {
-        // "Speak" bar: a violet hollow capsule with hatching; never graded.
-        g.save();
-        capsule(g, x0, x1, y, h * 0.8);
-        g.strokeStyle = "rgba(176,140,255,0.9)";
-        g.lineWidth = Math.max(1.5, h * 0.13);
-        g.stroke();
-        g.clip();
-        g.strokeStyle = "rgba(176,140,255,0.45)";
-        g.lineWidth = Math.max(1, h * 0.09);
-        g.beginPath();
-        for (let hx = x0 - h; hx < x1 + h; hx += h * 0.55) {
-          g.moveTo(hx, y + h);
-          g.lineTo(hx + h, y - h);
-        }
-        g.stroke();
-        g.restore();
-        continue;
-      }
+      // Every note is drawn alike (owner 2026-11-22: faded and violet bars confused); a note
+      // with no pitch has nothing to show.
+      if (n.kind === "unpitched" || !Number.isFinite(n.lane)) continue;
       // A slide into the note: a thinner tube from the previous note's pitch.
       if (n.glideIn > 0 && j > 0 && L.notes[j - 1].kind === "pitched" && n.start - L.notes[j - 1].end < 0.12) {
         const p = L.notes[j - 1];
-        g.strokeStyle = withAlpha(st.bar, n.dim ? 0.25 : 0.55);
+        g.strokeStyle = withAlpha(st.bar, 0.55);
         g.lineWidth = Math.max(2, h * 0.3);
         g.lineCap = "round";
         g.beginPath();
@@ -297,41 +281,19 @@ export class LaneRenderer {
         g.lineTo(x(n.start + n.glideIn), y);
         g.stroke();
       }
-      g.globalAlpha = n.dim ? 0.34 : n.graded ? 1 : 0.55;
-      this.tube(g, x0, x1, y, h, st.bar, glow && !n.dim);
-      // The filament: the guide's own pitch curve inside the tube (vibrato and slides show), or a straight core.
-      g.globalAlpha = n.dim ? 0.3 : 0.92;
+      g.globalAlpha = 1;
+      this.tube(g, x0, x1, y, h, st.bar, glow);
+      // A straight core: the key to sing, not the recording's every wobble (owner 2026-11-22).
+      g.globalAlpha = 0.92;
       g.strokeStyle = "rgba(255,246,250,0.95)";
       g.lineWidth = Math.max(1.2, h * 0.16);
       g.lineCap = "round";
       g.beginPath();
-      let drew = false;
-      const cv = L.curve;
-      if (cv && !this.simple) {
-        const k0 = Math.max(0, Math.ceil((n.start + 0.02 - cv.t0_s) / cv.hop_s));
-        const k1 = Math.min(cv.midi.length - 1, Math.floor((n.end - 0.02 - cv.t0_s) / cv.hop_s));
-        let pen = false;
-        for (let q = k0; q <= k1; q++) {
-          const m = cv.midi[q] - L.tuning / 100;
-          if (cv.midi[q] <= 0 || Math.abs(m - n.lane) > 1.5) {
-            pen = false;
-            continue;
-          }
-          const px = x(cv.t0_s + q * cv.hop_s);
-          const py = Math.max(y - h * 0.38, Math.min(y + h * 0.38, this.tileY(m)));
-          if (pen) g.lineTo(px, py);
-          else g.moveTo(px, py);
-          pen = true;
-          drew = true;
-        }
-      }
-      if (!drew) {
-        g.moveTo(x0 + h * 0.45, y);
-        g.lineTo(Math.max(x0 + h * 0.45, x1 - h * 0.45), y);
-      }
+      g.moveTo(x0 + h * 0.45, y);
+      g.lineTo(Math.max(x0 + h * 0.45, x1 - h * 0.45), y);
       g.stroke();
       // Specular line along the top of the glass.
-      g.globalAlpha = n.dim ? 0.15 : 0.4;
+      g.globalAlpha = 0.4;
       g.strokeStyle = "#ffffff";
       g.lineWidth = Math.max(1, h * 0.09);
       g.beginPath();
@@ -369,15 +331,13 @@ export class LaneRenderer {
     g.strokeStyle = "rgba(8,6,14,0.92)";
     g.fillStyle = sung ? st.sung : st.upcoming;
     const maxW = 900;
-    const from = firstNoteFrom(L, t0 - maxW / pps);
-    for (let j = from; j < L.notes.length && L.notes[j].start < t0 + TILE_PX / pps; j++) {
-      const n = L.notes[j];
-      if (!n.word) continue;
-      const wx = x(n.start);
-      if (wx + n.wordW < 0) continue;
-      const by = n.wordRow * line + L.wordPx * 1.02;
-      g.strokeText(n.word, wx, by);
-      g.fillText(n.word, wx, by);
+    for (let j = firstWordFrom(L, t0 - maxW / pps); j < L.words.length && L.words[j].start < t0 + TILE_PX / pps; j++) {
+      const wd = L.words[j];
+      const wx = x(wd.start) + wd.shift;
+      if (wx + wd.w < 0) continue;
+      const by = wd.row * line + L.wordPx * 1.02;
+      g.strokeText(wd.text, wx, by);
+      g.fillText(wd.text, wx, by);
     }
     // Spoken spans: a dashed violet line over the words (WO2 owner decision 10: "speak" parts).
     for (const sp of L.spans) {

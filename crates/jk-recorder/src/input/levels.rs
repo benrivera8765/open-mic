@@ -83,7 +83,7 @@ impl LevelAdvice {
             LevelAdvice::Good | LevelAdvice::Waiting => "",
             LevelAdvice::TooQuiet => {
                 "Your voice is coming in too quietly. Turn up the microphone's gain on the mixer \
-                 (Jukeoke never changes it)."
+                 (Open Mic never changes it)."
             }
             LevelAdvice::Clipping => {
                 "Your voice is too loud and is clipping. Turn down the microphone's gain on the \

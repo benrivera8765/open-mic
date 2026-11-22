@@ -3,7 +3,7 @@
 Studio's own code verify them (scripts/make-dist.sh, WORK_ORDER 4.8).
 
     python -I -B scripts/dist/dist_models.py --src <models cache> --dest <dist>/Models
-                                             [--preset full] [--name Jukeoke]
+                                             [--preset full] [--name "Open Mic"]
 
 What "default" means comes from the Studio's registry in this checkout, not from a list
 kept here: every weight file of the separation preset (``presets.PRESETS[preset]``),
@@ -81,7 +81,7 @@ def main() -> int:
     ap.add_argument("--src", required=True, help="models cache to copy from (e.g. $JK_BUILD/models-cache)")
     ap.add_argument("--dest", required=True, help="<dist>/Models")
     ap.add_argument("--preset", default="full")
-    ap.add_argument("--name", default="Jukeoke", help="app name for README.txt")
+    ap.add_argument("--name", default="Open Mic", help="app name for README.txt")
     ap.add_argument("--list", action="store_true", help="only print the relative paths this script owns")
     a = ap.parse_args()
     src, dest = Path(os.path.abspath(a.src)), Path(os.path.abspath(a.dest))

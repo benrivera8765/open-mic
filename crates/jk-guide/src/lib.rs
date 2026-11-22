@@ -28,6 +28,8 @@
 //!
 //! Lyrics are read only to attach words to notes; nothing here prints them.
 
+pub mod singable;
+
 use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -619,7 +621,7 @@ mod tests {
                 extra: Map::new(),
             },
             analysis_rate_hz: 16_000.0,
-            app: app_stamp("Jukeoke", "0.1.0"),
+            app: app_stamp("Open Mic", "0.1.0"),
             created_utc: "2026-11-19T00:00:00Z".into(),
             seconds: 0.01,
         }

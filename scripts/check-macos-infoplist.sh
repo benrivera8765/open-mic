@@ -17,7 +17,7 @@
 #      is needed; the check is here so a future signing change cannot silently
 #      break the microphone.
 #
-# Usage:   bash scripts/check-macos-infoplist.sh path/to/Jukeoke.app
+# Usage:   bash scripts/check-macos-infoplist.sh path/to/Open Mic.app
 # Exit:    0 all checks passed, 1 a check failed, 2 usage problem.
 # Runs on macOS (PlistBuddy, codesign). Elsewhere check 1 reads an XML plist
 # with awk (so it can be tested on Windows) and check 2 is skipped.

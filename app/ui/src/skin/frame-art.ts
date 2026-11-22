@@ -185,12 +185,12 @@ export function trimSvg(g: FrameGeometry, crestW: number): string {
   const ribW = Math.max(2.5, T * 0.075);
   const defs =
     linear("ring", false, [
-      [0, "#ffffff"],
-      [0.25, "#cfd2d9"],
-      [0.5, "#5c5f67"],
-      [0.62, "#9599a2"],
-      [0.85, "#eef0f3"],
-      [1, "#6d7078"],
+      [0, "#fff6d8"],
+      [0.25, "#e9d087"],
+      [0.5, "#815e20"],
+      [0.62, "#c49940"],
+      [0.85, "#f8e7b4"],
+      [1, "#966f27"],
     ]) +
     el(
       "pattern",
@@ -203,9 +203,9 @@ export function trimSvg(g: FrameGeometry, crestW: number): string {
       [1, "#5e0513"],
     ]) +
     el("radialGradient", { id: "dome", cx: 0.4, cy: 0.25, r: 0.8 }, stops([
-      [0, "#ffffff"],
-      [0.5, "#b5b9c1"],
-      [1, "#4a4d54"],
+      [0, "#fff6d8"],
+      [0.5, "#debb68"],
+      [1, "#694b16"],
     ])) +
     linear("walnut", true, [
       [0, "#1f1009"],
@@ -214,11 +214,11 @@ export function trimSvg(g: FrameGeometry, crestW: number): string {
       [1, "#21120a"],
     ]) +
     linear("ringH", true, [
-      [0, "#ffffff"],
-      [0.3, "#c9ccd3"],
-      [0.55, "#55585f"],
-      [0.8, "#eceef1"],
-      [1, "#7a7d85"],
+      [0, "#fff6d8"],
+      [0.3, "#e7cb80"],
+      [0.55, "#77571c"],
+      [0.8, "#f7e5b0"],
+      [1, "#a67c2b"],
     ]) +
     linear("enamelH", false, [
       [0, "#7a0618"],

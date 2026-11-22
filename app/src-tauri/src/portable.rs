@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn translocated_app_uses_the_remembered_root_or_a_temporary_folder() {
         let exe = Path::new(
-            "/private/var/folders/xy/T/AppTranslocation/1234-ABCD/d/Jukeoke.app/Contents/MacOS/Jukeoke",
+            "/private/var/folders/xy/T/AppTranslocation/1234-ABCD/d/Open Mic.app/Contents/MacOS/Open Mic",
         );
         let user = scratch("transloc-user");
         let user_dir = user.join("org.jukeoke.app");
@@ -555,7 +555,7 @@ mod tests {
     fn windows_stick_layout_with_library() {
         let root = scratch("win-lib");
         fs::create_dir_all(root.join("Library")).unwrap();
-        let exe = root.join("Windows").join("Jukeoke.exe");
+        let exe = root.join("Windows").join("Open Mic.exe");
         touch(&exe);
         let found = find_portable_root(&exe, Platform::Windows).expect("portable");
         assert_eq!(found.root, root);
@@ -566,7 +566,7 @@ mod tests {
     fn windows_stick_layout_with_marker_and_odd_case() {
         let root = scratch("win-marker");
         touch(&root.join("portable.txt"));
-        let exe = root.join("WINDOWS").join("Jukeoke.exe");
+        let exe = root.join("WINDOWS").join("Open Mic.exe");
         touch(&exe);
         assert_eq!(
             find_portable_root(&exe, Platform::Windows).unwrap().root,
@@ -609,7 +609,7 @@ mod tests {
     fn mac_stick_layout() {
         let root = scratch("mac");
         fs::create_dir_all(root.join("Library")).unwrap();
-        let exe = root.join("Mac/Jukeoke.app/Contents/MacOS/Jukeoke");
+        let exe = root.join("Mac/Open Mic.app/Contents/MacOS/Open Mic");
         touch(&exe);
         assert_eq!(
             find_portable_root(&exe, Platform::MacOs).unwrap().root,
@@ -623,7 +623,7 @@ mod tests {
         // ~/Applications/Jukeoke.app with ~/Library next to it: must NOT be portable.
         let home = scratch("mac-home");
         fs::create_dir_all(home.join("Library")).unwrap();
-        let exe = home.join("Applications/Jukeoke.app/Contents/MacOS/Jukeoke");
+        let exe = home.join("Applications/Open Mic.app/Contents/MacOS/Open Mic");
         touch(&exe);
         assert_eq!(find_portable_root(&exe, Platform::MacOs), None);
         fs::remove_dir_all(home).unwrap();
@@ -632,11 +632,11 @@ mod tests {
     #[test]
     fn translocation_is_detected() {
         let exe = Path::new(
-            "/private/var/folders/xy/T/AppTranslocation/1234-ABCD/d/Jukeoke.app/Contents/MacOS/Jukeoke",
+            "/private/var/folders/xy/T/AppTranslocation/1234-ABCD/d/Open Mic.app/Contents/MacOS/Open Mic",
         );
         assert!(is_translocated(exe));
         assert!(!is_translocated(Path::new(
-            "/Volumes/STICK/Mac/Jukeoke.app/Contents/MacOS/Jukeoke"
+            "/Volumes/STICK/Mac/Open Mic.app/Contents/MacOS/Open Mic"
         )));
     }
 
@@ -645,11 +645,11 @@ mod tests {
         let root = scratch("detect");
         fs::create_dir_all(root.join("Library")).unwrap();
         let platform_dir = if Platform::current() == Platform::MacOs {
-            "Mac/Jukeoke.app/Contents/MacOS"
+            "Mac/Open Mic.app/Contents/MacOS"
         } else {
             "Windows"
         };
-        let exe = root.join(platform_dir).join("Jukeoke");
+        let exe = root.join(platform_dir).join("Open Mic");
         touch(&exe);
 
         let portable =

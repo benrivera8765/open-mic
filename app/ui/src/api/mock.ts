@@ -548,7 +548,7 @@ export class MockApi implements Api {
     const root = mac ? "/Volumes/JUKEOKE" : "E:\\";
     const p = (name: string) => (mac ? `${root}/${name}` : `${root}${name}`);
     return this.reply<AppInfo>({
-      name: "Jukeoke",
+      name: "Open Mic",
       version: "0.1.0",
       platform: this.o.platform,
       os_version: mac ? "macOS 13.6.9" : "Windows 11 26200",
@@ -1378,6 +1378,13 @@ export class MockApi implements Api {
     setTimeout(() => this.putSession({ ...s, state: "split", progress: null, message: null, master_present: false }), 30);
     return this.reply(splitting);
   }
+  recorderSessionDelete(folder: string): Promise<void> {
+    const i = this.sessions.findIndex((x) => x.folder === folder);
+    if (i < 0) return this.reject(fail("not_found", "That session could not be found."));
+    if (this.sessions[i].state === "recording" || this.sessions[i].state === "splitting") return this.reject(fail("busy", "That session is still being recorded or split."));
+    this.sessions.splice(i, 1);
+    return this.reply(undefined);
+  }
   recorderPreview(path: string): Promise<void> {
     void this.recorderPreviewStop();
     this.emit("recorder://preview", { path, playing: true });
@@ -1483,6 +1490,7 @@ export class MockApi implements Api {
       message: null,
       output_song_id: null,
       error: null,
+      lyrics: request.lyrics.mode,
     };
     this.jobs.push(job);
     this.emit("studio://job", { ...job });
@@ -1531,6 +1539,15 @@ export class MockApi implements Api {
     }, 150);
   }
 
+  studioSetLyrics(jobId: string, lyrics: { mode: "auto" | "text"; text: string | null }): Promise<StudioJob> {
+    const job = this.jobs.find((j) => j.job_id === jobId);
+    if (!job) return this.reject(fail("not_found", "This job is not in the queue."));
+    if (job.state !== "queued") return this.reject(fail("busy", "The Studio has already started this song, so its lyrics can no longer be changed here."));
+    if (lyrics.mode === "text" && !lyrics.text?.trim()) return this.reject(fail("lyrics_missing", "No lyrics were given. Paste them, or pick Automatic."));
+    job.lyrics = lyrics.mode;
+    this.emit("studio://job", { ...job });
+    return this.reply({ ...job });
+  }
   studioCancel(jobId: string) {
     const job = this.jobs.find((j) => j.job_id === jobId);
     if (job && (job.state === "queued" || job.state === "running")) {

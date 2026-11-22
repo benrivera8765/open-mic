@@ -128,10 +128,10 @@ pub const MACOS_SCREEN_RECORDING_SETTINGS_URL: &str =
 /// (WORK_ORDER section 4.10: "explain the permission wording in the app").
 pub const PERMISSION_EXPLANATION: &str = "To record the sound your Mac is playing, macOS needs the \
 \"Screen Recording\" permission. On macOS 13 that is the only way any app can capture system audio. \
-Jukeoke records sound only: it asks macOS for the smallest possible picture (2 by 2 pixels, \
+Open Mic records sound only: it asks macOS for the smallest possible picture (2 by 2 pixels, \
 one frame per second) and throws every picture away unseen. macOS will say the app wants to \
-\"record this computer's screen and audio\". Choose \"Open System Settings\", switch Jukeoke on \
-under Privacy & Security > Screen Recording, then quit and reopen Jukeoke (macOS usually offers \
+\"record this computer's screen and audio\". Choose \"Open System Settings\", switch Open Mic on \
+under Privacy & Security > Screen Recording, then quit and reopen Open Mic (macOS usually offers \
 a button for that). The permission only takes effect after the app restarts.";
 
 /// The default output device (name, nominal rate, physical bit depth), if the

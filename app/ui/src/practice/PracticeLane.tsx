@@ -21,6 +21,8 @@ import { type LaneScenario, verifyLane } from "./laneverify";
 export interface PracticeLaneProps {
   guide: PracticeGuide;
   lyrics: Lyrics | null;
+  /** The song's lyrics offset (s): the word strip matches the lyrics shown below. */
+  lyricsOffsetS?: number;
   duration: number;
   /** The lane's now = clock position - this (the device offset only, APP_API 12.7), s. */
   offsetS: number;
@@ -61,7 +63,7 @@ function windowMinimisedSource(): MinimisedSource | undefined {
 }
 
 export function PracticeLane(props: PracticeLaneProps) {
-  const { guide, lyrics, duration, offsetS, pianoSide, words, simple, reduceMotion, watchOnly, octaveMode, spelling, colors } = props;
+  const { guide, lyrics, lyricsOffsetS = 0, duration, offsetS, pianoSide, words, simple, reduceMotion, watchOnly, octaveMode, spelling, colors } = props;
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<LaneRenderer | null>(null);
@@ -119,8 +121,8 @@ export function PracticeLane(props: PracticeLaneProps) {
       return scratch.measureText(text).width;
     };
     const scale = Math.min(size.winW / 1440, size.winH / 900);
-    return layoutLane(guide, lyrics, duration, { width: size.w, height: size.h, pianoSide, words, scale, dpr: size.dpr }, measure);
-  }, [guide, lyrics, duration, size.w, size.h, size.dpr, size.winW, size.winH, pianoSide, words, style, fontEpoch]);
+    return layoutLane(guide, lyrics, duration, { width: size.w, height: size.h, pianoSide, words, scale, dpr: size.dpr }, measure, lyricsOffsetS);
+  }, [guide, lyrics, lyricsOffsetS, duration, size.w, size.h, size.dpr, size.winW, size.winH, pianoSide, words, style, fontEpoch]);
 
   useEffect(() => {
     const canvas = canvasRef.current;

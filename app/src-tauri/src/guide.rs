@@ -101,7 +101,7 @@ pub struct GuideStatus {
 
 /// Plain words for the states that need them (APP_API 12.3).
 const REASON_NONE: &str = "Practice data has not been added to this song yet.";
-const REASON_NEWER: &str = "This song's practice data was made by a newer version of Jukeoke. It is kept as it is; practice in this version makes its own copy for the session.";
+const REASON_NEWER: &str = "This song's practice data was made by a newer version of Open Mic. It is kept as it is; practice in this version makes its own copy for the session.";
 
 impl GuideStatus {
     fn bare(state: &'static str) -> GuideStatus {

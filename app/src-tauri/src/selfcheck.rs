@@ -116,7 +116,7 @@ pub fn run(core: &Core, opts: &Options) -> SelfcheckResult {
     items.push(check_memory());
 
     // Generate the test song (also used by the key-change check).
-    let tone_path = tmp.join("Jukeoke - Test Tone.jksong");
+    let tone_path = tmp.join("Open Mic - Test Tone.jksong");
     let tone = crate::testsong::write(
         &tone_path,
         crate::testsong::ToneSong {
@@ -194,7 +194,7 @@ fn check_system(core: &Core) -> Item {
             .and_then(|m| m.parse::<u32>().ok());
         if major.is_some_and(|m| m < 13) {
             ok = false;
-            detail.push_str(". Jukeoke needs macOS 13 (Ventura) or newer.");
+            detail.push_str(". Open Mic needs macOS 13 (Ventura) or newer.");
         }
     }
     if let Some(v) = &core.webview_env_ignored {
@@ -389,8 +389,8 @@ fn check_recorder(core: &Core) -> Item {
             false,
             format!(
                 "Screen Recording permission: {permission}. macOS calls the system-audio permission \"Screen Recording\". \
-                 Open System Settings > Privacy & Security > Screen Recording, switch Jukeoke on, quit and reopen Jukeoke, \
-                 then run the self-check again. (If Jukeoke is already on that list but this still fails, the app was rebuilt: \
+                 Open System Settings > Privacy & Security > Screen Recording, switch Open Mic on, quit and reopen Open Mic, \
+                 then run the self-check again. (If Open Mic is already on that list but this still fails, the app was rebuilt: \
                  switch it off and on again.)"
             ),
         );
@@ -433,7 +433,7 @@ fn check_recorder(core: &Core) -> Item {
                 ratio.map_or("no OS start/stop times".to_string(), |r| format!("length / start-to-stop time {r:.5}"))
             );
             if f.file.is_none() {
-                detail.push_str(" No audio arrived from the system during the capture. On a Mac, check the Screen Recording permission; on Windows, check that the default output device is the one Jukeoke plays to.");
+                detail.push_str(" No audio arrived from the system during the capture. On a Mac, check the Screen Recording permission; on Windows, check that the default output device is the one Open Mic plays to.");
             } else if s.dropped_frames > 0 {
                 detail.push_str(" Some audio was lost because the disk could not keep up: record to a faster drive.");
             } else if !length_ok {

@@ -123,6 +123,13 @@ pub async fn recorder_session_split(state: State<'_, AppState>, folder: String) 
     blocking(move || core.recorder.session_split(&folder)).await
 }
 
+/// `recorder_session_delete(folder)` (addition): deletes a finished session for good.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn recorder_session_delete(state: State<'_, AppState>, folder: String) -> ApiResult<()> {
+    let core = state.core.clone();
+    blocking(move || core.recorder.session_delete(&folder)).await
+}
+
 /// `recorder_preview(path, start_s?, max_s?)` (addition): plays part of a recording
 /// natively (the web view never plays audio).
 #[tauri::command(rename_all = "snake_case")]

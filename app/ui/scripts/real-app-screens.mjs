@@ -13,9 +13,9 @@
 // the engine's null output device ("null:48000", paced in real time, no sound card)
 // and master volume 0 before the app starts.
 //
-//   node scripts/real-app-screens.mjs <Jukeoke.exe> <portable root> <out dir>
+//   node scripts/real-app-screens.mjs <Open Mic.exe> <portable root> <out dir>
 //
-// The root must be a portable layout (<root>/Windows/Jukeoke.exe is the exe given,
+// The root must be a portable layout (<root>/Windows/Open Mic.exe is the exe given,
 // <root>/Library holds the songs). Windows only: WebView2 remote debugging through
 // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, Playwright over the DevTools protocol. The
 // window sizes are emulated with Emulation.setDeviceMetricsOverride, so 3840x2160
@@ -27,7 +27,7 @@ import { chromium } from "playwright-core";
 
 const [exe, root, outDir] = process.argv.slice(2);
 if (!exe || !root || !outDir) {
-  console.error("usage: node scripts/real-app-screens.mjs <Jukeoke.exe> <portable root> <out dir>");
+  console.error("usage: node scripts/real-app-screens.mjs <Open Mic.exe> <portable root> <out dir>");
   process.exit(2);
 }
 mkdirSync(outDir, { recursive: true });

@@ -8,12 +8,12 @@
 // before its end, and T busy CPU threads in a separate process. Results:
 // docs/benchmarks/playback.md section 11.
 //
-//   node scripts/real-app-soak.mjs <Jukeoke.exe> <root> <out dir> <song title> [minutes] [load threads] [key every s]
+//   node scripts/real-app-soak.mjs <Open Mic.exe> <root> <out dir> <song title> [minutes] [load threads] [key every s]
 //
 // Records every second: player_state (state, position, underruns, device_starved, output
 // peak). Every 10 s: player_diagnostics (worker lead, longest callback / worker block) and
 // the page's frame statistics (ticker frames and draw time, bubbles, rAF intervals). A
-// PowerShell sampler records working set and private bytes of Jukeoke.exe and every
+// PowerShell sampler records working set and private bytes of Open Mic.exe and every
 // descendant process (WebView2, Studio) every 2 s. Writes soak.json and memory.csv.
 //
 // SAFETY: master volume 0 is set in Settings/settings.json before the app starts and is
@@ -26,7 +26,7 @@ import { chromium } from "playwright-core";
 
 const [exe, root, outDir, title, minutesArg, threadsArg, keyEveryArg] = process.argv.slice(2);
 if (!exe || !root || !outDir || !title) {
-  console.error("usage: node scripts/real-app-soak.mjs <Jukeoke.exe> <root> <out dir> <song title> [minutes=20] [load threads=14] [key every s=30]");
+  console.error("usage: node scripts/real-app-soak.mjs <Open Mic.exe> <root> <out dir> <song title> [minutes=20] [load threads=14] [key every s=30]");
   process.exit(2);
 }
 const minutes = Number(minutesArg ?? 20);

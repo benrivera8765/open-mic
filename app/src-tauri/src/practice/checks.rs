@@ -202,7 +202,7 @@ pub fn demo_guide(svc: &PracticeService, demo: Option<&Path>) -> (Item, Option<S
         Err(e) => return (item(name, false, format!("The demo song could not be opened: {}", e.user_message())), None),
     };
     let stored = jk_format::guide::read_guide(&song).ok().flatten();
-    let app = jk_guide::app_stamp("Jukeoke self-check", env!("CARGO_PKG_VERSION"));
+    let app = jk_guide::app_stamp("Open Mic self-check", env!("CARGO_PKG_VERSION"));
     let t0 = Instant::now();
     let built = jk_guide::build_for_song(path, &jk_pitch::guide::GuideConfig::default(), &app, &mut jk_guide::BuildControl::default());
     let took = t0.elapsed().as_secs_f64();

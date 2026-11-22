@@ -35,7 +35,7 @@ impl ApiError {
         crate::applog::error(&format!("internal error: {detail}"));
         Self::new(
             "internal",
-            "Something went wrong inside Jukeoke. The details are in Settings/logs/app.log.",
+            "Something went wrong inside Open Mic. The details are in Settings/logs/app.log.",
         )
     }
 
@@ -44,11 +44,11 @@ impl ApiError {
     pub fn io(what: &str, err: &std::io::Error) -> Self {
         crate::applog::error(&format!("I/O error on {what}: {err}"));
         let message = match err.kind() {
-            std::io::ErrorKind::NotFound => format!("Jukeoke could not find {what}."),
+            std::io::ErrorKind::NotFound => format!("Open Mic could not find {what}."),
             std::io::ErrorKind::PermissionDenied => format!(
-                "Jukeoke is not allowed to write {what} (permission denied, or the drive is read-only)."
+                "Open Mic is not allowed to write {what} (permission denied, or the drive is read-only)."
             ),
-            _ => format!("Jukeoke could not read or write {what}: {err}"),
+            _ => format!("Open Mic could not read or write {what}: {err}"),
         };
         Self::new("io", message)
     }

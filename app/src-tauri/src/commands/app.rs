@@ -108,7 +108,7 @@ pub async fn root_choose(app: AppHandle, state: State<'_, AppState>) -> ApiResul
     if !state.core.layout.translocated {
         return Err(ApiError::new(
             "not_needed",
-            "Jukeoke can already see its folder; there is nothing to choose.",
+            "Open Mic can already see its folder; there is nothing to choose.",
         ));
     }
     let handle = app.clone();
@@ -117,7 +117,7 @@ pub async fn root_choose(app: AppHandle, state: State<'_, AppState>) -> ApiResul
         let mut dialog = handle
             .dialog()
             .file()
-            .set_title("Choose the Jukeoke stick's main folder (the one with Library and Mac in it)");
+            .set_title("Choose the Open Mic stick's main folder (the one with Library and Mac in it)");
         if let Some(w) = crate::main_window(&handle) {
             dialog = dialog.set_parent(&w);
         }
@@ -134,7 +134,7 @@ pub async fn root_choose(app: AppHandle, state: State<'_, AppState>) -> ApiResul
                 ok: false,
                 root: None,
                 message: format!(
-                    "{} does not look like the Jukeoke stick: it has no Library folder. Choose the stick's main folder.",
+                    "{} does not look like the Open Mic stick: it has no Library folder. Choose the stick's main folder.",
                     picked.display()
                 ),
             });
@@ -155,7 +155,7 @@ pub async fn root_choose(app: AppHandle, state: State<'_, AppState>) -> ApiResul
         Ok(RootChoice {
             ok: true,
             root: Some(root.display().to_string()),
-            message: "Jukeoke will now restart using the chosen folder.".into(),
+            message: "Open Mic will now restart using the chosen folder.".into(),
         })
     })
     .await

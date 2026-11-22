@@ -17,6 +17,6 @@
 <plist version="1.0">
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Jukeoke listens to your microphone only while practice mode is open, to show and grade the pitch you sing. The sound is analysed in memory on this Mac and is never recorded, saved or sent anywhere.</string>
+	<string>Open Mic listens to your microphone only while practice mode is open, to show and grade the pitch you sing. The sound is analysed in memory on this Mac and is never recorded, saved or sent anywhere.</string>
 </dict>
 </plist>

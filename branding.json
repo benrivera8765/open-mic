@@ -1,6 +1,6 @@
 {
-  "name": "Jukeoke",
-  "name_note": "Placeholder name (WORK_ORDER section 11, #1). Check for conflicts before any public release.",
+  "name": "Open Mic",
+  "name_note": "Renamed from the placeholder Jukeoke by the owner on 2026-11-22 (DECISIONS D-253). Internal identifiers (crate and package names, jukeoke-cli, the bundle id, the .jksong magic) keep the old name on purpose. Check for conflicts before any public release.",
   "bundle_id": "org.jukeoke.app",
   "song_extension": "jksong",
   "song_magic_note": "The song file magic bytes are NOT renamed with the app; see docs/SONG_FORMAT.md.",

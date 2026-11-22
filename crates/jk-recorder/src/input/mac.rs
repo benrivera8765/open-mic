@@ -374,7 +374,7 @@ impl Capture {
             MicPermission::NotDetermined => {
                 return Err(InputError::new(
                     FailureKind::PermissionDenied,
-                    "Jukeoke has not asked macOS for the microphone yet. Show the explanation, \
+                    "Open Mic has not asked macOS for the microphone yet. Show the explanation, \
                      then ask (request_mic_permission).",
                 ));
             }

@@ -42,7 +42,7 @@ so are all-caps selectors and properties (-URL, -UUID; selectors are REVIEW-only
 Selectors are names only, so a selector shared with an older class is never reported.
 It has been unit-tested on hand-written header snippets and fake tool output, and run on
 the real Apple usr/include headers that Zig bundles; it has NOT run on a real macOS SDK
-or a real Jukeoke.app (no Mac on the build PC; docs/MAC.md section 11).
+or a real Open Mic.app (no Mac on the build PC; docs/MAC.md section 11).
 """
 from __future__ import annotations
 

@@ -207,9 +207,9 @@ export interface PracticeHost {
 }
 
 const EXPLANATION =
-  "Practice mode listens to your microphone so it can show the note you are singing and grade it. It listens only while the practice screen is open, works out the pitch in memory on this computer, and never records, saves or sends your voice. Your computer will now ask whether Jukeoke may use the microphone: choose Allow (OK on a Mac).";
+  "Practice mode listens to your microphone so it can show the note you are singing and grade it. It listens only while the practice screen is open, works out the pitch in memory on this computer, and never records, saves or sends your voice. Your computer will now ask whether Open Mic may use the microphone: choose Allow (OK on a Mac).";
 const STEPS_MAC =
-  "macOS is not letting Jukeoke use the microphone. Open System Settings > Privacy & Security > Microphone and switch on Jukeoke, then open practice mode again (if it still says no microphone, quit and reopen Jukeoke). Each new build of the app may have to be allowed again, because it is signed ad hoc.";
+  "macOS is not letting Open Mic use the microphone. Open System Settings > Privacy & Security > Microphone and switch on Open Mic, then open practice mode again (if it still says no microphone, quit and reopen Open Mic). Each new build of the app may have to be allowed again, because it is signed ad hoc.";
 const STEPS_WIN =
   'Windows is not letting apps use the microphone. Open Settings > Privacy & security > Microphone and switch on both "Microphone access" and "Let desktop apps access your microphone", then open practice mode again.';
 

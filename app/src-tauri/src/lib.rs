@@ -210,11 +210,11 @@ fn setup(
     let exe_for_layout = exe.clone().unwrap_or_default();
     let dev_env = std::env::var_os(portable::DEV_ENV_VAR).map(PathBuf::from);
     let layout = DataLayout::detect(&exe_for_layout, dev_env, || app.path().app_local_data_dir().ok())
-        .map_err(|e| StartupError::new("Jukeoke could not work out where to keep its data.", e))?;
+        .map_err(|e| StartupError::new("Open Mic could not work out where to keep its data.", e))?;
     layout.create_dirs().map_err(|e| {
         StartupError::new(
             format!(
-                "Jukeoke cannot write to its Settings folder ({}). The drive may be read-only (check the USB stick's lock switch) or full.",
+                "Open Mic cannot write to its Settings folder ({}). The drive may be read-only (check the USB stick's lock switch) or full.",
                 layout.settings_dir.display()
             ),
             e,

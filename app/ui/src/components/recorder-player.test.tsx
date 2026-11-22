@@ -144,6 +144,9 @@ describe("Recorder: songs recorded separately", () => {
     // Nothing complete yet, so no "all complete songs" button.
     expect(button(/Make karaoke songs from all complete songs/)).toBeUndefined();
     button("Make a karaoke song")!.click();
+    // The lyrics choice first: automatic is the default.
+    await until(() => !!button("Add to the Studio queue"));
+    button("Add to the Studio queue")!.click();
     await until(() => sent.length === 1);
     expect(sent[0].metadata).toEqual({
       title: "Morning Light",
@@ -183,11 +186,32 @@ describe("Recorder: songs recorded separately", () => {
     await until(() => play.getAttribute("aria-pressed") === "false");
     // All complete songs to the Studio at once: two jobs, with their own metadata.
     button("Make karaoke songs from all complete songs (2)")!.click();
+    // Each song gets its own lyrics choice: the second one's are pasted.
+    await until(() => root.querySelectorAll(".lyrics-choice").length === 2);
+    const second = root.querySelectorAll<HTMLElement>(".lyrics-choice")[1];
+    second.querySelectorAll<HTMLInputElement>("input[type=radio]")[1].click();
+    await until(() => !!second.querySelector("textarea"));
+    const ta = second.querySelector<HTMLTextAreaElement>("textarea")!;
+    ta.value = "first line" + String.fromCharCode(10) + "second line";
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    await wait(); // let the dialog re-render with the text
+    button("Add to the Studio queue")!.click();
     await until(() => sent.length === 2);
     expect(sent.map((r) => r.metadata.title)).toEqual(["Morning Light", "Paper Boats"]);
+    expect(sent.map((r) => r.lyrics.mode)).toEqual(["auto", "text"]);
+    expect(sent[1].lyrics.text).toBe("first line" + String.fromCharCode(10) + "second line");
     expect(sent.every((r) => typeof r.metadata.cover_path === "string")).toBe(true);
     await until(() => store.get().toasts.some((t) => t.text === "Added 2 songs to the Studio queue."));
     await until(() => (store.get().studio?.queue.length ?? 0) >= 2);
+    // In the queue, the waiting song shows its lyrics and can switch back to automatic.
+    store.set({ screen: "studio" });
+    await until(() => /Lyrics: your own/.test(text()));
+    expect(qa(".studio__job-lyrics-edit").map((b) => b.textContent)).toContain("Change lyrics");
+    const edit = qa(".studio__job-lyrics-edit").find((b) => b.textContent === "Change lyrics")!;
+    edit.click();
+    await until(() => !!button("Find them automatically instead"));
+    button("Find them automatically instead")!.click();
+    await until(() => !/Lyrics: your own/.test(text()));
   });
 
   it("without the Studio there is nothing to hand off, but the songs are listed", async () => {
@@ -198,5 +222,21 @@ describe("Recorder: songs recorded separately", () => {
     expect(qa(".rec-song .rec-song__preview").length).toBe(3);
     // The excluded parts can be listened to as well.
     expect(qa(".rec-session__part .rec-song__preview").length).toBe(2);
+  });
+
+  it("Delete asks first (Cancel keeps it), then removes the session from the list", async () => {
+    await open();
+    await until(() => qa(".rec-session").length === 1);
+    button("Delete")!.click();
+    await until(() => !!q(".confirm__cancel"));
+    expect(text()).toMatch(/cannot be undone/);
+    expect(text()).toMatch(/stay in your Library/);
+    q<HTMLButtonElement>(".confirm__cancel")!.click();
+    await until(() => !q(".confirm__cancel"));
+    expect(qa(".rec-session").length).toBe(1);
+    button("Delete")!.click();
+    await until(() => !!button("Delete for good"));
+    button("Delete for good")!.click();
+    await until(() => qa(".rec-session").length === 0);
   });
 });

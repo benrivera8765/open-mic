@@ -113,7 +113,7 @@ fn export_renders_the_current_key_to_a_float_wav() {
     let failed = sink.of("export://failed");
     let done = done.unwrap_or_else(|| panic!("export did not finish: {failed:?}"));
     let path = PathBuf::from(done["path"].as_str().unwrap());
-    assert_eq!(path.file_name().unwrap(), "Jukeoke - Test Tone (E major, -5).wav");
+    assert_eq!(path.file_name().unwrap(), "Open Mic - Test Tone (E major, -5).wav");
     let h = jukeoke_lib::recorder::read_wav_header(&path).unwrap();
     assert_eq!((h.sample_rate, h.channels, h.bits), (48000, 2, 32));
     let frames = h.data_bytes / 8;

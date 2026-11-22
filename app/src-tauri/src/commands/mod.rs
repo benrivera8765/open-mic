@@ -89,6 +89,7 @@ macro_rules! all_commands {
             $crate::commands::recorder_session_stop,
             $crate::commands::recorder_sessions_list,
             $crate::commands::recorder_session_split,
+            $crate::commands::recorder_session_delete,
             $crate::commands::recorder_preview,
             $crate::commands::recorder_preview_stop,
             // studio
@@ -97,6 +98,7 @@ macro_rules! all_commands {
             $crate::commands::studio_lyrics_lookup,
             $crate::commands::studio_submit,
             $crate::commands::studio_cancel,
+            $crate::commands::studio_set_lyrics,
             $crate::commands::studio_clear_finished,
             $crate::commands::studio_models_status,
             $crate::commands::studio_models_download,

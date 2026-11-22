@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Jukeoke",
-  "mainBinaryName": "Jukeoke",
+  "productName": "Open Mic",
+  "mainBinaryName": "Open Mic",
   "identifier": "org.jukeoke.app",
   "build": {
     "frontendDist": "../ui/dist",
@@ -25,7 +25,7 @@
   "bundle": {
     "active": true,
     "targets": ["app"],
-    "publisher": "The Jukeoke contributors",
+    "publisher": "The Open Mic contributors",
     "copyright": "GPL-3.0-or-later",
     "category": "Music",
     "shortDescription": "Karaoke from any song, on a bubbler jukebox.",

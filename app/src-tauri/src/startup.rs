@@ -60,7 +60,7 @@ pub fn report(message: &str, detail: &str) -> PathBuf {
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(REPORT_FILE);
     let text = format!(
-        "Jukeoke could not start\r\n\
+        "Open Mic could not start\r\n\
          =======================\r\n\
          time (UTC): {}\r\n\
          app version: {}\r\n\
@@ -79,14 +79,14 @@ pub fn report(message: &str, detail: &str) -> PathBuf {
     );
     let written = crate::fs_atomic::write_atomic(&path, text.as_bytes()).is_ok();
     crate::applog::error(&format!("start-up failed: {message} | {detail}"));
-    eprintln!("Jukeoke could not start: {message}\n{detail}");
+    eprintln!("Open Mic could not start: {message}\n{detail}");
     if !UNATTENDED.load(Ordering::SeqCst) {
         let where_ = if written {
             format!("\n\nThe details were saved in:\n{}", path.display())
         } else {
             String::new()
         };
-        show_error_dialog("Jukeoke could not start", &format!("{message}{where_}"));
+        show_error_dialog("Open Mic could not start", &format!("{message}{where_}"));
     }
     path
 }
@@ -158,13 +158,13 @@ pub fn plain_message_for_panic(msg: &str) -> String {
     let lower = msg.to_ascii_lowercase();
     if lower.contains("webview2") || lower.contains("webview") || lower.contains("0x80070002") {
         "The app's window could not be created because the Microsoft Edge WebView2 Runtime is missing or damaged. \
-         It is part of Windows 11; on Windows 10 install it from Microsoft (search for \"WebView2 Runtime\"), then start Jukeoke again."
+         It is part of Windows 11; on Windows 10 install it from Microsoft (search for \"WebView2 Runtime\"), then start Open Mic again."
             .into()
     } else if lower.contains("access is denied") || lower.contains("permission denied") || lower.contains("read-only") {
-        "Jukeoke cannot write to its folder (the drive may be read-only or full). Check the USB stick's lock switch and free space, then start Jukeoke again."
+        "Open Mic cannot write to its folder (the drive may be read-only or full). Check the USB stick's lock switch and free space, then start Open Mic again."
             .into()
     } else {
-        "Jukeoke hit an unexpected error while starting. Please send the details file to whoever maintains your copy of Jukeoke."
+        "Open Mic hit an unexpected error while starting. Please send the details file to whoever maintains your copy of Open Mic."
             .into()
     }
 }

@@ -622,6 +622,8 @@ export interface StudioJob {
   error: string | null;
   /** (added WO2) The app's last `guide` stage: the new song's practice data. */
   guide?: GuideStatus | null;
+  /** Addition: the job's lyrics, "auto" (found automatically) or "text" (the singer's own, aligned). */
+  lyrics?: StudioLyricsMode;
 }
 
 export interface StudioStatus {

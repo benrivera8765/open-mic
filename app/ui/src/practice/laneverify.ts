@@ -10,7 +10,7 @@
 // lane cannot agree with itself. Used by lane.test.ts and, through `window.__jkLane.verify`,
 // by the screenshot script in a real browser.
 import type { Lyrics, NoteSpelling, OctaveMode, PracticeGuide } from "../api/types";
-import { barOf, FUTURE_S, type LaneLayout, laneFrame, pianoRows, xOf } from "./lane";
+import { barOf, FUTURE_S, type LaneLayout, laneFrame, pianoRows } from "./lane";
 import { LiveStore } from "./live";
 import type { KeyView } from "./pitch";
 
@@ -107,14 +107,41 @@ export function verifyLane(L: LaneLayout, guide: PracticeGuide, lyrics: Lyrics |
   const live = new LiveStore();
   const nowMs = 1e9;
 
-  // Words: overlaps within a row, over the whole song (layout, not time dependent).
+  // Words (layout, not time dependent): every lyric word once, in order, with its text, at
+  // its own time (a shift only where the rows were full), never overlapping in a row.
+  if (L.wordRows > 0 && lyrics) {
+    const want: { start: number; text: string }[] = [];
+    for (const line of lyrics.lines)
+      for (const wd of line.words) {
+        const text = wd.chars.map((c) => c[0]).join("").trim();
+        if (text) want.push({ start: wd.start, text });
+      }
+    want.sort((p, q) => p.start - q.start);
+    const off = L.words.length && want.length ? L.words[0].start - want[0].start : 0;
+    if (want.length !== L.words.length) {
+      rep.wordErrors++;
+      err(`${L.words.length} words in the strip, the lyrics have ${want.length}`);
+    }
+    for (let k = 0; k < Math.min(want.length, L.words.length); k++) {
+      rep.wordsChecked++;
+      const w = L.words[k];
+      if (w.text !== want[k].text || Math.abs(w.start - (want[k].start + off)) > 1e-6 || w.shift > L.wordPx * 3) {
+        rep.wordErrors++;
+        err(`word ${k}: "${w.text}" at ${w.start.toFixed(3)} (+${w.shift.toFixed(1)} px), want "${want[k].text}" at ${(want[k].start + off).toFixed(3)}`);
+      }
+    }
+    if (L.wordTop < L.barBottom) {
+      rep.wordErrors++;
+      err("the word strip overlaps the bars");
+    }
+  }
   for (let r = 0; r < L.wordRows; r++) {
     let end = -Infinity;
-    for (const n of L.notes) {
-      if (n.wordRow !== r) continue;
-      const x = n.start * L.pxPerSec;
+    for (const w of L.words) {
+      if (w.row !== r) continue;
+      const x = w.start * L.pxPerSec + w.shift;
       if (x < end - 0.5) rep.wordOverlaps++;
-      end = x + n.wordW;
+      end = x + w.w;
     }
   }
 
@@ -185,18 +212,6 @@ export function verifyLane(L: LaneLayout, guide: PracticeGuide, lyrics: Lyrics |
       if (row.name !== nameOf(row.p, sc.spelling)) {
         rep.nameErrors++;
         err(`t=${t.toFixed(2)}: key ${row.p} named ${row.name}, want ${nameOf(row.p, sc.spelling)}`);
-      }
-      // Its word: under it, starting where it starts, the word of its reference.
-      const n = L.notes[i];
-      if (n.word !== null) {
-        rep.wordsChecked++;
-        const x = xOf(L, t, n.start);
-        const ref = g.word;
-        const text = ref && lyrics ? lyrics.lines[ref[0]].words[ref[1]].chars.map((c) => c[0]).join("").trim() : null;
-        if (Math.abs(x - b.x0) > 0.5 || L.wordTop < L.barBottom || text !== n.word) {
-          rep.wordErrors++;
-          err(`t=${t.toFixed(2)} note ${i}: word "${n.word}" at x=${x.toFixed(1)} (bar ${b.x0.toFixed(1)}), want "${text}"`);
-        }
       }
     }
 

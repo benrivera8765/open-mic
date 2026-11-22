@@ -229,7 +229,7 @@ fn export_uses_live_settings_and_reports_progress() {
     })
     .expect("export done");
     let path = PathBuf::from(done["path"].as_str().unwrap());
-    assert_eq!(path.file_name().unwrap(), "Jukeoke - Test Tone (B major, +2).wav");
+    assert_eq!(path.file_name().unwrap(), "Open Mic - Test Tone (B major, +2).wav");
     assert!(path.starts_with(a.root.join("Exports")) && path.is_file());
     let progress = a.sink.of("export://progress");
     assert!(progress.iter().any(|e| e["progress"] == 1.0), "{progress:?}");
@@ -243,7 +243,7 @@ fn export_uses_live_settings_and_reports_progress() {
         a.sink.of("export://done").into_iter().find(|e| e["job_id"] == job2.job_id.as_str())
     })
     .unwrap();
-    assert!(done2["path"].as_str().unwrap().ends_with("Jukeoke - Test Tone (B major, +2) (2).wav"));
+    assert!(done2["path"].as_str().unwrap().ends_with("Open Mic - Test Tone (B major, +2) (2).wav"));
     assert_eq!(a.core.export_backing("Jukeoke - Test Tone.jksong", "mp3").unwrap_err().code, "bad_request");
 }
 

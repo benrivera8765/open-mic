@@ -7,9 +7,9 @@
 // SAFETY: nothing is played aloud. Settings/settings.json selects the engine's silent
 // "null:48000" output device and master volume 0 before the app starts.
 //
-//   node scripts/real-app-e2e.mjs queue       <Jukeoke.exe> <root> <out dir> <jobs.json>
-//   node scripts/real-app-e2e.mjs stage       <Jukeoke.exe> <root> <out dir>
-//   node scripts/real-app-e2e.mjs unavailable <Jukeoke.exe> <root> <out dir> <label>
+//   node scripts/real-app-e2e.mjs queue       <Open Mic.exe> <root> <out dir> <jobs.json>
+//   node scripts/real-app-e2e.mjs stage       <Open Mic.exe> <root> <out dir>
+//   node scripts/real-app-e2e.mjs unavailable <Open Mic.exe> <root> <out dir> <label>
 //
 // queue:       waits for the Studio probe, then for every job in jobs.json
 //              ([{ input, title, artist, lyrics_text_file | null }]) calls studio_inspect
@@ -36,7 +36,7 @@ import { chromium } from "playwright-core";
 
 const [mode, exe, root, outDir, extra] = process.argv.slice(2);
 if (!["queue", "stage", "unavailable"].includes(mode) || !exe || !root || !outDir) {
-  console.error("usage: node scripts/real-app-e2e.mjs queue|stage|unavailable <Jukeoke.exe> <root> <out dir> [jobs.json|label]");
+  console.error("usage: node scripts/real-app-e2e.mjs queue|stage|unavailable <Open Mic.exe> <root> <out dir> [jobs.json|label]");
   process.exit(2);
 }
 mkdirSync(outDir, { recursive: true });

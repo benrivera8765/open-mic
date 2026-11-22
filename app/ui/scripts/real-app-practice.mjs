@@ -8,7 +8,7 @@
 //
 //   node scripts/real-app-practice.mjs <root> <out dir> <singers dir> [--only a,b,...] [--soak MINUTES]
 //
-// <root> is the portable folder (Windows/Jukeoke.exe, Library/ with the songs below).
+// <root> is the portable folder (Windows/Open Mic.exe, Library/ with the songs below).
 // <singers dir> holds generated singer WAVs (48 kHz float, sample k = song time k/48000):
 // demo_perfect.wav, demo_silent.wav, demo_cents_70.wav, demo_octave_1.wav, key_<k>.wav
 // (made by `jukeoke-cli practice run <demo> --singer ... --write-input ...`).
@@ -34,7 +34,7 @@ const onlyIdx = args.indexOf("--only");
 const only = onlyIdx > 0 ? new Set(args[onlyIdx + 1].split(",")) : null;
 const soakIdx = args.indexOf("--soak");
 const soakMinutes = soakIdx > 0 ? Number(args[soakIdx + 1]) : 0;
-const exe = join(root, "Windows", "Jukeoke.exe");
+const exe = join(root, "Windows", "Open Mic.exe");
 const DEMO = "Twinkle, Twinkle, Little Star";
 const NOGUIDE = process.env.NOGUIDE_TITLE ?? "Feel";
 mkdirSync(outDir, { recursive: true });

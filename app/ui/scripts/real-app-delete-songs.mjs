@@ -10,7 +10,7 @@
 // dist/). The app plays nothing audible: the "null:48000" output device and master 0 are
 // written into <root>/Settings/settings.json before it starts.
 //
-//   node scripts/real-app-delete-songs.mjs <Jukeoke.exe> <root> <out dir>
+//   node scripts/real-app-delete-songs.mjs <Open Mic.exe> <root> <out dir>
 //
 // <root>/Library must hold these test songs (any audio):
 //   Demo - Twinkle.jksong, Pop/Test Song A.jksong, Pop/Test Song B.jksong,
@@ -24,7 +24,7 @@ import { chromium } from "playwright-core";
 
 const [exe, root, outDir] = process.argv.slice(2);
 if (!exe || !root || !outDir) {
-  console.error("usage: node scripts/real-app-delete-songs.mjs <Jukeoke.exe> <root> <out dir>");
+  console.error("usage: node scripts/real-app-delete-songs.mjs <Open Mic.exe> <root> <out dir>");
   process.exit(2);
 }
 if (/[\\/]dist[\\/]?$/i.test(root) || /[\\/]dist[\\/]/i.test(join(root, "x"))) {

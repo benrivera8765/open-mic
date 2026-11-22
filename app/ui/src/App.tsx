@@ -246,7 +246,7 @@ function CurrentScreen({ screen, skin = false }: { screen: Screen; skin?: boolea
     case "sync":
       return <SyncEditor />;
     case "recorder":
-      return <Recorder />;
+      return <Recorder skin={skin} />;
     case "studio":
       return <Studio />;
     case "settings":

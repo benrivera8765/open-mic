@@ -36,9 +36,9 @@
   --jk-screen-bg: #14101c;
   --jk-cream: #f6efd9;
   --jk-ink: #1b120c;
-  /* Chrome: near white, cool grey, a dark band with a bright line under it. */
-  --jk-chrome: linear-gradient(180deg, #ffffff 0%, #d2d5db 20%, #8b8f97 44%, #3d3f45 50%, #a7abb3 60%, #f1f3f5 84%, #8c8f97 100%);
-  --jk-chrome-h: linear-gradient(90deg, #8c8f97 0%, #f1f3f5 18%, #a7abb3 40%, #3d3f45 50%, #8b8f97 56%, #d2d5db 80%, #ffffff 100%);
+  /* Chrome (gold, owner 2026-11-22): warm highlight, gold, a dark band with a bright line under it. */
+  --jk-chrome: linear-gradient(180deg, #fff6d8 0%, #ebd28b 20%, #ba8d33 44%, #583d10 50%, #d6af57 60%, #faeabb 84%, #bb8d33 100%);
+  --jk-chrome-h: linear-gradient(90deg, #bb8d33 0%, #faeabb 18%, #d6af57 40%, #583d10 50%, #ba8d33 56%, #ebd28b 80%, #fff6d8 100%);
   --jk-glass-face: linear-gradient(180deg, #2a2a32 0%, #111116 46%, #050507 100%);
   --jk-enamel-face: linear-gradient(180deg, #f03752 0%, #c8102e 50%, #5e0513 100%);
   /* Type. */
@@ -630,7 +630,7 @@
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  background: conic-gradient(from 200deg, #f7f8fa, #a9adb5 14%, #4a4d54 30%, #babec5 44%, #ffffff 56%, #8b8f97 70%, #3d4046 84%, #dfe1e5 94%, #f7f8fa);
+  background: conic-gradient(from 200deg, #fcefc7, #d8b159 14%, #694b16 30%, #e0bf6e 44%, #fff6d8 56%, #ba8d33 70%, #593e10 84%, #f1db9b 94%, #fcefc7);
 }
 
 /* Knurling: fine ribs that turn with the knob (semi-transparent over the fixed lighting). */

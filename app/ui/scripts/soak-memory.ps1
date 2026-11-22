@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Memory sampler for real-app-soak.mjs: every <Interval> seconds, one CSV line per process
-# in the tree under <RootPid> (Jukeoke.exe, its WebView2 processes, the Studio): working
+# in the tree under <RootPid> (Open Mic.exe, its WebView2 processes, the Studio): working
 # set, peak working set, private bytes (commit) and peak private bytes, from Win32_Process.
 #
 #   powershell -NoProfile -File soak-memory.ps1 <RootPid> <out.csv> <seconds> [interval]

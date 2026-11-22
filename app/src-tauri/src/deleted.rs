@@ -361,7 +361,7 @@ fn move_error(what: &str, e: &io::Error) -> ApiError {
     } else {
         match e.kind() {
             io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => {
-                "Jukeoke is not allowed to change the song file (the drive may be read-only: check the USB stick's lock switch).".to_string()
+                "Open Mic is not allowed to change the song file (the drive may be read-only: check the USB stick's lock switch).".to_string()
             }
             io::ErrorKind::StorageFull => "The drive is full, so the song could not be moved.".to_string(),
             io::ErrorKind::NotFound => "The song file is no longer there (it was moved or deleted).".to_string(),
@@ -915,7 +915,7 @@ mod tests {
         assert_eq!(d[0].deleted_id, "Artist - Two.jksong");
         assert_eq!(d[0].original_song_id, "Pop/Artist - Two.jksong");
         assert_eq!(d[0].restore_to, "Pop/Artist - Two.jksong");
-        assert_eq!((d[0].title.as_str(), d[0].artist.as_str()), ("Test Tone", "Jukeoke"));
+        assert_eq!((d[0].title.as_str(), d[0].artist.as_str()), ("Test Tone", "Open Mic"));
         assert_eq!(d[0].file_bytes, before.len() as u64);
         assert!(d[0].deleted_ms > 0);
         // Moved, not copied; the scan no longer lists it; the index says where it was.

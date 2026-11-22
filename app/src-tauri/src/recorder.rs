@@ -146,8 +146,8 @@ pub fn user_message(e: &RecorderError) -> (String, String) {
         ),
         RecorderError::PermissionDenied(_) => (
             "permission_denied",
-            "Jukeoke does not have the macOS \"Screen Recording\" permission yet. Open System Settings > \
-             Privacy & Security > Screen Recording, switch Jukeoke on, then quit and reopen Jukeoke."
+            "Open Mic does not have the macOS \"Screen Recording\" permission yet. Open System Settings > \
+             Privacy & Security > Screen Recording, switch Open Mic on, then quit and reopen Open Mic."
                 .to_string(),
         ),
         RecorderError::Backend { message, .. } => ("capture_failed", format!("Recording failed: {message}")),
@@ -157,7 +157,7 @@ pub fn user_message(e: &RecorderError) -> (String, String) {
         ),
         RecorderError::Format(why) => (
             "capture_failed",
-            format!("The system delivered audio in a format Jukeoke cannot store without converting it: {why}"),
+            format!("The system delivered audio in a format Open Mic cannot store without converting it: {why}"),
         ),
         RecorderError::Io(io) => ("io", format!("The recording could not be written: {io}")),
         RecorderError::AlreadyStopped => ("not_recording", "The recording has already stopped.".to_string()),

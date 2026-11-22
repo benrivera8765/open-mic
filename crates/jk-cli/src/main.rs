@@ -50,7 +50,7 @@ type Res<T> = Result<T, Box<dyn std::error::Error>>;
 mod practice;
 
 #[derive(Parser)]
-#[command(name = "jukeoke-cli", version, about = "Jukeoke audio engine and song-file tool")]
+#[command(name = "jukeoke-cli", version, about = "Open Mic audio engine and song-file tool")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
