@@ -18,7 +18,17 @@ fn stats(label: &str, d: &jk_format::guide::GuideDoc) {
         }
     }
     let multi = words.values().filter(|&&c| c > 1).count();
-    println!("{label}: notes {n}, <120ms {short}, unpitched {unp}, graded {graded}, unsure {dim}, words with notes {}, words with >1 note {multi}, spans {}", words.len(), d.spans.len());
+    // Notes 9+ semitones from both neighbours (within 1.5 s), the same way.
+    let spikes = d
+        .notes
+        .windows(3)
+        .filter(|w| {
+            let (a, b, c) = (&w[0], &w[1], &w[2]);
+            let (d1, d2) = (b.midi - a.midi, b.midi - c.midi);
+            b.start - a.end <= 1.5 && c.start - b.end <= 1.5 && d1.signum() == d2.signum() && d1.abs().min(d2.abs()) >= 9.0
+        })
+        .count();
+    println!("{label}: notes {n}, <120ms {short}, unpitched {unp}, graded {graded}, unsure {dim}, words with notes {}, words with >1 note {multi}, spans {}, octave spikes {spikes}", words.len(), d.spans.len());
 }
 
 fn main() {
@@ -27,7 +37,15 @@ fn main() {
     let (_, doc) = jk_guide::file_state(&song);
     let mut d = doc.expect("guide");
     let line: Option<usize> = a.get(1).and_then(|s| s.parse().ok());
+    // "t0:t1" instead of a line: the notes between two song times (s).
+    let window: Option<(f64, f64)> = a.get(1).and_then(|s| s.split_once(':')).and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)));
     let show = |d: &jk_format::guide::GuideDoc| {
+        if let Some((t0, t1)) = window {
+            for x in d.notes.iter().filter(|x| x.end > t0 && x.start < t1) {
+                let w = x.word.as_ref().map(|w| format!("{}:{}", w.0, w.1)).unwrap_or_else(|| "-".into());
+                println!("  {:.3}-{:.3} midi {:.2} {} conf {:.2} oct {} glide {:.2} word {w}", x.start, x.end, x.midi, &x.kind[..1], x.confidence, x.octave, x.glide_in);
+            }
+        }
         if let Some(l) = line {
             for x in d.notes.iter().filter(|x| x.word.as_ref().is_some_and(|w| w.0 == l)) {
                 let w = x.word.as_ref().unwrap();
