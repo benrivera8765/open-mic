@@ -58,6 +58,9 @@ try {
     if (s.phase === "watch_only" || s.phase === "listening") break;
     await sleep(100);
   }
+  // The "no microphone" note covers part of the lane: hide it for the picture.
+  const hide = page.locator("button", { hasText: /^Hide$/i });
+  if (await hide.count()) await hide.first().click().catch(() => {});
   const start = Number(startArg);
   const stop = stopArg ? Number(stopArg) : start + 1.5;
   await invoke("player_seek", { position_s: start });
@@ -71,6 +74,9 @@ try {
   await sleep(600);
   const file = join(outDir, `practice-${start}.png`);
   await page.screenshot({ path: file });
+  // The lane alone, for a close look at the bars.
+  const lane = await page.locator(".practice__lane").first().boundingBox();
+  if (lane) await page.screenshot({ path: join(outDir, `practice-${start}-lane.png`), clip: lane });
   console.log(`saved ${file}; page errors: ${errors.length}`);
   await invoke("player_seek", { position_s: 0 });
 } finally {

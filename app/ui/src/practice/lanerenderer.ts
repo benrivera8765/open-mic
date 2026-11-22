@@ -262,7 +262,44 @@ export class LaneRenderer {
     const h = L.barH;
     const glow = !this.simple;
     const from = firstNoteFrom(L, t0 - pad / pps);
-    for (let j = from; j < L.notes.length && L.notes[j].start < t0 + (TILE_PX + pad) / pps; j++) {
+    const until = t0 + (TILE_PX + pad) / pps;
+    // Slides between notes (owner 2026-11-22: "joined at the end", not shooting out off
+    // centre): a tube from the centre of one bar's end cap to the centre of the next bar's
+    // start cap, drawn under the bars so the caps cover its ends, with the bars' white
+    // core carried along it on top, so bar, slide and bar read as one line.
+    const slides: { ax: number; ay: number; bx: number; by: number }[] = [];
+    for (let j = Math.max(1, from); j < L.notes.length && L.notes[j].start < until; j++) {
+      const n = L.notes[j];
+      const p = L.notes[j - 1];
+      if (n.glideIn <= 0 || n.kind !== "pitched" || p.kind !== "pitched" || !Number.isFinite(n.lane) || !Number.isFinite(p.lane)) continue;
+      if (n.start - p.end >= 0.12 || n.lane === p.lane) continue;
+      const pa = x(p.start);
+      const pb = x(p.end);
+      const na = x(n.start);
+      const nb = x(n.end);
+      const rp = Math.min(h / 2, (pb - pa) / 2);
+      const rn = Math.min(h / 2, (nb - na) / 2);
+      slides.push({ ax: pb - rp, ay: this.tileY(p.lane), bx: na + rn, by: this.tileY(n.lane) });
+    }
+    if (slides.length) {
+      if (glow) {
+        g.shadowColor = withAlpha(st.bar, 0.85);
+        g.shadowBlur = h * 0.95;
+      }
+      g.strokeStyle = st.bar;
+      g.lineWidth = h * 0.62;
+      g.lineCap = "round";
+      g.lineJoin = "round";
+      g.beginPath();
+      for (const sl of slides) {
+        g.moveTo(sl.ax, sl.ay);
+        g.lineTo(sl.bx, sl.by);
+      }
+      g.stroke();
+      g.shadowBlur = 0;
+      g.shadowColor = "transparent";
+    }
+    for (let j = from; j < L.notes.length && L.notes[j].start < until; j++) {
       const n = L.notes[j];
       const y = this.tileY(n.lane);
       const x0 = x(n.start);
@@ -270,17 +307,6 @@ export class LaneRenderer {
       // Every note is drawn alike (owner 2026-11-22: faded and violet bars confused); a note
       // with no pitch has nothing to show.
       if (n.kind === "unpitched" || !Number.isFinite(n.lane)) continue;
-      // A slide into the note: a thinner tube from the previous note's pitch.
-      if (n.glideIn > 0 && j > 0 && L.notes[j - 1].kind === "pitched" && n.start - L.notes[j - 1].end < 0.12) {
-        const p = L.notes[j - 1];
-        g.strokeStyle = withAlpha(st.bar, 0.55);
-        g.lineWidth = Math.max(2, h * 0.3);
-        g.lineCap = "round";
-        g.beginPath();
-        g.moveTo(x(p.end), this.tileY(p.lane));
-        g.lineTo(x(n.start + n.glideIn), y);
-        g.stroke();
-      }
       g.globalAlpha = 1;
       this.tube(g, x0, x1, y, h, st.bar, glow);
       // A straight core: the key to sing, not the recording's every wobble (owner 2026-11-22).
@@ -299,6 +325,19 @@ export class LaneRenderer {
       g.beginPath();
       g.moveTo(x0 + h * 0.5, y - h * 0.3);
       g.lineTo(Math.max(x0 + h * 0.5, x1 - h * 0.5), y - h * 0.3);
+      g.stroke();
+      g.globalAlpha = 1;
+    }
+    if (slides.length) {
+      g.globalAlpha = 0.92;
+      g.strokeStyle = "rgba(255,246,250,0.95)";
+      g.lineWidth = Math.max(1.2, h * 0.16);
+      g.lineCap = "round";
+      g.beginPath();
+      for (const sl of slides) {
+        g.moveTo(sl.ax, sl.ay);
+        g.lineTo(sl.bx, sl.by);
+      }
       g.stroke();
       g.globalAlpha = 1;
     }
