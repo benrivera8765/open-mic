@@ -20,8 +20,15 @@
 //!    joins the note at least twice its length it leads into or out of; touching notes on
 //!    the same key merge. A sliver with no word joins any touching note, and a sliver on
 //!    the same key as a touching note of the next or previous word joins it.
-//! 4. Short (< 200 ms), unsure notes outside every lyric word, and any note under 60 ms
-//!    that is not its word's only note, are dropped.
+//! 4. A note that jumps 9 semitones or more away from BOTH its neighbours (the same way)
+//!    is a wrong octave of the analysis (owner, 2026-11-22: a note "way too high" in a
+//!    chorus, 81 between 62..71, exactly an octave above the line): it moves an octave
+//!    toward them when that brings it nearer to both. A real leap is a phrase, not one
+//!    note, so it is left alone. Grading folds octaves in Auto anyway; this is what the
+//!    singer sees.
+//! 5. Short (< 200 ms), unsure notes outside every lyric word, very unsure notes
+//!    (confidence < 0.2, < 500 ms) that are not their word's only note, and any note under
+//!    60 ms that is not its word's only note, are dropped.
 //!
 //! The result keeps time order and never overlaps. Word references are kept (a merged
 //! note keeps its first part's).
@@ -40,6 +47,13 @@ const MERGE_GAP_S: f64 = 0.08;
 const MIN_SPOKEN_S: f64 = 1.0;
 /// The longest slide kept as `glide_in` when a scoop joins the note after it.
 const MAX_GLIDE_S: f64 = 0.15;
+/// A note this many semitones from both neighbours (same direction) is an octave spike.
+const SPIKE_ST: f64 = 9.0;
+/// Neighbours further apart than this (s) do not count for the spike rule.
+const SPIKE_GAP_S: f64 = 1.5;
+/// Very unsure: below this confidence a short note that is not its word's only note goes.
+const JUNK_CONFIDENCE: f64 = 0.2;
+const JUNK_S: f64 = 0.5;
 
 fn dur(n: &GuideNote) -> f64 {
     n.end - n.start
@@ -152,6 +166,28 @@ fn tidy_once(notes: &mut Vec<GuideNote>) -> bool {
     false
 }
 
+/// Step 4: moves single notes that sit an octave away from both neighbours; true when
+/// something moved.
+pub(crate) fn fix_octave_spikes(notes: &mut [GuideNote]) -> bool {
+    let mut moved = false;
+    for i in 0..notes.len() {
+        let n = &notes[i];
+        let prev = (i > 0).then(|| i - 1).filter(|&p| n.start - notes[p].end <= SPIKE_GAP_S);
+        let next = (i + 1 < notes.len()).then_some(i + 1).filter(|&q| notes[q].start - n.end <= SPIKE_GAP_S);
+        let (Some(p), Some(q)) = (prev, next) else { continue };
+        let (d1, d2) = (n.midi - notes[p].midi, n.midi - notes[q].midi);
+        if d1.signum() != d2.signum() || d1.abs().min(d2.abs()) < SPIKE_ST {
+            continue;
+        }
+        let shift = -12.0 * d1.signum();
+        if (d1 + shift).abs() < d1.abs() && (d2 + shift).abs() < d2.abs() {
+            notes[i].midi += shift;
+            moved = true;
+        }
+    }
+    moved
+}
+
 /// Rewrites `doc`'s notes and spans as the singer's melody (module docs).
 pub fn singable(doc: &mut GuideDoc) {
     let tuning = doc.tuning.use_cents / 100.0;
@@ -190,7 +226,7 @@ pub fn singable(doc: &mut GuideDoc) {
             keep[i] = false;
             continue;
         }
-        if dur(n) < TOUCH_S {
+        if dur(n) < TOUCH_S || (n.confidence < JUNK_CONFIDENCE && dur(n) < JUNK_S) {
             let w = word_of(n);
             let alone = w.is_some() && notes.iter().filter(|m| word_of(m) == w).count() == 1;
             if !alone {
@@ -200,6 +236,17 @@ pub fn singable(doc: &mut GuideDoc) {
     }
     let mut k = keep.into_iter();
     notes.retain(|_| k.next().unwrap_or(true));
+    // Step 4 on what is left (dropped notes no longer count as neighbours); a moved note
+    // may now sit on its neighbour's key, and moving one can reveal the next.
+    for _ in 0..4 {
+        if !fix_octave_spikes(&mut notes) {
+            break;
+        }
+        let mut guard = notes.len() * 4 + 16;
+        while guard > 0 && tidy_once(&mut notes) {
+            guard -= 1;
+        }
+    }
     // Round as the stored guide does (1 ms, 0.1 cent).
     for n in &mut notes {
         n.midi = (n.midi * 1000.0).round() / 1000.0;
@@ -313,6 +360,35 @@ mod tests {
         let got: Vec<_> = d.notes.iter().map(|x| (x.start, x.midi)).collect();
         assert_eq!(got, vec![(0.0, 60.0), (3.0, 62.0)]);
         assert_eq!(d.spans.len(), 1);
+    }
+
+    #[test]
+    fn a_single_note_an_octave_above_its_neighbours_comes_down_but_a_sung_leap_stays() {
+        // The owner's chorus: 69, 71, then 81 (A5, exactly an octave above A4), then 70.
+        let mut d = doc(
+            vec![
+                n(0.0, 0.13, 69.0, "pitched", 0.8, Some((0, 1))),
+                n(0.13, 0.39, 71.0, "pitched", 0.6, Some((0, 1))),
+                n(0.56, 0.84, 81.0, "pitched", 0.97, Some((0, 2))),
+                n(0.89, 1.2, 70.0, "pitched", 0.6, Some((0, 3))),
+            ],
+            0.0,
+        );
+        singable(&mut d);
+        let got: Vec<f64> = d.notes.iter().map(|x| x.midi).collect();
+        assert_eq!(got, vec![69.0, 71.0, 69.0, 70.0]);
+        // A leap of a whole phrase (two notes up there) is the melody: kept.
+        let mut d = doc(
+            vec![
+                n(0.0, 0.3, 60.0, "pitched", 0.9, Some((0, 0))),
+                n(0.3, 0.6, 72.0, "pitched", 0.9, Some((0, 1))),
+                n(0.6, 0.9, 72.0, "pitched", 0.9, Some((0, 2))),
+                n(0.9, 1.2, 60.0, "pitched", 0.9, Some((0, 3))),
+            ],
+            0.0,
+        );
+        singable(&mut d);
+        assert_eq!(d.notes.iter().map(|x| x.midi).collect::<Vec<_>>(), vec![60.0, 72.0, 72.0, 60.0]);
     }
 
     #[test]
