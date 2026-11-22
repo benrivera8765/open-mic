@@ -263,80 +263,88 @@ export class LaneRenderer {
     const glow = !this.simple;
     const from = firstNoteFrom(L, t0 - pad / pps);
     const until = t0 + (TILE_PX + pad) / pps;
-    // Slides between notes (owner 2026-11-22: "joined at the end", not shooting out off
-    // centre): a tube from the centre of one bar's end cap to the centre of the next bar's
-    // start cap, drawn under the bars so the caps cover its ends, with the bars' white
-    // core carried along it on top, so bar, slide and bar read as one line.
-    const slides: { ax: number; ay: number; bx: number; by: number }[] = [];
-    for (let j = Math.max(1, from); j < L.notes.length && L.notes[j].start < until; j++) {
+    const drawable = (n: (typeof L.notes)[number]) => n.kind === "pitched" && Number.isFinite(n.lane);
+    // A slide joins note j-1 to note j (a scoop the guide measured, notes close together).
+    const joined = (j: number) => {
+      if (j <= 0 || j >= L.notes.length) return false;
       const n = L.notes[j];
       const p = L.notes[j - 1];
-      if (n.glideIn <= 0 || n.kind !== "pitched" || p.kind !== "pitched" || !Number.isFinite(n.lane) || !Number.isFinite(p.lane)) continue;
-      if (n.start - p.end >= 0.12 || n.lane === p.lane) continue;
-      const pa = x(p.start);
-      const pb = x(p.end);
-      const na = x(n.start);
-      const nb = x(n.end);
-      const rp = Math.min(h / 2, (pb - pa) / 2);
-      const rn = Math.min(h / 2, (nb - na) / 2);
-      slides.push({ ax: pb - rp, ay: this.tileY(p.lane), bx: na + rn, by: this.tileY(n.lane) });
+      return n.glideIn > 0 && drawable(n) && drawable(p) && n.start - p.end < 0.12 && n.lane !== p.lane;
+    };
+    // Bars and slides as one neon tube (owner 2026-11-22: the slide must look "seamless",
+    // "a smooth transition", not a separate bar): each run of joined notes is ONE path,
+    // flat along each note (cap centre to cap centre) and an S-curve between them that
+    // leaves and meets the bars level, stroked in layers (glow, rim, body, bright centre,
+    // white core). A lone note is the same path with no curve, so every bar looks alike.
+    const chains: number[][] = [];
+    let j = from;
+    while (j > 0 && joined(j)) j--; // start a run that began left of this tile
+    for (; j < L.notes.length && L.notes[j].start < until; j++) {
+      if (!drawable(L.notes[j])) continue;
+      const run = [j];
+      while (j + 1 < L.notes.length && joined(j + 1)) run.push(++j);
+      chains.push(run);
     }
-    if (slides.length) {
-      if (glow) {
-        g.shadowColor = withAlpha(st.bar, 0.85);
-        g.shadowBlur = h * 0.95;
-      }
-      g.strokeStyle = st.bar;
-      g.lineWidth = h * 0.62;
-      g.lineCap = "round";
-      g.lineJoin = "round";
+    const trace = (run: number[]) => {
       g.beginPath();
-      for (const sl of slides) {
-        g.moveTo(sl.ax, sl.ay);
-        g.lineTo(sl.bx, sl.by);
-      }
-      g.stroke();
-      g.shadowBlur = 0;
-      g.shadowColor = "transparent";
-    }
-    for (let j = from; j < L.notes.length && L.notes[j].start < until; j++) {
-      const n = L.notes[j];
-      const y = this.tileY(n.lane);
-      const x0 = x(n.start);
-      const x1 = x(n.end);
-      // Every note is drawn alike (owner 2026-11-22: faded and violet bars confused); a note
-      // with no pitch has nothing to show.
-      if (n.kind === "unpitched" || !Number.isFinite(n.lane)) continue;
-      g.globalAlpha = 1;
-      this.tube(g, x0, x1, y, h, st.bar, glow);
-      // A straight core: the key to sing, not the recording's every wobble (owner 2026-11-22).
+      run.forEach((i, q) => {
+        const n = L.notes[i];
+        const x0 = x(n.start);
+        const x1 = x(n.end);
+        const r = Math.min(h / 2, Math.max(0, (x1 - x0) / 2));
+        const y = this.tileY(n.lane);
+        const a = x0 + r;
+        const b = Math.max(a, x1 - r);
+        if (q === 0) g.moveTo(a, y);
+        else {
+          const pn = L.notes[run[q - 1]];
+          const px = Math.max(x(pn.start) + Math.min(h / 2, (x(pn.end) - x(pn.start)) / 2), x(pn.end) - Math.min(h / 2, (x(pn.end) - x(pn.start)) / 2));
+          const py = this.tileY(pn.lane);
+          const dx = Math.max(1, a - px);
+          g.bezierCurveTo(px + dx * 0.5, py, a - dx * 0.5, y, a, y);
+        }
+        g.lineTo(b + 0.01, y);
+      });
+    };
+    g.lineCap = "round";
+    g.lineJoin = "round";
+    const layers: [number, string, number][] = [
+      [1, shade(st.bar, -0.45), 1], // rim (dark edge of the glass)
+      [0.72, st.bar, 1], // body
+      [0.4, shade(st.bar, 0.55), 1], // bright centre
+    ];
+    for (const run of chains) {
+      layers.forEach(([w, color, alpha], li) => {
+        if (li === 0 && glow) {
+          g.shadowColor = withAlpha(st.bar, 0.85);
+          g.shadowBlur = h * 0.95;
+        }
+        g.globalAlpha = alpha;
+        g.strokeStyle = color;
+        g.lineWidth = h * w;
+        trace(run);
+        g.stroke();
+        g.shadowBlur = 0;
+        g.shadowColor = "transparent";
+      });
+      // The white core, along the whole run.
       g.globalAlpha = 0.92;
       g.strokeStyle = "rgba(255,246,250,0.95)";
       g.lineWidth = Math.max(1.2, h * 0.16);
-      g.lineCap = "round";
-      g.beginPath();
-      g.moveTo(x0 + h * 0.45, y);
-      g.lineTo(Math.max(x0 + h * 0.45, x1 - h * 0.45), y);
+      trace(run);
       g.stroke();
-      // Specular line along the top of the glass.
+      // Specular line along the top of each flat part.
       g.globalAlpha = 0.4;
       g.strokeStyle = "#ffffff";
       g.lineWidth = Math.max(1, h * 0.09);
       g.beginPath();
-      g.moveTo(x0 + h * 0.5, y - h * 0.3);
-      g.lineTo(Math.max(x0 + h * 0.5, x1 - h * 0.5), y - h * 0.3);
-      g.stroke();
-      g.globalAlpha = 1;
-    }
-    if (slides.length) {
-      g.globalAlpha = 0.92;
-      g.strokeStyle = "rgba(255,246,250,0.95)";
-      g.lineWidth = Math.max(1.2, h * 0.16);
-      g.lineCap = "round";
-      g.beginPath();
-      for (const sl of slides) {
-        g.moveTo(sl.ax, sl.ay);
-        g.lineTo(sl.bx, sl.by);
+      for (const i of run) {
+        const n = L.notes[i];
+        const x0 = x(n.start);
+        const x1 = x(n.end);
+        const y = this.tileY(n.lane);
+        g.moveTo(x0 + h * 0.5, y - h * 0.3);
+        g.lineTo(Math.max(x0 + h * 0.5, x1 - h * 0.5), y - h * 0.3);
       }
       g.stroke();
       g.globalAlpha = 1;
