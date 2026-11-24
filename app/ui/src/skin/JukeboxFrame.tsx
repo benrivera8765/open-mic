@@ -25,14 +25,44 @@
 
 import type { ComponentChildren } from "preact";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
+import { Aquarium } from "./Aquarium";
 import { Bubbles } from "./Bubbles";
 import { CrestOrnament } from "./CrestOrnament";
-import { roomSvg, svgUrl, trimSvg, tubeSvg } from "./frame-art";
+import { FireTube } from "./FireTube";
+import { CabinetGL } from "./CabinetGL";
+import { PipeGL } from "./PipeGL";
+import { GPU_CABINETS, GPU_PIPES, type GpuCabinet, type GpuPipe } from "./shaders";
+import { type AccentName, type CabinetName, type FrameStyleName, GLASS_PIPES, type MetalName, pilasterChannels, roomSvg, svgUrl, trimSvg, tubeSvg } from "./frame-art";
 import { centreLinePath, computeFrameGeometry, type FrameGeometry } from "./geometry";
 import { Grille } from "./Grille";
+import { LavaLamp } from "./LavaLamp";
+import { Lightning } from "./Lightning";
 import { Medallion } from "./Medallion";
+import { OceanTube } from "./OceanTube";
 import { usePageVisible, type Motion } from "./motion";
-import { walnutTexture } from "./wood";
+import { useEffectFps } from "../lib/fxrate";
+import { FORGE_PALETTE, PearlGlow } from "./PearlGlow";
+import { forgeTexture, pearlTexture, woodTexture } from "./wood";
+
+/** The owner's customisation of the cabinet (settings ui.look, 2026-11-22). */
+export interface FrameLook {
+  /** Cabinet face: animated pearlescent glow, dark walnut, light maple, an aquarium, or a forge (Molten). */
+  cabinet: CabinetName;
+  /** Border round the screen: neon bubble tubes or pearl pilasters (photo 7). */
+  frame: FrameStyleName;
+  /** Bands between the chrome rings: silver chrome, red enamel or iron (the inner trim takes iron too). */
+  accents: AccentName;
+  /** Speaker lattice bars (the surround is the warm metal). */
+  lattice: "silver" | "gold" | "iron";
+  /** Thin silver (or iron) line inside the warm metal (plates, dial, grilles, medallions). */
+  innerTrim: boolean;
+  /** The warm metal of rims, rings, bezels and plates: gold chrome or bronze. */
+  metal?: MetalName;
+  /** Glow colour of lit plates, faders, focus rings and the speaker cloth. */
+  glow?: "pink" | "ember" | "aqua" | "violet" | "amber" | "lime";
+}
+
+export const DEFAULT_FRAME_LOOK: FrameLook = { cabinet: "walnut", frame: "neon", accents: "red", lattice: "gold", innerTrim: false, metal: "gold", glow: "pink" };
 
 export interface JukeboxFrameProps {
   /** Screen content (library, stage, ...). */
@@ -47,6 +77,14 @@ export interface JukeboxFrameProps {
   motion: Motion;
   /** Extra pause signal from the host, e.g. the native window is minimised or occluded. */
   paused?: boolean;
+  /** Cabinet customisation; the original walnut / neon / red / gold look when absent. */
+  look?: FrameLook;
+  /**
+   * GPU effects (D-272; Windows, settings ui.look.gpu_fx): the forge cabinet as flowing
+   * lava and the fire pipe drawn with WebGL. Each falls back to its 2D version by itself
+   * when WebGL is missing or lost.
+   */
+  gpu?: boolean;
   class?: string;
 }
 
@@ -73,10 +111,135 @@ const PALETTE: readonly (readonly [string, number])[] = [
   ["#ff3d8b", 1],
 ];
 
+/**
+ * The pilasters' pearl (owner, 2026-11-23: "use all the colors"): every jukebox colour
+ * in a pearly tint, pink, coral, orange, yellow, green, mint and lilac, drifting faster
+ * and in shorter bands than the neon tubes so the panel is always changing.
+ */
+const PEARL_PALETTE: readonly (readonly [string, number])[] = [
+  ["#ffa6cc", 0],
+  ["#ff8a80", 0.14],
+  ["#ffb870", 0.28],
+  ["#ffe58a", 0.42],
+  ["#b4f5a8", 0.56],
+  ["#aaf3ea", 0.7],
+  ["#c9b4ff", 0.85],
+  ["#ffa6cc", 1],
+];
+
+/** Period (px) and duration (ms) of the light drift for a frame style. */
+function lightTiming(g: FrameGeometry, style: FrameStyleName): { P: number; cycle: number } {
+  if (style === "pilaster") return { P: Math.round(g.lightPeriod * 0.55), cycle: 22_000 };
+  // Fire: short, quick bands of flame light racing along the pipe; water and data race too.
+  if (style === "fire") return { P: Math.round(g.lightPeriod * 0.4), cycle: 7_000 };
+  if (style === "water" || style === "data") return { P: Math.round(g.lightPeriod * 0.5), cycle: 9_000 };
+  if (style === "steam" || style === "diesel" || style === "aero") return { P: Math.round(g.lightPeriod * 0.6), cycle: 14_000 };
+  return { P: g.lightPeriod, cycle: LIGHT_CYCLE_MS };
+}
+
+/** The fire pipe's glow (the flame itself is FireTube.tsx): reds, oranges and gold. */
+const FIRE_PALETTE: readonly (readonly [string, number])[] = [
+  ["#ff3a0a", 0],
+  ["#ff7a12", 0.18],
+  ["#ffb42a", 0.34],
+  ["#ff5a0a", 0.5],
+  ["#c41c04", 0.68],
+  ["#ff8a1a", 0.84],
+  ["#ff3a0a", 1],
+];
+
+/** The lava lamp's liquid: deep ruby, magenta and violet, lit from below (the wax is drawn on top). */
+const LAVA_PALETTE: readonly (readonly [string, number])[] = [
+  ["#7a1050", 0],
+  ["#a8185a", 0.2],
+  ["#c8204a", 0.38],
+  ["#901a7a", 0.58],
+  ["#52127e", 0.78],
+  ["#7a1050", 1],
+];
+
+/** The lightning tube's water: deep, clear blues drifting gently (owner: darker than the first light blue). */
+const WATER_PALETTE: readonly (readonly [string, number])[] = [
+  ["#1858b8", 0],
+  ["#2470d4", 0.2],
+  ["#1450a8", 0.4],
+  ["#2c80e2", 0.6],
+  ["#1a5cc0", 0.8],
+  ["#1858b8", 1],
+];
+
+/** The ocean tube's water: tropical teal and sea blue. */
+const OCEAN_PALETTE: readonly (readonly [string, number])[] = [
+  ["#0a7ab0", 0],
+  ["#0e98c4", 0.2],
+  ["#13b4c8", 0.4],
+  ["#0b86b8", 0.6],
+  ["#0a68a0", 0.8],
+  ["#0a7ab0", 1],
+];
+
+type Palette = readonly (readonly [string, number])[];
+
+/** The glow under the GPU pipes' glass (D-275), by what is inside. */
+const GLASS_PALETTES: Partial<Record<FrameStyleName, Palette>> = {
+  water: [
+    ["#0a5ad8", 0],
+    ["#1a8ff0", 0.25],
+    ["#36c8ff", 0.5],
+    ["#0a6ae0", 0.75],
+    ["#0a5ad8", 1],
+  ],
+  steam: [
+    ["#c8ced6", 0],
+    ["#ffffff", 0.3],
+    ["#aab2bc", 0.55],
+    ["#f2ece2", 0.8],
+    ["#c8ced6", 1],
+  ],
+  data: [
+    ["#0a8ab0", 0],
+    ["#2ae0ff", 0.3],
+    ["#ffd23a", 0.45],
+    ["#1a6aff", 0.65],
+    ["#2ae0ff", 0.85],
+    ["#0a8ab0", 1],
+  ],
+  diesel: [
+    ["#ff8a1a", 0],
+    ["#a04010", 0.3],
+    ["#ffb040", 0.5],
+    ["#702a08", 0.8],
+    ["#ff8a1a", 1],
+  ],
+  aero: [
+    ["#3ad8ff", 0],
+    ["#7aff9a", 0.3],
+    ["#bff6ff", 0.55],
+    ["#4ab8ff", 0.8],
+    ["#3ad8ff", 1],
+  ],
+};
+
+function paletteFor(style: FrameStyleName): Palette {
+  const glass = GLASS_PALETTES[style];
+  if (glass) return glass;
+  return style === "pilaster"
+    ? PEARL_PALETTE
+    : style === "lava"
+      ? LAVA_PALETTE
+      : style === "light"
+        ? WATER_PALETTE
+        : style === "ocean"
+          ? OCEAN_PALETTE
+          : style === "fire"
+            ? FIRE_PALETTE
+            : PALETTE;
+}
+
 /** Repeating palette gradient with period `period` px, shifted by `phase` px. */
-export function paletteGradient(angleDeg: number, period: number, phase: number): string {
+export function paletteGradient(angleDeg: number, period: number, phase: number, palette: readonly (readonly [string, number])[] = PALETTE): string {
   const ph = ((phase % period) + period) % period;
-  const stops = PALETTE.map(([c, f]) => `${c} ${(f * period - ph).toFixed(1)}px`).join(", ");
+  const stops = palette.map(([c, f]) => `${c} ${(f * period - ph).toFixed(1)}px`).join(", ");
   return `repeating-linear-gradient(${angleDeg}deg, ${stops})`;
 }
 
@@ -123,8 +286,9 @@ function columnMask(g: FrameGeometry): string {
 }
 
 /** The light for the left half of the frame (rendered twice: plain and mirrored). */
-function LightHalf({ g, mirrored }: { g: FrameGeometry; mirrored: boolean }) {
-  const P = g.lightPeriod;
+function LightHalf({ g, mirrored, style }: { g: FrameGeometry; mirrored: boolean; style: FrameStyleName }) {
+  const pal = paletteFor(style);
+  const P = lightTiming(g, style).P;
   const half = g.width / 2;
   const B = bloomOf(g);
   const colW = g.margin + g.tube + B;
@@ -144,7 +308,7 @@ function LightHalf({ g, mirrored }: { g: FrameGeometry; mirrored: boolean }) {
         <div
           class="jk-light-strip"
           data-jk-drift="x"
-          style={`right:${px(-P)};top:0;width:${px(half + P)};height:100%;background-image:${paletteGradient(270, P, 0)}`}
+          style={`right:${px(-P)};top:0;width:${px(half + P)};height:100%;background-image:${paletteGradient(270, P, 0, pal)}`}
         />
       </div>
       <div
@@ -154,7 +318,7 @@ function LightHalf({ g, mirrored }: { g: FrameGeometry; mirrored: boolean }) {
         <div
           class="jk-light-strip"
           data-jk-drift="y"
-          style={`left:0;top:${px(-P)};width:100%;height:${px(colH + P)};background-image:${paletteGradient(180, P, shoulderPhase)}`}
+          style={`left:0;top:${px(-P)};width:100%;height:${px(colH + P)};background-image:${paletteGradient(180, P, shoulderPhase, pal)}`}
         />
       </div>
     </div>
@@ -191,16 +355,27 @@ function sameMeasure(a: Measured | null, b: Measured): boolean {
   );
 }
 
-export function JukeboxFrame({ children, console: consoleContent, crest, bubbles, motion, paused = false, class: className }: JukeboxFrameProps) {
+export function JukeboxFrame({ children, console: consoleContent, crest, bubbles, motion, paused = false, look = DEFAULT_FRAME_LOOK, gpu = false, class: className }: JukeboxFrameProps) {
+  const pilaster = look.frame === "pilaster";
   const rootRef = useRef<HTMLDivElement>(null);
   const screenRef = useRef<HTMLElement>(null);
   const consoleRef = useRef<HTMLElement>(null);
   const [measured, setMeasured] = useState<Measured | null>(null);
+  /** 0 = standard rates; otherwise the frame rate setting (D-274). */
+  const fxCap = useEffectFps(0);
+  /** A GPU effect that could not start (no WebGL, lost context): its 2D version from then on. */
+  const [lavaFailed, setLavaFailed] = useState(false);
+  const [fireFailed, setFireFailed] = useState(false);
+  const gpuCabinet = (GPU_CABINETS as readonly string[]).includes(look.cabinet) ? (look.cabinet as GpuCabinet) : null;
+  const gpuPipe = (GPU_PIPES as readonly string[]).includes(look.frame) ? (look.frame as GpuPipe) : null;
+  const glassPipe = !!GLASS_PIPES[look.frame];
   const visible = usePageVisible();
   const animate = motion === "full";
   const running = visible && !paused;
   /** Drift phase (0..1) carried across re-creations of the animations. */
   const phaseRef = useRef(0);
+  /** Duration of the drift animations now running (it differs per frame style). */
+  const cycleRef = useRef(LIGHT_CYCLE_MS);
   const animsRef = useRef<Animation[]>([]);
 
   // Measure the CSS grid and derive the decoration geometry.
@@ -232,6 +407,8 @@ export function JukeboxFrame({ children, console: consoleContent, crest, bubbles
       if (!raf) raf = requestAnimationFrame(measure);
     });
     ro.observe(root);
+    // The screen changes size on its own when the frame style widens the side columns.
+    ro.observe(screen);
     return () => {
       ro.disconnect();
       if (raf) cancelAnimationFrame(raf);
@@ -245,12 +422,13 @@ export function JukeboxFrame({ children, console: consoleContent, crest, bubbles
   useEffect(() => {
     const root = rootRef.current;
     for (const a of animsRef.current) {
-      if (a.currentTime !== null) phaseRef.current = (Number(a.currentTime) % LIGHT_CYCLE_MS) / LIGHT_CYCLE_MS;
+      if (a.currentTime !== null) phaseRef.current = (Number(a.currentTime) % cycleRef.current) / cycleRef.current;
       a.cancel();
     }
     animsRef.current = [];
     if (!root || !g || !animate) return;
-    const P = g.lightPeriod;
+    const { P, cycle } = lightTiming(g, look.frame);
+    cycleRef.current = cycle;
     const strips = root.querySelectorAll<HTMLElement>("[data-jk-drift]");
     const anims: Animation[] = [];
     strips.forEach((el) => {
@@ -258,22 +436,22 @@ export function JukeboxFrame({ children, console: consoleContent, crest, bubbles
       const to = axis === "x" ? `translate3d(${-P}px,0,0)` : `translate3d(0,${P}px,0)`;
       if (typeof el.animate !== "function") return;
       const anim = el.animate([{ transform: "translate3d(0,0,0)" }, { transform: to }], {
-        duration: LIGHT_CYCLE_MS,
+        duration: cycle,
         iterations: Infinity,
-        easing: `steps(${Math.round((LIGHT_CYCLE_MS / 1000) * DRIFT_FPS)})`,
+        easing: fxCap > 0 ? "linear" : `steps(${Math.round((cycle / 1000) * DRIFT_FPS)})`,
       });
-      anim.currentTime = phaseRef.current * LIGHT_CYCLE_MS;
+      anim.currentTime = phaseRef.current * cycle;
       anims.push(anim);
     });
     animsRef.current = anims;
     return () => {
       for (const a of anims) {
-        if (a.currentTime !== null) phaseRef.current = (Number(a.currentTime) % LIGHT_CYCLE_MS) / LIGHT_CYCLE_MS;
+        if (a.currentTime !== null) phaseRef.current = (Number(a.currentTime) % cycle) / cycle;
         a.cancel();
       }
       animsRef.current = [];
     };
-  }, [g, animate]);
+  }, [g, animate, look.frame, fxCap]);
 
   // Pause / resume with visibility and the host's paused flag.
   useEffect(() => {
@@ -287,11 +465,29 @@ export function JukeboxFrame({ children, console: consoleContent, crest, bubbles
   const crestRect = g && measured ? crestBox(g, measured.screenTop) : null;
   // Static artwork as SVG images, rendered once per window size (frame-art.ts).
   const art = useMemo(
-    () => (g && crestRect ? { room: svgUrl(roomSvg(g)), tubes: svgUrl(tubeSvg(g)), trim: svgUrl(trimSvg(g, crestRect.w)) } : null),
-    [g, measured], // crestRect is derived from these two
+    () =>
+      g && crestRect
+        ? {
+            room: svgUrl(roomSvg(g, glassPipe ? "fire" : look.frame === "light" || look.frame === "ocean")),
+            tubes: svgUrl(tubeSvg(g, { style: look.frame })),
+            trim: svgUrl(trimSvg(g, crestRect.w, { style: look.frame, accents: look.accents, cabinet: look.cabinet, metal: look.metal })),
+          }
+        : null,
+    [g, measured, look.frame, look.accents, look.cabinet, look.metal], // crestRect is derived from g and measured
   );
-  // Generated once per page (about 20 ms), then cached.
-  const wood = useMemo(() => walnutTexture(), []);
+  // Generated once per page per finish (about 20-60 ms), then cached.
+  const wood = useMemo(() => (look.cabinet === "walnut" || look.cabinet === "maple" ? woodTexture(look.cabinet) : null), [look.cabinet]);
+  const pearl = useMemo(() => (look.cabinet === "pearl" ? pearlTexture() : null), [look.cabinet]);
+  const forge = useMemo(() => (look.cabinet === "forge" ? forgeTexture() : null), [look.cabinet]);
+  const glow = look.glow ?? "pink";
+  const metal = look.metal ?? "gold";
+  // Small bubbles: the pilaster's two tubes, or spread through the lightning tube's water.
+  // ... and, without the GPU, through the water and Aero pipes (their 2D look).
+  const lightning = look.frame === "light" || look.frame === "ocean" || (!(gpu && !fireFailed) && (look.frame === "water" || look.frame === "aero"));
+  const channels = useMemo(
+    () => (g && pilaster ? pilasterChannels(g) : g && lightning ? { offset: g.tube * 0.2, width: Math.max(4, g.tube * 0.12) } : null),
+    [g, pilaster, lightning],
+  );
   const P = g?.lightPeriod ?? 1000;
   // Diamond size follows the console height, so the lattice scales with the window.
   const grilleCell = measured ? Math.max(16, Math.min(64, measured.consoleH * 0.17)) : 26;
@@ -302,19 +498,55 @@ export function JukeboxFrame({ children, console: consoleContent, crest, bubbles
       class={`jk-frame${className ? ` ${className}` : ""}`}
       data-jk-motion={motion}
       data-jk-running={running ? "true" : "false"}
+      data-jk-cabinet={look.cabinet}
+      data-jk-frame-style={look.frame}
+      data-jk-lattice={look.lattice}
+      data-jk-trim={look.innerTrim ? "silver" : "none"}
+      data-jk-metal={metal}
+      data-jk-accents={look.accents}
+      data-jk-glow={glow}
+      data-jk-gpu={gpu && !lavaFailed ? "on" : "off"}
       style={g ? `--jk-tube:${px(T)};--jk-light-period:${px(P)}` : undefined}
     >
       <div class="jk-frame-grid">
-        <div class="jk-frame-wood" aria-hidden="true" style={wood ? `--jk-wood:${wood}` : undefined} />
+        <div class="jk-frame-wood" aria-hidden="true" style={wood ? `--jk-wood:${wood}` : undefined}>
+          {look.cabinet === "pearl" && (
+            <>
+              <PearlGlow class="jk-pearl-glow" running={running} animate={animate} />
+              <div class="jk-pearl-sheen" style={pearl ? `--jk-pearl:${pearl}` : undefined} />
+            </>
+          )}
+          {gpuCabinet && gpu && !lavaFailed && g && (
+            <CabinetGL kind={gpuCabinet} class="jk-lava" width={g.width} height={g.height} running={running} animate={animate} onFail={() => setLavaFailed(true)} />
+          )}
+          {look.cabinet === "forge" && !(gpu && !lavaFailed) && (
+            <>
+              <PearlGlow class="jk-pearl-glow" running={running} animate={animate} palette={FORGE_PALETTE} cycleMs={26_000} />
+              <div class="jk-forge-crust" style={forge ? `--jk-forge:${forge}` : undefined} />
+            </>
+          )}
+          {look.cabinet === "aquarium" && g && measured && (
+            <Aquarium class="jk-aquarium" running={running} animate={animate} width={g.width} band={measured.consoleH * 1.04} />
+          )}
+        </div>
         {art && <img class="jk-frame-layer jk-frame-room" src={art.room} alt="" aria-hidden="true" draggable={false} />}
         {g && (
           <div class="jk-frame-layer jk-light" aria-hidden="true">
-            <LightHalf g={g} mirrored={false} />
-            <LightHalf g={g} mirrored={true} />
+            <LightHalf g={g} mirrored={false} style={look.frame} />
+            <LightHalf g={g} mirrored={true} style={look.frame} />
           </div>
         )}
         {art && <img class="jk-frame-layer jk-frame-tubes" src={art.tubes} alt="" aria-hidden="true" draggable={false} />}
-        {g && bubbles && animate && <Bubbles geometry={g} running={running} class="jk-frame-layer jk-bubbles" />}
+        {g && bubbles && animate && (look.frame === "neon" || pilaster || lightning) && (
+          <Bubbles geometry={g} running={running} channels={channels} class="jk-frame-layer jk-bubbles" />
+        )}
+        {g && look.frame === "lava" && <LavaLamp geometry={g} running={running && animate} class="jk-frame-layer jk-bubbles" />}
+        {g && look.frame === "light" && <Lightning geometry={g} running={running && animate} class="jk-frame-layer jk-bubbles" />}
+        {g && look.frame === "ocean" && <OceanTube geometry={g} running={running && animate} class="jk-frame-layer jk-bubbles" />}
+        {g && gpuPipe && gpu && !fireFailed && (
+          <PipeGL kind={gpuPipe} geometry={g} running={running && animate} onFail={() => setFireFailed(true)} class="jk-frame-layer jk-bubbles" />
+        )}
+        {g && look.frame === "fire" && !(gpu && !fireFailed) && <FireTube geometry={g} running={running && animate} class="jk-frame-layer jk-bubbles" />}
         {art && <img class="jk-frame-layer jk-frame-trim" src={art.trim} alt="" aria-hidden="true" draggable={false} />}
         <section ref={screenRef} class="jk-screen">
           <div class="jk-screen-glass">
@@ -329,13 +561,17 @@ export function JukeboxFrame({ children, console: consoleContent, crest, bubbles
         <footer ref={consoleRef} class="jk-console">
           <div class="jk-console-rail" aria-hidden="true" />
           <div class="jk-console-wing jk-console-wing--left" aria-hidden="true">
-            <Grille class="jk-console-grille" cell={grilleCell} />
-            <Medallion class="jk-console-medallion" />
+            <div class="jk-console-trim">
+              <Grille class="jk-console-grille" cell={grilleCell} bars={look.lattice} cloth={glow} />
+            </div>
+            <Medallion class="jk-console-medallion" trim={look.innerTrim} metal={metal} trimFinish={look.accents === "iron" || look.accents === "copper" ? look.accents : "silver"} enamel={glow} />
           </div>
           <div class="jk-console-slot">{consoleContent}</div>
           <div class="jk-console-wing jk-console-wing--right" aria-hidden="true">
-            <Grille class="jk-console-grille" cell={grilleCell} />
-            <Medallion class="jk-console-medallion" />
+            <div class="jk-console-trim">
+              <Grille class="jk-console-grille" cell={grilleCell} bars={look.lattice} cloth={glow} />
+            </div>
+            <Medallion class="jk-console-medallion" trim={look.innerTrim} metal={metal} trimFinish={look.accents === "iron" || look.accents === "copper" ? look.accents : "silver"} enamel={glow} />
           </div>
         </footer>
         {crestRect && (

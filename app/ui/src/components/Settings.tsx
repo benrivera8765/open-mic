@@ -4,9 +4,9 @@
 // sit, the words and lyrics, the simple lane, how strict, the octave, the timing), timing
 // offsets per output device, and information about this computer.
 // Saved by the core into <root>/Settings/settings.json.
-import type { KeyModeSetting, LyricsDisplay, LyricsMotion, MotionSetting, OctaveMode, RigCheckReport, RigCheckStep, Strictness } from "../api/types";
+import type { KeyModeSetting, LookSettings, LyricsDisplay, LyricsMotion, MotionSetting, OctaveMode, RigCheckReport, RigCheckStep, Strictness } from "../api/types";
 import { errorMessage } from "../api/client";
-import { DEFAULT_APP_SETTINGS, DEFAULT_PRACTICE_SETTINGS } from "../api/defaults";
+import { DEFAULT_APP_SETTINGS, DEFAULT_PRACTICE_SETTINGS, lookOf, type Theme, THEMES, themeState } from "../api/defaults";
 import { setLatency } from "../state/practice";
 import { useEffect, useState } from "preact/hooks";
 import { formatOffset } from "../lib/format";
@@ -101,6 +101,214 @@ function RigCheck() {
   );
 }
 
+/** Changes one jukebox customisation (ui.look; the core keeps it as it is). */
+function setLook(changes: Partial<LookSettings>): void {
+  changeSettings({ ui: { look: changes } });
+}
+
+/** Applies a theme: every look option and the lyric colours at once (again = reset to it). */
+export function applyTheme(t: Theme): void {
+  changeSettings({ ui: { look: { ...t.look, theme: t.id }, colors: { ...t.colors } } });
+}
+
+/**
+ * Themes (owner, 2026-11-23): one click sets every part of the look; each part can then
+ * be changed on its own below. Clicking the theme in use again resets it to the preset.
+ */
+function Themes() {
+  const ui = useApp((s) => s.settings?.ui);
+  if (!ui) return null;
+  const { theme, modified } = themeState(ui);
+  return (
+    <Section title="Themes">
+      <div class="themes" role="group" aria-label="Themes">
+        {THEMES.map((t) => {
+          const active = theme?.id === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              class={`theme-card${active ? " theme-card--active" : ""}`}
+              aria-pressed={active}
+              onClick={() => applyTheme(t)}
+              title={active && modified ? `Reset ${t.name} (undo your changes to it)` : `Use the ${t.name} theme`}
+            >
+              <span class="theme-card__swatch" aria-hidden="true" style={`background:linear-gradient(135deg, ${t.swatch[0]} 0%, ${t.swatch[0]} 33%, ${t.swatch[1]} 33%, ${t.swatch[1]} 66%, ${t.swatch[2]} 66%)`} />
+              <span class="theme-card__name">{t.name}</span>
+              <span class="theme-card__blurb">{t.blurb}</span>
+              {active && <span class="theme-card__state">{modified ? "In use, changed · click to reset" : "In use"}</span>}
+            </button>
+          );
+        })}
+      </div>
+      <p class="hint">
+        A theme sets the cabinet, screen border, metals, badge, glow, lane and lyric colours and effects together. Change any of them below afterwards; click the theme again to put it back as it was.
+        {!ui.skin && " Turn on the jukebox look above to see the cabinet and border."}
+      </p>
+    </Section>
+  );
+}
+
+/** The owner's jukebox customisation (2026-11-22): cabinet, screen border, chrome, badge, lattice, trim. */
+function JukeboxCustomisation() {
+  const ui = useApp((s) => s.settings?.ui);
+  const platform = useApp((s) => s.info?.platform ?? "windows");
+  if (!ui) return null;
+  const look = lookOf(ui);
+  const off = !ui.skin;
+  const { theme } = themeState(ui);
+  return (
+    <Section title="Customize the jukebox">
+      <Select<LookSettings["cabinet"]>
+        label="Cabinet"
+        value={look.cabinet}
+        disabled={off}
+        options={[
+          { value: "pearl", label: "Pearlescent glow (slowly turning warm lights)" },
+          { value: "walnut", label: "Dark walnut" },
+          { value: "maple", label: "Light maple" },
+          { value: "aquarium", label: "Aquarium (fish, plants and bubbles)" },
+          { value: "forge", label: "Forge (flowing lava)" },
+          { value: "ocean", label: "Ocean (rolling waves)" },
+          { value: "brass", label: "Steampunk brass (riveted plates, turning gears, steam)" },
+          { value: "cyber", label: "Cyberpunk city (neon towers, billboards, rain, wet street)" },
+          { value: "deco", label: "Dieselpunk deco (gunmetal, sunburst, searchlights, smoke)" },
+          { value: "aero", label: "Frutiger Aero sky (clouds, bubbles, green hills)" },
+        ]}
+        onChange={(v) => setLook({ cabinet: v })}
+      />
+      <Select<LookSettings["frame"]>
+        label="Screen border"
+        value={look.frame}
+        disabled={off}
+        options={[
+          { value: "neon", label: "Neon bubble tubes" },
+          { value: "pilaster", label: "Pearl pilasters with chrome rings and two small bubble tubes" },
+          { value: "lava", label: "Lava lamp" },
+          { value: "light", label: "Lightning tube (blue water, purple lightning)" },
+          { value: "ocean", label: "Ocean tube (fish, kelp, coral; goes with the aquarium)" },
+          { value: "fire", label: "Fire pipe (one long flame, no water)" },
+          { value: "water", label: "Water pipe (blue water coursing through)" },
+          { value: "steam", label: "Steam pipe (white steam)" },
+          { value: "data", label: "Data pipe (neon, data racing both ways)" },
+          { value: "diesel", label: "Diesel pipe (exhaust, pulses and smoke)" },
+          { value: "aero", label: "Aero pipe (glossy aqua with bubbles)" },
+        ]}
+        onChange={(v) => setLook({ frame: v })}
+      />
+      <Select<LookSettings["accents"]>
+        label="Bands between the chrome rings"
+        value={look.accents}
+        disabled={off}
+        options={[
+          { value: "silver", label: "Silver chrome" },
+          { value: "red", label: "Red enamel" },
+          { value: "iron", label: "Iron (the inner trim turns iron too)" },
+          { value: "copper", label: "Copper (the inner trim turns copper too)" },
+        ]}
+        onChange={(v) => setLook({ accents: v })}
+      />
+      <Select<LookSettings["metal"]>
+        label="Metal"
+        value={look.metal}
+        disabled={off}
+        options={[
+          { value: "gold", label: "Gold chrome" },
+          { value: "bronze", label: "Bronze" },
+          { value: "chrome", label: "Chrome" },
+          { value: "brass", label: "Brass" },
+          { value: "gunmetal", label: "Gunmetal" },
+        ]}
+        onChange={(v) => setLook({ metal: v })}
+      />
+      <Select<LookSettings["glow"]>
+        label="Glow colour"
+        value={look.glow}
+        options={[
+          { value: "pink", label: "Neon pink (red speaker cloth)" },
+          { value: "ember", label: "Ember orange" },
+          { value: "aqua", label: "Aqua" },
+          { value: "violet", label: "Violet" },
+          { value: "amber", label: "Amber" },
+          { value: "lime", label: "Lime green" },
+        ]}
+        onChange={(v) => setLook({ glow: v })}
+      />
+      <Select<LookSettings["badge_field"]>
+        label="Badge"
+        value={look.badge_field}
+        disabled={off}
+        options={[
+          { value: "lapis", label: "Lapis lazuli" },
+          { value: "red", label: "Red enamel" },
+          { value: "silver", label: "Silver chrome" },
+          { value: "magma", label: "Magma (glowing cracks)" },
+          { value: "copper", label: "Riveted copper" },
+          { value: "carbon", label: "Carbon fibre" },
+          { value: "glass", label: "Glossy aqua glass" },
+        ]}
+        onChange={(v) => setLook({ badge_field: v })}
+      />
+      <Select<LookSettings["badge_rim"]>
+        label="Badge frame"
+        value={look.badge_rim}
+        disabled={off}
+        options={[
+          { value: "lapis", label: "Lapis lazuli with a thin metal edge" },
+          { value: "gold", label: "Chrome (in the metal chosen above)" },
+        ]}
+        onChange={(v) => setLook({ badge_rim: v })}
+      />
+      <Select<LookSettings["badge_text"]>
+        label="Badge lettering"
+        value={look.badge_text}
+        disabled={off}
+        options={[
+          { value: "gold", label: "Chrome (in the metal chosen above)" },
+          { value: "cream", label: "Cream" },
+          { value: "ember", label: "Ember (glowing)" },
+          { value: "neon", label: "Neon (glowing cyan and yellow)" },
+          { value: "white", label: "Glossy white" },
+        ]}
+        onChange={(v) => setLook({ badge_text: v })}
+      />
+      <Select<LookSettings["lattice"]>
+        label="Speaker lattice"
+        value={look.lattice}
+        disabled={off}
+        options={[
+          { value: "silver", label: "Silver (metal surround)" },
+          { value: "gold", label: "Gold" },
+          { value: "iron", label: "Iron" },
+        ]}
+        onChange={(v) => setLook({ lattice: v })}
+      />
+      <Toggle
+        label="Inner trim"
+        checked={look.inner_trim}
+        disabled={off}
+        onChange={(v) => setLook({ inner_trim: v })}
+        hint="A thin silver chrome line (iron with iron bands) inside the gold or bronze of the buttons, the key dial, the speaker grilles and the medallions."
+      />
+      <Toggle
+        label="GPU lava and fire (Windows)"
+        checked={look.gpu_fx}
+        disabled={off || platform !== "windows"}
+        onChange={(v) => setLook({ gpu_fx: v })}
+        hint={
+          platform === "windows"
+            ? "The Forge cabinet as flowing lava and the Fire pipe's flame, drawn by the graphics card. Off: lighter versions for older computers."
+            : "Windows only. This Mac draws the lighter versions."
+        }
+      />
+      <button type="button" class="button button--small" disabled={off} onClick={() => applyTheme(theme ?? THEMES[0])}>
+        Reset to {(theme ?? THEMES[0]).name}
+      </button>
+      {off && <p class="hint">Turn on the jukebox look above to see these.</p>}
+    </Section>
+  );
+}
+
 /** Practice mode (WO2, APP_API 12.7): per computer, saved in settings.json on the stick. */
 function PracticeSettings() {
   const settings = useApp((s) => s.settings);
@@ -109,6 +317,72 @@ function PracticeSettings() {
   const pr = { ...DEFAULT_PRACTICE_SETTINGS, ...(settings.practice ?? {}) };
   return (
     <Section title="Practice">
+      <Toggle
+        label="Watch only follows the singer"
+        checked={lookOf(settings.ui).watch_follow}
+        onChange={(v) => setLook({ watch_follow: v })}
+        hint="With no microphone (Watch only), a perfect voice rides the melody: the marker, its trail and the lit notes of a flawless take, so it looks right on video."
+      />
+      <Toggle
+        label="Celebrate perfect phrases"
+        checked={lookOf(settings.ui).celebrate}
+        onChange={(v) => setLook({ celebrate: v })}
+        hint="A burst of colour and a gold PERFECT! when a phrase is sung on pitch (and in Watch only when it follows the singer). Off when motion is reduced."
+      />
+      <Select<LookSettings["celebration"]>
+        label="Celebration"
+        value={lookOf(settings.ui).celebration}
+        disabled={!lookOf(settings.ui).celebrate}
+        options={[
+          { value: "mix", label: "Mix (a different one each time)" },
+          { value: "starburst", label: "Starburst" },
+          { value: "fireworks", label: "Fireworks" },
+          { value: "rings", label: "Neon rings" },
+          { value: "bloom", label: "Colour bloom and confetti" },
+          { value: "inferno", label: "Inferno (a blaze of flames)" },
+        ]}
+        onChange={(v) => setLook({ celebration: v })}
+      />
+      <Select<LookSettings["celebrate_freq"]>
+        label="How often"
+        value={lookOf(settings.ui).celebrate_freq}
+        disabled={!lookOf(settings.ui).celebrate}
+        options={[
+          { value: "often", label: "More often (nearly perfect phrases count too)" },
+          { value: "every", label: "Every perfect phrase" },
+          { value: "second", label: "Every second perfect phrase" },
+          { value: "third", label: "Every third perfect phrase" },
+          { value: "rare", label: "Now and then (at most once every 30 seconds)" },
+        ]}
+        onChange={(v) => setLook({ celebrate_freq: v })}
+      />
+      <Select<LookSettings["pitch_fx"]>
+        label="On-pitch effect"
+        value={lookOf(settings.ui).pitch_fx}
+        options={[
+          { value: "sparks", label: "Sparks" },
+          { value: "rings", label: "Halo rings" },
+          { value: "stars", label: "Twinkling stars" },
+          { value: "flames", label: "Flames" },
+          { value: "notes", label: "Music notes" },
+          { value: "off", label: "Off" },
+        ]}
+        onChange={(v) => setLook({ pitch_fx: v })}
+      />
+      <Select<LookSettings["lane_bars"]>
+        label="Note bars"
+        value={lookOf(settings.ui).lane_bars}
+        options={[
+          { value: "pink", label: "Neon pink" },
+          { value: "ember", label: "Ember orange" },
+          { value: "aqua", label: "Aqua" },
+          { value: "violet", label: "Violet" },
+          { value: "amber", label: "Amber" },
+          { value: "lime", label: "Lime green" },
+        ]}
+        onChange={(v) => setLook({ lane_bars: v })}
+      />
+      <p class="hint">Comes off the pitch cursor while you are on pitch (and from the voice that follows the singer in Watch only). Off when motion is reduced.</p>
       <Select<"left" | "right">
         label="Piano keys"
         value={pr.piano_side}
@@ -195,7 +469,24 @@ export function Settings() {
           onChange={(v) => changeSettings({ ui: { motion: v } })}
         />
         <p class="hint">The lyrics always show where the song is (the colour wipe, or the moving ticker); reducing motion turns off the decorative animation.</p>
+        <Select<LookSettings["fx_fps"]>
+          label="Frame rate (Windows)"
+          value={lookOf(ui).fx_fps}
+          disabled={info.platform !== "windows"}
+          options={[
+            { value: "standard", label: "Standard (lightest: effects 8-30 fps, lyrics and notes 60 fps)" },
+            { value: "60", label: "Up to 60 fps" },
+            { value: "120", label: "Up to 120 fps" },
+            { value: "240", label: "Up to 240 fps (as fast as the screen refreshes)" },
+          ]}
+          onChange={(v) => setLook({ fx_fps: v })}
+        />
+        <p class="hint">{info.platform === "windows" ? "Bubbles, lava, fire, lightning, fish, the drifting light, celebrations, the notes lane and the lyrics. Higher rates look smoother on a fast screen and use more power." : "Windows only. This Mac keeps the standard rates."}</p>
       </Section>
+
+      <Themes />
+
+      <JukeboxCustomisation />
 
       <Section title="Lyrics">
         <Select<LyricsDisplay>

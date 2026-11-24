@@ -22,7 +22,7 @@
   --fg: #f6efd9;
   --muted: #b9afc6;
   --line: #43384f;
-  --accent: #ff3d8b;
+  --accent: var(--jk-pink);
   --accent-fg: #14101c;
   --focus: #7dffd8;
   --ok: #4dff6a;
@@ -94,9 +94,65 @@
 }
 
 .app-skin .panel {
-  background: linear-gradient(180deg, rgba(42, 32, 51, 0.92), rgba(24, 18, 31, 0.92));
-  border-color: #4a3e56;
+  background: linear-gradient(180deg, rgba(var(--jk-panel-a, 42, 32, 51), 0.92), rgba(var(--jk-panel-b, 24, 18, 31), 0.92));
+  border-color: var(--jk-panel-line, #4a3e56);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* Panels take the theme's glow: smoky warm dark for ember, deep sea for aqua. */
+[data-jk-glow="ember"] {
+  --jk-panel-a: 50, 30, 24;
+  --jk-panel-b: 26, 15, 11;
+  --jk-panel-line: #5e4034;
+}
+
+[data-jk-glow="aqua"] {
+  --jk-panel-a: 24, 40, 56;
+  --jk-panel-b: 12, 22, 34;
+  --jk-panel-line: #34536e;
+}
+
+[data-jk-glow="amber"] {
+  --jk-panel-a: 46, 38, 24;
+  --jk-panel-b: 24, 19, 11;
+  --jk-panel-line: #5e5034;
+}
+
+[data-jk-glow="lime"] {
+  --jk-panel-a: 24, 44, 34;
+  --jk-panel-b: 12, 24, 18;
+  --jk-panel-line: #36604a;
+}
+
+[data-jk-glow="violet"] {
+  --jk-panel-a: 40, 30, 62;
+  --jk-panel-b: 20, 15, 36;
+  --jk-panel-line: #4e3e72;
+}
+
+/* Theme cards on the skin: black glass with the glow round the one in use. */
+.app-skin .theme-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(0, 0, 0, 0.25));
+  border-color: rgba(255, 255, 255, 0.14);
+  color: #f5f2ea;
+}
+
+.app-skin .theme-card--active {
+  border-color: var(--jk-pink);
+  box-shadow:
+    0 0 0 1px var(--jk-pink),
+    0 0 14px rgba(var(--jk-glow-rgb), 0.45);
+}
+
+.app-skin .theme-card__name {
+  font-family: var(--jk-font-display);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.app-skin .theme-card__state {
+  color: var(--jk-pink);
 }
 
 /* ---------- plain buttons as small plates (black glass in a chrome rim) ---------- */
@@ -127,10 +183,10 @@
 :root[data-skin="on"] .button--primary,
 :root[data-skin="on"] .button--primary:hover:not(:disabled) {
   background:
-    radial-gradient(ellipse 90% 80% at 50% 115%, rgba(255, 61, 139, 0.65), rgba(255, 61, 139, 0) 70%),
+    radial-gradient(ellipse 90% 80% at 50% 115%, rgba(var(--jk-glow-rgb),  0.65), rgba(var(--jk-glow-rgb),  0) 70%),
     linear-gradient(180deg, #3a1428 0%, #1c0712 50%, #0e0308 100%);
   color: #fff3f8;
-  text-shadow: 0 0 5px rgba(255, 61, 139, 0.95);
+  text-shadow: 0 0 5px rgba(var(--jk-glow-rgb),  0.95);
   filter: none;
 }
 
@@ -362,7 +418,7 @@
   font-size: clamp(16px, 2.4vh, 52px);
   font-weight: 500;
   color: var(--jk-cream);
-  text-shadow: 0 0 10px rgba(255, 61, 139, 0.35);
+  text-shadow: 0 0 10px rgba(var(--jk-glow-rgb),  0.35);
 }
 
 .deleted--skin .deleted__summary {
@@ -522,7 +578,7 @@
   padding: clamp(18px, 2.8vh, 56px) clamp(20px, 2.2vw, 64px) clamp(16px, 2.4vh, 48px);
   border-radius: 11px;
   background:
-    radial-gradient(ellipse 70% 55% at 50% 0%, rgba(255, 61, 139, 0.14), rgba(255, 61, 139, 0) 70%),
+    radial-gradient(ellipse 70% 55% at 50% 0%, rgba(var(--jk-glow-rgb),  0.14), rgba(var(--jk-glow-rgb),  0) 70%),
     var(--jk-glass-face);
   box-shadow:
     inset 0 2px 10px rgba(0, 0, 0, 0.9),
@@ -551,7 +607,7 @@
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: #fffaf0;
-  text-shadow: 0 0 10px rgba(255, 61, 139, 0.45);
+  text-shadow: 0 0 10px rgba(var(--jk-glow-rgb),  0.45);
 }
 
 :root[data-skin="on"] .confirm__body {
@@ -611,7 +667,7 @@
   font-family: var(--jk-font-display);
   font-size: clamp(12px, 1.7vh, 37px);
   letter-spacing: 0.05em;
-  color: #ff8fb8;
+  color: var(--jk-glow-soft, #ff8fb8);
 }
 
 .app-skin .stage__key,

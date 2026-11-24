@@ -108,6 +108,11 @@ export class BubbleField {
     this.nextSpawn.length = paths.length;
   }
 
+  /** Removes every bubble (e.g. when the tubes change shape). */
+  clear(): void {
+    for (const b of this.pool) b.alive = false;
+  }
+
   /** Number of live bubbles. */
   get count(): number {
     let n = 0;

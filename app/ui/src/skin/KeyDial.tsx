@@ -315,6 +315,8 @@ export function KeyDial({
       >
         <div class="jk-dial-chrome" />
         <div class="jk-dial-knurl" style={`transform: rotate(${angle}deg)`} />
+        {/* Thin silver chrome ring inside the gold knurling (shown with the frame's silver trim). */}
+        <div class="jk-dial-trim" />
         <div class="jk-dial-face">
           <svg class="jk-dial-ticks" viewBox="-50 -50 100 100" aria-hidden="true">
             {arc && <path class="jk-dial-arc" d={arc} />}

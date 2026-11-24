@@ -25,3 +25,6 @@ test-songs/
 *.log
 .DS_Store
 ._*
+
+# Vite dependency cache
+.vite/

@@ -45,12 +45,40 @@
     --fg: #ece8f2;
     --muted: #a8a2b4;
     --line: #3d3747;
-    --accent: #ff3d8b;
+    --accent: var(--jk-pink);
     --accent-fg: #14101c;
     --focus: #7db3ff;
     --ok: #5fd27f;
     --warn: #ffc15e;
     --error: #ff8a80;
+  }
+}
+
+/* Themes (settings ui.look.glow, set on <html> by App.tsx): the accent follows the glow
+   colour; in the dark scheme it is the glow itself (skin.css sets --jk-pink per glow). */
+:root[data-jk-glow="ember"] {
+  --accent: #b8420a;
+}
+
+:root[data-jk-glow="aqua"] {
+  --accent: #0a6f9a;
+}
+
+:root[data-jk-glow="violet"] {
+  --accent: #6a2cc0;
+}
+
+:root[data-jk-glow="amber"] {
+  --accent: #9a6a00;
+}
+
+:root[data-jk-glow="lime"] {
+  --accent: #2a7a10;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-jk-glow] {
+    --accent: var(--jk-pink);
   }
 }
 
@@ -976,6 +1004,64 @@ button.title-strip:hover {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 34rem), 1fr));
   gap: 1rem;
   align-items: start;
+}
+
+/* Themes: a card per theme (settings > Themes). */
+.themes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr));
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+
+.theme-card {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 0.25rem;
+  padding: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.theme-card:hover {
+  border-color: var(--accent);
+}
+
+.theme-card:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.theme-card--active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.theme-card__swatch {
+  display: block;
+  height: 1.6rem;
+  border-radius: calc(var(--radius) * 0.6);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.theme-card__name {
+  font-weight: 700;
+}
+
+.theme-card__blurb {
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+.theme-card__state {
+  font-size: 0.8em;
+  font-weight: 600;
+  color: var(--accent);
 }
 
 .settings__colors {

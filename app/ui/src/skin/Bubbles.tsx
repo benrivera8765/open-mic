@@ -14,6 +14,7 @@
 //    live in a preallocated typed array.
 
 import { useEffect, useRef } from "preact/hooks";
+import { useEffectFps } from "../lib/fxrate";
 import { BubbleField, MAX_BUBBLES, type BubbleSprite } from "./bubbles-engine";
 import { bubbleTrack, type FrameGeometry } from "./geometry";
 
@@ -26,14 +27,13 @@ export const bubbleStats = {
   running: false,
 };
 
-const FRAME_MS = 1000 / 30;
 /**
- * A frame is drawn only if at least this long has passed since the last one, by the
- * rAF timestamps (which are the display frame times). 1 ms of slack lets a 60, 120
- * or 240 Hz display land every 2nd, 4th or 8th frame (33.3 ms) without ever going
- * faster than ~31 fps.
+ * 30 fps as designed. A frame is drawn only if at least the period less 1 ms has passed
+ * since the last one, by the rAF timestamps (which are the display frame times): the
+ * slack lets a 60, 120 or 240 Hz display land every 2nd, 4th or 8th frame (33.3 ms)
+ * without ever going faster than ~31 fps. The frame rate setting (D-274) raises it.
  */
-const MIN_GAP_MS = FRAME_MS - 1;
+const FRAME_MS = 1000 / 30;
 /** Backing-store cap: never more device pixels than a 4K screen. */
 const MAX_CANVAS_PIXELS = 3840 * 2160;
 
@@ -42,6 +42,11 @@ export interface BubblesProps {
   /** False stops the loop entirely. */
   running: boolean;
   maxBubbles?: number;
+  /**
+   * Two small bubble tubes either side of the centre line (the pilaster frame style)
+   * instead of the one inner tube: their centre-line offset and width, CSS px.
+   */
+  channels?: { offset: number; width: number } | null;
   class?: string;
 }
 
@@ -81,12 +86,15 @@ function makeSprite(radius: number): HTMLCanvasElement {
   return c;
 }
 
-export function Bubbles({ geometry, running, maxBubbles = MAX_BUBBLES, class: className }: BubblesProps) {
+export function Bubbles({ geometry, running, maxBubbles = MAX_BUBBLES, channels = null, class: className }: BubblesProps) {
+  const fps = useEffectFps(1000 / FRAME_MS);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fieldRef = useRef<BubbleField | null>(null);
   if (fieldRef.current === null) fieldRef.current = new BubbleField({ maxBubbles });
   /** Device pixels per CSS pixel of the backing store. */
   const pxRef = useRef(1);
+  /** How many tracks the field ran on last time (0 = none yet). */
+  const pathsRef = useRef(0);
 
   // Geometry -> paths and canvas size.
   useEffect(() => {
@@ -102,14 +110,24 @@ export function Bubbles({ geometry, running, maxBubbles = MAX_BUBBLES, class: cl
     pxRef.current = k;
     canvas.width = Math.max(1, Math.round(g.width * k));
     canvas.height = Math.max(1, Math.round(g.height * k));
-    field.setPaths(
-      [bubbleTrack(g, "left"), bubbleTrack(g, "right")],
-      g.bubbleTube / 2,
-      Math.max(0.5, g.height / 900),
-    );
+    const scale = Math.max(0.5, g.height / 900);
+    // A different set of tubes (neon <-> pilaster): start them full, from scratch.
+    const nPaths = channels ? 4 : 2;
+    if (pathsRef.current !== 0 && pathsRef.current !== nPaths) field.clear();
+    pathsRef.current = nPaths;
+    if (channels) {
+      const o = channels.offset;
+      field.setPaths(
+        [bubbleTrack(g, "left", g.baseTop, -o), bubbleTrack(g, "right", g.baseTop, -o), bubbleTrack(g, "left", g.baseTop, o), bubbleTrack(g, "right", g.baseTop, o)],
+        channels.width / 2,
+        scale,
+      );
+    } else {
+      field.setPaths([bubbleTrack(g, "left"), bubbleTrack(g, "right")], g.bubbleTube / 2, scale);
+    }
     // First appearance: start with tubes already full (one crossing takes ~20 s).
     if (field.count === 0) field.prewarm(30);
-  }, [geometry]);
+  }, [geometry, channels?.offset, channels?.width]);
 
   // The loop.
   useEffect(() => {
@@ -130,6 +148,11 @@ export function Bubbles({ geometry, running, maxBubbles = MAX_BUBBLES, class: cl
     let timer = 0;
     let raf = 0;
     let stopped = false;
+    // The frame period: 30 fps as designed, or the frame rate setting (D-274); from 50 fps on
+    // every display frame is a candidate (no timer between frames).
+    const frameMs = 1000 / fps;
+    const minGap = frameMs - 1;
+    const follow = fps >= 50;
 
     // Whole-canvas clear once at start (size may have changed).
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -161,7 +184,7 @@ export function Bubbles({ geometry, running, maxBubbles = MAX_BUBBLES, class: cl
     const frame = (now: number) => {
       raf = 0;
       if (stopped) return;
-      if (now - last < MIN_GAP_MS) {
+      if (now - last < minGap) {
         // The timer woke us a display frame early: wait for the next one.
         raf = requestAnimationFrame(frame);
         return;
@@ -197,12 +220,16 @@ export function Bubbles({ geometry, running, maxBubbles = MAX_BUBBLES, class: cl
       // (WebKit fired 10-30 ms late in our tests). rAF then lines the draw up with the
       // display, and the MIN_GAP_MS gate in frame() keeps it at <= 30 fps, so the
       // worst case is one extra, empty rAF callback per drawn frame.
-      const wait = Math.max(0, FRAME_MS - (performance.now() - last) - 17);
+      if (follow) {
+        raf = requestAnimationFrame(frame);
+        return;
+      }
+      const wait = Math.max(0, frameMs - (performance.now() - last) - 17);
       timer = window.setTimeout(wake, wait);
     };
 
     raf = requestAnimationFrame((now) => {
-      last = now - FRAME_MS; // draw on the first frame
+      last = now - frameMs; // draw on the first frame
       frame(now);
     });
 
@@ -212,7 +239,7 @@ export function Bubbles({ geometry, running, maxBubbles = MAX_BUBBLES, class: cl
       if (timer) clearTimeout(timer);
       if (raf) cancelAnimationFrame(raf);
     };
-  }, [running, geometry]);
+  }, [running, geometry, channels?.offset, channels?.width, fps]);
 
   return <canvas ref={canvasRef} class={className} aria-hidden="true" />;
 }

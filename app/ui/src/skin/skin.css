@@ -20,6 +20,15 @@
 :root {
   /* Light palette (the rotating colour cylinders). */
   --jk-pink: #ff3d8b;
+  /* The glow of lit plates, faders and focus rings, as "r, g, b" (themes change it). */
+  --jk-glow-rgb: 255, 61, 139;
+  /* Lighter, paler, deeper and redder companions of the glow (lit ticks, fader fills, knobs). */
+  --jk-glow-hi: #ff6aa6;
+  --jk-glow-pale: #ffd2e4;
+  --jk-glow-deep: #a0124f;
+  --jk-glow-base: #ff2a2a;
+  /* Tint of the top of the screen glass. */
+  --jk-glass-tint: 80, 40, 90;
   --jk-red: #ff2a2a;
   --jk-orange: #ff8a1f;
   --jk-yellow: #ffd23f;
@@ -39,6 +48,7 @@
   /* Chrome (gold, owner 2026-11-22): warm highlight, gold, a dark band with a bright line under it. */
   --jk-chrome: linear-gradient(180deg, #fff6d8 0%, #ebd28b 20%, #ba8d33 44%, #583d10 50%, #d6af57 60%, #faeabb 84%, #bb8d33 100%);
   --jk-chrome-h: linear-gradient(90deg, #bb8d33 0%, #faeabb 18%, #d6af57 40%, #583d10 50%, #ba8d33 56%, #ebd28b 80%, #fff6d8 100%);
+  --jk-silver-chrome: linear-gradient(180deg, #ffffff 0%, #d6dce2 20%, #9aa2ab 44%, #4a525b 50%, #b9c1ca 60%, #f3f6f8 84%, #8f97a1 100%);
   --jk-glass-face: linear-gradient(180deg, #2a2a32 0%, #111116 46%, #050507 100%);
   --jk-enamel-face: linear-gradient(180deg, #f03752 0%, #c8102e 50%, #5e0513 100%);
   /* Type. */
@@ -199,7 +209,7 @@
   column-gap: var(--jk-strip-gap);
   padding: 0 var(--jk-strip-gap);
   background:
-    radial-gradient(ellipse 80% 55% at 50% 0%, rgba(80, 40, 90, 0.35), rgba(80, 40, 90, 0) 70%),
+    radial-gradient(ellipse 80% 55% at 50% 0%, rgba(var(--jk-glass-tint), 0.35), rgba(var(--jk-glass-tint), 0) 70%),
     var(--jk-screen-bg);
   box-shadow:
     inset 0 3px 14px rgba(0, 0, 0, 0.85),
@@ -277,17 +287,19 @@
 }
 
 .jk-console-wing {
+  --jk-wing-pad: 3px;
+  --jk-wing-trim: 0px;
   position: relative;
   flex: 0 0 clamp(70px, 9vw, 346px);
   border-radius: 46% 46% 10px 10px / 32% 32% 10px 10px;
   overflow: hidden;
   background: var(--jk-chrome);
-  padding: 3px;
+  padding: var(--jk-wing-pad);
   /* The grille panels sit in the light of the cabinet (photo 1's lit lower skirt):
      a soft static glow, painted once. */
   box-shadow:
     0 4px 10px rgba(0, 0, 0, 0.6),
-    0 0 18px rgba(255, 61, 139, 0.28),
+    0 0 18px rgba(var(--jk-glow-rgb),  0.28),
     0 0 42px rgba(255, 138, 31, 0.14);
 }
 
@@ -298,11 +310,24 @@
   border-radius: inherit;
 }
 
+/* Holds the grille; with the silver trim on it is a thin silver chrome band between
+   the gold surround and the red cloth. */
+.jk-console-trim {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border-radius: 46% 46% 8px 8px / 32% 32% 8px 8px;
+  overflow: hidden;
+  padding: var(--jk-wing-trim);
+  background: var(--jk-silver-chrome);
+}
+
 .jk-console-wing::after {
   /* Inner bevel of the grille frame. */
   content: "";
   position: absolute;
-  inset: 3px;
+  inset: calc(var(--jk-wing-pad) + var(--jk-wing-trim));
   border-radius: 46% 46% 8px 8px / 32% 32% 8px 8px;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.7), inset 0 0 16px rgba(0, 0, 0, 0.55);
   pointer-events: none;
@@ -479,18 +504,18 @@
 /* Lit from behind, like a selector button that has been pressed. */
 .jk-plate--active .jk-plate-glass {
   background:
-    radial-gradient(ellipse 90% 80% at 50% 115%, rgba(255, 61, 139, 0.6), rgba(255, 61, 139, 0) 70%),
+    radial-gradient(ellipse 90% 80% at 50% 115%, rgba(var(--jk-glow-rgb),  0.6), rgba(var(--jk-glow-rgb),  0) 70%),
     linear-gradient(180deg, #3a1428 0%, #1c0712 50%, #0e0308 100%);
   box-shadow:
-    inset 0 0 12px rgba(255, 61, 139, 0.55),
+    inset 0 0 12px rgba(var(--jk-glow-rgb),  0.55),
     inset 0 1px 3px rgba(0, 0, 0, 0.9);
 }
 
 .jk-plate--active .jk-plate-label {
   color: #fff3f8;
   text-shadow:
-    0 0 5px rgba(255, 61, 139, 0.95),
-    0 0 14px rgba(255, 61, 139, 0.6);
+    0 0 5px rgba(var(--jk-glow-rgb),  0.95),
+    0 0 14px rgba(var(--jk-glow-rgb),  0.6);
 }
 
 /* A plate that deletes (the Library, D-230): its glass lit red, like an enamel warning
@@ -620,8 +645,8 @@
 
 .jk-dial:focus-visible {
   box-shadow:
-    0 0 0 3px rgba(255, 61, 139, 0.85),
-    0 0 18px rgba(255, 61, 139, 0.55),
+    0 0 0 3px rgba(var(--jk-glow-rgb),  0.85),
+    0 0 18px rgba(var(--jk-glow-rgb),  0.55),
     0 7px 16px rgba(0, 0, 0, 0.7);
 }
 
@@ -673,11 +698,11 @@
 }
 
 .jk-dial-tick--between {
-  stroke: rgba(255, 61, 139, 0.7);
+  stroke: rgba(var(--jk-glow-rgb),  0.7);
 }
 
 .jk-dial-tick--lit {
-  stroke: #ff6aa6;
+  stroke: var(--jk-glow-hi);
   stroke-width: 3.2;
 }
 
@@ -708,10 +733,10 @@
   height: 16%;
   transform: translateX(-50%);
   border-radius: 999px;
-  background: linear-gradient(180deg, #ffffff 0%, #ffd2e4 35%, var(--jk-pink) 100%);
+  background: linear-gradient(180deg, #ffffff 0%, var(--jk-glow-pale) 35%, var(--jk-pink) 100%);
   box-shadow:
     0 0 5px var(--jk-pink),
-    0 0 13px rgba(255, 61, 139, 0.75);
+    0 0 13px rgba(var(--jk-glow-rgb),  0.75);
 }
 
 .jk-dial-readout {
@@ -733,8 +758,8 @@
   font-variant-numeric: tabular-nums;
   color: #fff4f9;
   text-shadow:
-    0 0 6px rgba(255, 61, 139, 0.95),
-    0 0 16px rgba(255, 61, 139, 0.5);
+    0 0 6px rgba(var(--jk-glow-rgb),  0.95),
+    0 0 16px rgba(var(--jk-glow-rgb),  0.5);
   animation: jk-pop 240ms cubic-bezier(0.3, 1.6, 0.5, 1);
 }
 
@@ -865,7 +890,7 @@
 }
 
 .jk-fader-track:focus-visible {
-  box-shadow: 0 0 0 2px var(--jk-pink), 0 0 10px rgba(255, 61, 139, 0.6);
+  box-shadow: 0 0 0 2px var(--jk-pink), 0 0 10px rgba(var(--jk-glow-rgb),  0.6);
 }
 
 .jk-fader-slot {
@@ -900,7 +925,7 @@
   right: 0;
   bottom: 0;
   height: calc(var(--jk-fader-v) * 100%);
-  background: linear-gradient(0deg, #ff2a2a 0%, var(--jk-pink) 60%, #ffb6d3 100%);
+  background: linear-gradient(0deg, var(--jk-glow-base) 0%, var(--jk-pink) 60%, var(--jk-glow-pale) 100%);
   box-shadow: 0 0 8px var(--jk-pink);
 }
 
@@ -909,7 +934,7 @@
   right: auto;
   height: auto;
   width: calc(var(--jk-fader-v) * 100%);
-  background: linear-gradient(90deg, #ff2a2a 0%, var(--jk-pink) 60%, #ffb6d3 100%);
+  background: linear-gradient(90deg, var(--jk-glow-base) 0%, var(--jk-pink) 60%, var(--jk-glow-pale) 100%);
 }
 
 /* Ribbed chrome cap; travel = 78 % of the track (cap = 22 %, see Fader.tsx). */
@@ -1097,7 +1122,7 @@
   box-shadow:
     inset 0 1px 0 #ffffff,
     0 0 0 2px var(--jk-pink),
-    0 0 16px rgba(255, 61, 139, 0.75),
+    0 0 16px rgba(var(--jk-glow-rgb),  0.75),
     0 3px 8px rgba(0, 0, 0, 0.55);
   transform: translateY(-1px);
 }
@@ -1147,12 +1172,12 @@
 }
 
 .jk-strip--checked .jk-strip-lamp {
-  background: radial-gradient(circle at 36% 30%, #ffffff 0%, #ffb3d1 22%, var(--jk-pink) 55%, #a0124f 100%);
+  background: radial-gradient(circle at 36% 30%, #ffffff 0%, var(--jk-glow-pale) 22%, var(--jk-pink) 55%, var(--jk-glow-deep) 100%);
   box-shadow:
     0 0 0 1.5px #232428,
     0 1px 0 1.5px rgba(255, 255, 255, 0.55),
-    0 0 8px rgba(255, 61, 139, 0.95),
-    0 0 18px rgba(255, 61, 139, 0.6);
+    0 0 8px rgba(var(--jk-glow-rgb),  0.95),
+    0 0 18px rgba(var(--jk-glow-rgb),  0.6);
 }
 
 .jk-strip--checked {
@@ -1162,7 +1187,7 @@
   box-shadow:
     inset 0 1px 0 #ffffff,
     0 0 0 2px var(--jk-pink),
-    0 0 16px rgba(255, 61, 139, 0.75),
+    0 0 16px rgba(var(--jk-glow-rgb),  0.75),
     0 3px 8px rgba(0, 0, 0, 0.55);
 }
 
@@ -1174,7 +1199,7 @@
   box-shadow:
     inset 0 1px 0 #ffffff,
     0 0 0 2px var(--jk-pink),
-    0 0 20px rgba(255, 61, 139, 0.85),
+    0 0 20px rgba(var(--jk-glow-rgb),  0.85),
     0 3px 8px rgba(0, 0, 0, 0.55);
 }
 
@@ -1288,7 +1313,7 @@
   outline: none;
   box-shadow:
     0 0 0 2px var(--jk-pink),
-    0 0 12px rgba(255, 61, 139, 0.5),
+    0 0 12px rgba(var(--jk-glow-rgb),  0.5),
     inset 0 2px 4px rgba(0, 0, 0, 0.95);
 }
 
@@ -1307,4 +1332,445 @@
 [data-jk-motion="reduce"] .jk-dial--bump-a,
 [data-jk-motion="reduce"] .jk-dial--bump-b {
   animation: none;
+}
+
+/* ---------------------------------------------------------------- owner's customisation (2026-11-22)
+   Set on the frame root by JukeboxFrame from settings ui.look:
+   data-jk-cabinet (pearl | walnut | maple), data-jk-frame-style (neon | pilaster),
+   data-jk-lattice, data-jk-trim (silver | none). */
+
+/* Silver inner trim: a thin silver chrome line inside the gold of every plate, the key
+   dial and the grille surrounds. */
+[data-jk-trim="silver"] .jk-plate {
+  position: relative;
+  padding: max(3.5px, 0.27em);
+}
+
+[data-jk-trim="silver"] .jk-plate::before {
+  content: "";
+  position: absolute;
+  inset: calc(max(3.5px, 0.27em) - max(1.5px, 0.095em));
+  border-radius: 0.36em;
+  background: var(--jk-silver-chrome);
+  box-shadow:
+    0 0 0 0.5px rgba(40, 26, 6, 0.75),
+    inset 0 0 0 0.5px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.jk-dial-trim {
+  display: none;
+  position: absolute;
+  inset: 9.5%;
+  border-radius: 50%;
+  background: conic-gradient(from 200deg, #ffffff, #c9d0d8 14%, #59616b 30%, #d3d9df 44%, #ffffff 56%, #9aa2ab 70%, #4b525b 84%, #e6eaee 94%, #ffffff);
+  box-shadow:
+    0 0 0 1px rgba(40, 26, 6, 0.7),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+
+[data-jk-trim="silver"] .jk-dial-trim {
+  display: block;
+}
+
+[data-jk-trim="silver"] .jk-dial-face {
+  inset: 13%;
+}
+
+[data-jk-trim="silver"] .jk-console-wing {
+  --jk-wing-pad: clamp(3px, 0.42vh, 9px);
+  --jk-wing-trim: clamp(1.5px, 0.24vh, 5px);
+}
+
+/* Cabinet: light maple. */
+.jk-frame[data-jk-cabinet="maple"] .jk-frame-wood {
+  background:
+    linear-gradient(180deg, rgba(255, 245, 225, 0) 0%, rgba(255, 245, 225, 0) 78%, rgba(255, 245, 225, 0.14) 81%, rgba(255, 245, 225, 0) 86%),
+    radial-gradient(ellipse 80% 75% at 50% 35%, rgba(60, 30, 10, 0) 45%, rgba(60, 30, 10, 0.42) 100%),
+    var(--jk-wood, none),
+    linear-gradient(180deg, #d9b07a 0%, #c79a63 60%, #a97c47 100%);
+}
+
+/* Cabinet: pearlescent, lit from inside by slowly turning warm light (photo 7). */
+.jk-frame[data-jk-cabinet="pearl"] .jk-frame-wood {
+  background: #3a1420;
+}
+
+.jk-pearl-glow {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.jk-pearl-sheen {
+  position: absolute;
+  inset: 0;
+  background:
+    /* Gloss: a bright reflection across the top of the console and a softer one below,
+       like light on a lacquered pearl panel. */
+    linear-gradient(180deg, rgba(255, 252, 246, 0) 0%, rgba(255, 252, 246, 0) 82.5%, rgba(255, 252, 246, 0.34) 84.5%, rgba(255, 252, 246, 0.1) 87.5%, rgba(255, 252, 246, 0) 90%),
+    linear-gradient(180deg, rgba(255, 252, 246, 0) 92%, rgba(255, 252, 246, 0.12) 95%, rgba(255, 252, 246, 0) 98%),
+    radial-gradient(ellipse 38% 9% at 30% 86%, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0) 70%),
+    radial-gradient(ellipse 30% 8% at 72% 87%, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0) 70%),
+    radial-gradient(ellipse 90% 85% at 50% 45%, rgba(60, 10, 22, 0) 55%, rgba(60, 10, 22, 0.38) 100%),
+    var(--jk-pearl, none);
+  background-size: auto, auto, auto, auto, auto, 512px 256px;
+}
+
+/* On the bright pearl a half-transparent plate looks washed out: dim it instead, and
+   give the console's bare text a shadow. */
+.jk-frame[data-jk-cabinet="pearl"] .jk-console .jk-plate:disabled,
+.jk-frame[data-jk-cabinet="maple"] .jk-console .jk-plate:disabled,
+.jk-frame[data-jk-cabinet="aquarium"] .jk-console .jk-plate:disabled,
+.jk-frame[data-jk-cabinet="forge"] .jk-console .jk-plate:disabled,
+.jk-frame[data-jk-cabinet="ocean"] .jk-console .jk-plate:disabled,
+.jk-frame[data-jk-cabinet="brass"] .jk-console .jk-plate:disabled,
+.jk-frame[data-jk-cabinet="cyber"] .jk-console .jk-plate:disabled,
+.jk-frame[data-jk-cabinet="deco"] .jk-console .jk-plate:disabled,
+.jk-frame[data-jk-cabinet="aero"] .jk-console .jk-plate:disabled {
+  opacity: 1;
+  filter: brightness(0.6) saturate(0.75);
+}
+
+.jk-frame[data-jk-cabinet="pearl"] .jk-console,
+.jk-frame[data-jk-cabinet="maple"] .jk-console,
+.jk-frame[data-jk-cabinet="aquarium"] .jk-console,
+.jk-frame[data-jk-cabinet="forge"] .jk-console,
+.jk-frame[data-jk-cabinet="ocean"] .jk-console,
+.jk-frame[data-jk-cabinet="brass"] .jk-console,
+.jk-frame[data-jk-cabinet="cyber"] .jk-console,
+.jk-frame[data-jk-cabinet="deco"] .jk-console,
+.jk-frame[data-jk-cabinet="aero"] .jk-console {
+  text-shadow:
+    0 1px 2px rgba(30, 6, 12, 0.85),
+    0 0 6px rgba(30, 6, 12, 0.55);
+}
+
+/* Screen border: pearl pilasters, a little wider than the neon tubes. */
+.jk-frame[data-jk-frame-style="pilaster"] .jk-frame-grid {
+  --jk-side: clamp(34px, 5vw, 190px);
+}
+
+@supports (width: 1cqw) {
+  .jk-frame[data-jk-frame-style="pilaster"] .jk-frame-grid {
+    --jk-side: clamp(34px, 5cqw, 190px);
+  }
+}
+
+/* The light strips inside the screen take the pilasters' warm colours. */
+.jk-frame[data-jk-frame-style="pilaster"] .jk-screen-strip {
+  background: linear-gradient(180deg, #fff0dc 0%, #ffb08a 30%, #ff7a94 62%, #ffb44f 100%);
+}
+
+/* The lightning tube's water is see-through: its light at half strength over a dark backing. */
+.jk-frame[data-jk-frame-style="light"] .jk-light {
+  opacity: 0.66;
+}
+
+/* The lightning tube's screen strips: blue water with a purple glow at the foot. */
+.jk-frame[data-jk-frame-style="light"] .jk-screen-strip {
+  background: linear-gradient(180deg, #9cc8ff 0%, #3c88e8 38%, #1c58c0 72%, #a050ff 100%);
+}
+
+/* The lava lamp's screen strips: wax colours over the deep liquid. */
+.jk-frame[data-jk-frame-style="lava"] .jk-screen-strip {
+  background: linear-gradient(180deg, #ffc24a 0%, #ff7a1e 34%, #c01c40 70%, #5a0a3a 100%);
+}
+
+/* Cabinet: aquarium. Deep blue water everywhere the cabinet shows; the fish tank itself
+   (plants, fish, bubbles, sand) is Aquarium.tsx in the console band. */
+.jk-frame[data-jk-cabinet="aquarium"] .jk-frame-wood {
+  background:
+    radial-gradient(ellipse 70% 40% at 50% 100%, rgba(40, 170, 210, 0.35), rgba(40, 170, 210, 0) 70%),
+    linear-gradient(180deg, #052238 0%, #08365a 45%, #0c5482 80%, #0a4a72 100%);
+}
+
+.jk-aquarium {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+.jk-aquarium > canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* On the light and see-through cabinets a half-transparent control shows what is behind
+   it (the pearl's glow, the fish tank): dim the disabled dial and faders instead. */
+.jk-frame[data-jk-cabinet="pearl"] .jk-keydial--disabled .jk-dial,
+.jk-frame[data-jk-cabinet="maple"] .jk-keydial--disabled .jk-dial,
+.jk-frame[data-jk-cabinet="aquarium"] .jk-keydial--disabled .jk-dial,
+.jk-frame[data-jk-cabinet="forge"] .jk-keydial--disabled .jk-dial,
+.jk-frame[data-jk-cabinet="ocean"] .jk-keydial--disabled .jk-dial,
+.jk-frame[data-jk-cabinet="brass"] .jk-keydial--disabled .jk-dial,
+.jk-frame[data-jk-cabinet="cyber"] .jk-keydial--disabled .jk-dial,
+.jk-frame[data-jk-cabinet="deco"] .jk-keydial--disabled .jk-dial,
+.jk-frame[data-jk-cabinet="aero"] .jk-keydial--disabled .jk-dial,
+.jk-frame[data-jk-cabinet="pearl"] .jk-fader--disabled,
+.jk-frame[data-jk-cabinet="maple"] .jk-fader--disabled,
+.jk-frame[data-jk-cabinet="aquarium"] .jk-fader--disabled,
+.jk-frame[data-jk-cabinet="forge"] .jk-fader--disabled,
+.jk-frame[data-jk-cabinet="ocean"] .jk-fader--disabled,
+.jk-frame[data-jk-cabinet="brass"] .jk-fader--disabled,
+.jk-frame[data-jk-cabinet="cyber"] .jk-fader--disabled,
+.jk-frame[data-jk-cabinet="deco"] .jk-fader--disabled,
+.jk-frame[data-jk-cabinet="aero"] .jk-fader--disabled {
+  opacity: 1;
+  filter: brightness(0.6) saturate(0.7);
+}
+
+/* The ocean tube: see-through tropical water, and screen strips to match. */
+.jk-frame[data-jk-frame-style="ocean"] .jk-light {
+  opacity: 0.78;
+}
+
+.jk-frame[data-jk-frame-style="ocean"] .jk-screen-strip {
+  background: linear-gradient(180deg, #bff6ff 0%, #3cc8e0 35%, #1488c0 70%, #0a5a90 100%);
+}
+
+/* The 5-second skip icons carry a "5": a little larger than the other transport icons. */
+.jk-icon--skip5 {
+  width: 1.55em;
+  height: 1.55em;
+}
+
+/* ---------------------------------------------------------------- themes (owner, 2026-11-23)
+   Set on <html> by App.tsx and on the frame root by JukeboxFrame from settings ui.look:
+   data-jk-metal (gold | bronze), data-jk-accents (silver | red | iron),
+   data-jk-glow (pink | ember | aqua | violet). Each is independent of the others; a theme
+   (settings > Themes) just sets them all at once. */
+
+/* Bronze: every gold chrome part (screen bezel, plates, grille surrounds, rails, dial). */
+[data-jk-metal="bronze"] {
+  --jk-chrome: linear-gradient(180deg, #ffe0c2 0%, #e4a474 20%, #a8602c 44%, #4a2008 50%, #c07840 60%, #f6c8a0 84%, #9a5424 100%);
+  --jk-chrome-h: linear-gradient(90deg, #9a5424 0%, #f6c8a0 18%, #c07840 40%, #4a2008 50%, #a8602c 56%, #e4a474 80%, #ffe0c2 100%);
+}
+
+[data-jk-metal="bronze"] .jk-dial-chrome {
+  background: conic-gradient(from 200deg, #ffe0c2, #d0884e 14%, #5a2a0c 30%, #d8955c 44%, #ffe6cc 56%, #a8602c 70%, #4a2008 84%, #f0b888 94%, #ffe0c2);
+}
+
+/* Iron: the silver parts (inner trim, grille bands, dial ring) become dark wrought iron. */
+[data-jk-accents="iron"] {
+  --jk-silver-chrome: linear-gradient(180deg, #a8aeb4 0%, #70767c 20%, #464b50 44%, #16181a 50%, #3a3f44 60%, #8a9096 84%, #2a2e32 100%);
+}
+
+[data-jk-accents="iron"] .jk-dial-trim {
+  background: conic-gradient(from 200deg, #9aa0a6, #5c6268 14%, #1a1d20 30%, #6a7076 44%, #a8aeb4 56%, #3e4449 70%, #141618 84%, #7c8288 94%, #9aa0a6);
+}
+
+/* Glow colours: lit plates, faders, the key dial's lit ticks, focus rings, the accent of
+   the plain screens and the tint at the top of the screen glass. */
+[data-jk-glow="ember"] {
+  --jk-glow-soft: #ffaa66;
+  --jk-pink: #ff6a1a;
+  --jk-glow-rgb: 255, 106, 26;
+  --jk-glow-hi: #ffa04a;
+  --jk-glow-pale: #ffe0b8;
+  --jk-glow-deep: #9a3008;
+  --jk-glow-base: #e02a08;
+  --jk-glass-tint: 120, 44, 12;
+  --jk-screen-bg: #150d0a;
+}
+
+[data-jk-glow="aqua"] {
+  --jk-glow-soft: #8ae4ff;
+  --jk-pink: #29c8ff;
+  --jk-glow-rgb: 41, 200, 255;
+  --jk-glow-hi: #7ae0ff;
+  --jk-glow-pale: #c8f2ff;
+  --jk-glow-deep: #0a5a8a;
+  --jk-glow-base: #1a7ad8;
+  --jk-glass-tint: 20, 80, 110;
+  --jk-screen-bg: #0c121c;
+}
+
+[data-jk-glow="violet"] {
+  --jk-glow-soft: #cfa6ff;
+  --jk-pink: #a866ff;
+  --jk-glow-rgb: 168, 102, 255;
+  --jk-glow-hi: #c79aff;
+  --jk-glow-pale: #e6d4ff;
+  --jk-glow-deep: #4c1a9a;
+  --jk-glow-base: #6a3ae0;
+  --jk-glass-tint: 70, 40, 130;
+  --jk-screen-bg: #120f1e;
+}
+
+/* Lit plates take the glow's own dark glass instead of the pink-tinted one. */
+[data-jk-glow="ember"] .jk-plate--active .jk-plate-glass,
+[data-jk-glow="aqua"] .jk-plate--active .jk-plate-glass,
+[data-jk-glow="violet"] .jk-plate--active .jk-plate-glass,
+[data-jk-glow="amber"] .jk-plate--active .jk-plate-glass,
+[data-jk-glow="lime"] .jk-plate--active .jk-plate-glass {
+  background:
+    radial-gradient(ellipse 90% 80% at 50% 115%, rgba(var(--jk-glow-rgb), 0.6), rgba(var(--jk-glow-rgb), 0) 70%),
+    linear-gradient(180deg, #2a1c1a 0%, #140c0c 50%, #0a0606 100%);
+}
+
+[data-jk-glow="ember"] .jk-plate--active .jk-plate-label,
+[data-jk-glow="aqua"] .jk-plate--active .jk-plate-label,
+[data-jk-glow="violet"] .jk-plate--active .jk-plate-label,
+[data-jk-glow="amber"] .jk-plate--active .jk-plate-label,
+[data-jk-glow="lime"] .jk-plate--active .jk-plate-label {
+  color: #ffffff;
+}
+
+/* Screen border: fire (Molten). The drifting fire light under the clear glass is the
+   pipe's glow; FireTube.tsx draws the flame on top. */
+.jk-frame[data-jk-frame-style="fire"] .jk-light {
+  opacity: 0.5;
+}
+
+.jk-frame[data-jk-frame-style="fire"] .jk-screen-strip {
+  background: linear-gradient(180deg, #fff2c4 0%, #ffc23a 26%, #ff6a12 58%, #c41c04 84%, #5a0802 100%);
+}
+
+/* Cabinet: forge (Molten). Cooling slag over moving magma: the crust (wood.ts
+   forgeTexture) is cracked and the glow (PearlGlow, FORGE_PALETTE) shows through. */
+.jk-frame[data-jk-cabinet="forge"] .jk-frame-wood {
+  background: #1a0804;
+}
+
+/* The flowing lava (LavaFlow.tsx, GPU): a half-resolution canvas stretched over the cabinet. */
+.jk-lava {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.jk-forge-crust {
+  position: absolute;
+  inset: 0;
+  background:
+    /* A dull sheen across the top of the console, and heat rising from the floor. */
+    linear-gradient(180deg, rgba(255, 200, 150, 0) 0%, rgba(255, 200, 150, 0) 83%, rgba(255, 200, 150, 0.12) 85%, rgba(255, 200, 150, 0) 88.5%),
+    radial-gradient(ellipse 70% 22% at 50% 100%, rgba(255, 90, 10, 0.22), rgba(255, 90, 10, 0) 70%),
+    radial-gradient(ellipse 90% 85% at 50% 45%, rgba(10, 2, 0, 0) 55%, rgba(10, 2, 0, 0.5) 100%),
+    var(--jk-forge, none);
+  background-size: auto, auto, auto, 512px 256px;
+}
+
+/* ---------------------------------------------------------------- five more themes (owner, 2026-11-23, D-275)
+   Water, Steampunk, Cyberpunk, Dieselpunk, Frutiger Aero: new metals, copper bands, amber
+   and lime glows, and the 2D looks of the GPU cabinets and pipes (what shows without WebGL,
+   on a Mac, or with "GPU lava and fire" off). */
+
+[data-jk-metal="chrome"] {
+  --jk-chrome: linear-gradient(180deg, #ffffff 0%, #dfe4ea 20%, #a2aab3 44%, #4e565f 50%, #bcc4cd 60%, #f5f7f9 84%, #8e96a0 100%);
+  --jk-chrome-h: linear-gradient(90deg, #8e96a0 0%, #f5f7f9 18%, #bcc4cd 40%, #4e565f 50%, #a2aab3 56%, #dfe4ea 80%, #ffffff 100%);
+}
+
+[data-jk-metal="chrome"] .jk-dial-chrome {
+  background: conic-gradient(from 200deg, #ffffff, #c8cfd6 14%, #535b65 30%, #d0d6dc 44%, #ffffff 56%, #98a0a9 70%, #4a525b 84%, #e8ecef 94%, #ffffff);
+}
+
+[data-jk-metal="brass"] {
+  --jk-chrome: linear-gradient(180deg, #fff2c4 0%, #e6cc80 20%, #b08a34 44%, #4e3a0c 50%, #ccaa52 60%, #f6e4a8 84%, #a88430 100%);
+  --jk-chrome-h: linear-gradient(90deg, #a88430 0%, #f6e4a8 18%, #ccaa52 40%, #4e3a0c 50%, #b08a34 56%, #e6cc80 80%, #fff2c4 100%);
+}
+
+[data-jk-metal="brass"] .jk-dial-chrome {
+  background: conic-gradient(from 200deg, #fff2c4, #d4b45c 14%, #5e4610 30%, #dcbe6c 44%, #fff4cc 56%, #a88430 70%, #4e3a0c 84%, #f0dc98 94%, #fff2c4);
+}
+
+[data-jk-metal="gunmetal"] {
+  --jk-chrome: linear-gradient(180deg, #dde3e9 0%, #9aa6b2 20%, #5a6672 44%, #1c2228 50%, #6e7a86 60%, #c4ccd4 84%, #48525c 100%);
+  --jk-chrome-h: linear-gradient(90deg, #48525c 0%, #c4ccd4 18%, #6e7a86 40%, #1c2228 50%, #5a6672 56%, #9aa6b2 80%, #dde3e9 100%);
+}
+
+[data-jk-metal="gunmetal"] .jk-dial-chrome {
+  background: conic-gradient(from 200deg, #dde3e9, #8a96a2 14%, #262d34 30%, #9aa6b2 44%, #e4eaf0 56%, #5a6672 70%, #1c2228 84%, #c4ccd4 94%, #dde3e9);
+}
+
+[data-jk-accents="copper"] {
+  --jk-silver-chrome: linear-gradient(180deg, #ffd8b8 0%, #e8a070 20%, #b0602c 44%, #4a1c06 50%, #c87040 60%, #f6c4a0 84%, #9a4a20 100%);
+}
+
+[data-jk-accents="copper"] .jk-dial-trim {
+  background: conic-gradient(from 200deg, #ffd8b8, #e08a54 14%, #7a3412 30%, #e8a070 44%, #ffe0c4 56%, #b0602c 70%, #4a1c06 84%, #f6c4a0 94%, #ffd8b8);
+}
+
+[data-jk-glow="amber"] {
+  --jk-pink: #ffb020;
+  --jk-glow-rgb: 255, 176, 32;
+  --jk-glow-hi: #ffd060;
+  --jk-glow-pale: #fff0c0;
+  --jk-glow-deep: #8a5a08;
+  --jk-glow-base: #e07a08;
+  --jk-glow-soft: #ffd27a;
+  --jk-glass-tint: 110, 80, 20;
+  --jk-screen-bg: #14110a;
+}
+
+[data-jk-glow="lime"] {
+  --jk-pink: #7aee3a;
+  --jk-glow-rgb: 122, 238, 58;
+  --jk-glow-hi: #a8ff78;
+  --jk-glow-pale: #e0ffd0;
+  --jk-glow-deep: #2a7a10;
+  --jk-glow-base: #3ac020;
+  --jk-glow-soft: #b8ff96;
+  --jk-glass-tint: 30, 100, 50;
+  --jk-screen-bg: #0c1410;
+}
+
+/* The GPU cabinets' 2D looks. */
+.jk-frame[data-jk-cabinet="ocean"] .jk-frame-wood {
+  background: linear-gradient(180deg, #0a3a6a 0%, #0a5a90 45%, #0c78a8 80%, #0a5a88 100%);
+}
+
+.jk-frame[data-jk-cabinet="brass"] .jk-frame-wood {
+  background: linear-gradient(180deg, #4a3410 0%, #8a6a24 50%, #5a3e12 100%);
+}
+
+.jk-frame[data-jk-cabinet="cyber"] .jk-frame-wood {
+  background: linear-gradient(180deg, #02060c 0%, #061420 60%, #0a2030 100%);
+}
+
+.jk-frame[data-jk-cabinet="deco"] .jk-frame-wood {
+  background: linear-gradient(180deg, #2a3238 0%, #1a2026 60%, #303a42 100%);
+}
+
+.jk-frame[data-jk-cabinet="aero"] .jk-frame-wood {
+  background: linear-gradient(180deg, #1a6ad8 0%, #6ac8ff 60%, #5ad050 88%, #3aa83a 100%);
+}
+
+/* The glass pipes: their light at half strength, and screen strips to match. */
+.jk-frame[data-jk-frame-style="water"] .jk-light,
+.jk-frame[data-jk-frame-style="steam"] .jk-light,
+.jk-frame[data-jk-frame-style="data"] .jk-light,
+.jk-frame[data-jk-frame-style="diesel"] .jk-light,
+.jk-frame[data-jk-frame-style="aero"] .jk-light {
+  opacity: 0.5;
+}
+
+.jk-frame[data-jk-frame-style="water"] .jk-screen-strip {
+  background: linear-gradient(180deg, #d8f6ff 0%, #6ad0ff 30%, #1a8ae0 65%, #0a4a9a 100%);
+}
+
+.jk-frame[data-jk-frame-style="steam"] .jk-screen-strip {
+  background: linear-gradient(180deg, #ffffff 0%, #e8ecf0 35%, #b8c0c8 70%, #c8a054 100%);
+}
+
+.jk-frame[data-jk-frame-style="data"] .jk-screen-strip {
+  background: linear-gradient(180deg, #d8fbff 0%, #2ae0ff 30%, #1a6aff 65%, #ffd23a 100%);
+}
+
+.jk-frame[data-jk-frame-style="diesel"] .jk-screen-strip {
+  background: linear-gradient(180deg, #ffe0a0 0%, #ffa030 30%, #8a3a10 70%, #2a1408 100%);
+}
+
+.jk-frame[data-jk-frame-style="aero"] .jk-screen-strip {
+  background: linear-gradient(180deg, #ffffff 0%, #bff6ff 30%, #4ab8ff 65%, #7aee3a 100%);
 }

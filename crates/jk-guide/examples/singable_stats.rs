@@ -28,7 +28,35 @@ fn stats(label: &str, d: &jk_format::guide::GuideDoc) {
             b.start - a.end <= 1.5 && c.start - b.end <= 1.5 && d1.signum() == d2.signum() && d1.abs().min(d2.abs()) >= 9.0
         })
         .count();
-    println!("{label}: notes {n}, <120ms {short}, unpitched {unp}, graded {graded}, unsure {dim}, words with notes {}, words with >1 note {multi}, spans {}, octave spikes {spikes}", words.len(), d.spans.len());
+    // Octave outliers: notes more than 12 / 18 semitones from the weighted median of the
+    // notes within 10 s, and leaps over an octave between notes less than 0.6 s apart.
+    let mut far12 = 0;
+    let mut far18 = 0;
+    for x in &d.notes {
+        let m = 0.5 * (x.start + x.end);
+        let mut v: Vec<(f64, f64)> = d
+            .notes
+            .iter()
+            .filter(|y| (0.5 * (y.start + y.end) - m).abs() <= 10.0)
+            .map(|y| (y.midi, (y.end - y.start).clamp(0.05, 0.5) * (0.4 + 0.6 * y.confidence)))
+            .collect();
+        v.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let tot: f64 = v.iter().map(|p| p.1).sum();
+        let mut acc = 0.0;
+        let mut c = x.midi;
+        for (p, w) in &v {
+            acc += w;
+            if acc >= tot / 2.0 {
+                c = *p;
+                break;
+            }
+        }
+        let off = (x.midi - c).abs();
+        far12 += usize::from(off > 12.0);
+        far18 += usize::from(off > 18.0);
+    }
+    let big_leaps = d.notes.windows(2).filter(|w| w[1].start - w[0].end < 0.6 && (w[1].midi - w[0].midi).abs() > 12.0).count();
+    println!("{label}: notes {n}, <120ms {short}, unpitched {unp}, graded {graded}, unsure {dim}, words with notes {}, words with >1 note {multi}, spans {}, octave spikes {spikes}, far>12 {far12}, far>18 {far18}, leaps>12 {big_leaps}", words.len(), d.spans.len());
 }
 
 fn main() {
@@ -55,7 +83,23 @@ fn main() {
     };
     stats("stored ", &d);
     show(&d);
+    let stored = d.notes.clone();
     jk_guide::singable::singable(&mut d);
     stats("singable", &d);
     show(&d);
+    // "moved": every note now sung an octave or two away from the stored note under it.
+    if a.iter().any(|x| x == "moved") {
+        for x in &d.notes {
+            let best = stored
+                .iter()
+                .filter(|y| y.end > x.start && y.start < x.end)
+                .max_by(|p, q| (p.end.min(x.end) - p.start.max(x.start)).total_cmp(&(q.end.min(x.end) - q.start.max(x.start))));
+            if let Some(y) = best {
+                let diff = x.midi - y.midi;
+                if diff.abs() >= 11.0 {
+                    println!("  moved {:8.3}-{:8.3}  {:6.2} -> {:6.2} ({:+.0})  conf {:.2} oct {}", x.start, x.end, y.midi, x.midi, diff, y.confidence, y.octave);
+                }
+            }
+        }
+    }
 }

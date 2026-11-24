@@ -51,6 +51,31 @@ export interface LaneStyle {
 /** Width of a bar or word tile, CSS px. */
 export const TILE_PX = 512;
 const KEEP_BAR_TILES = 14;
+/** Widest interval (semitones) drawn as a measured scoop joining two bars. */
+const MAX_SLIDE_ST = 7;
+/** Notes of one word closer than this (s), up to an octave apart, are one joined tube. */
+const WORD_JOIN_GAP_S = 0.35;
+const WORD_JOIN_MAX_ST = 12;
+
+type DrawNote = { kind: string; lane: number };
+const drawableNote = (n: DrawNote) => n.kind === "pitched" && Number.isFinite(n.lane);
+
+/**
+ * Whether note j-1 and note j are drawn as one tube with a slide between them: a scoop the
+ * guide measured (notes close together, never across more than a fifth: owner, 2026-11-23,
+ * a slide from Bb2 up to E4 through the whole lane), or two notes of the same word (owner,
+ * 2026-11-23, "sorry": "there is no break in the word ... there should be a connection").
+ */
+export function joinedNotes(L: LaneLayout, j: number): boolean {
+  if (j <= 0 || j >= L.notes.length) return false;
+  const n = L.notes[j];
+  const p = L.notes[j - 1];
+  if (!drawableNote(n) || !drawableNote(p)) return false;
+  const gap = n.start - p.end;
+  const d = Math.abs(n.lane - p.lane);
+  if (n.glideIn > 0 && gap < 0.12 && d > 0 && d <= MAX_SLIDE_ST) return true;
+  return n.word != null && n.word === p.word && gap < WORD_JOIN_GAP_S && d <= WORD_JOIN_MAX_ST;
+}
 const KEEP_WORD_TILES = 28;
 
 /** One drawImage of a cached bitmap, for the tests (`debugLog`). */
@@ -263,14 +288,8 @@ export class LaneRenderer {
     const glow = !this.simple;
     const from = firstNoteFrom(L, t0 - pad / pps);
     const until = t0 + (TILE_PX + pad) / pps;
-    const drawable = (n: (typeof L.notes)[number]) => n.kind === "pitched" && Number.isFinite(n.lane);
-    // A slide joins note j-1 to note j (a scoop the guide measured, notes close together).
-    const joined = (j: number) => {
-      if (j <= 0 || j >= L.notes.length) return false;
-      const n = L.notes[j];
-      const p = L.notes[j - 1];
-      return n.glideIn > 0 && drawable(n) && drawable(p) && n.start - p.end < 0.12 && n.lane !== p.lane;
-    };
+    const drawable = drawableNote;
+    const joined = (j: number) => joinedNotes(L, j);
     // Bars and slides as one neon tube (owner 2026-11-22: the slide must look "seamless",
     // "a smooth transition", not a separate bar): each run of joined notes is ONE path,
     // flat along each note (cap centre to cap centre) and an S-curve between them that
@@ -836,6 +855,10 @@ export class LaneRenderer {
       const lw = lit.c.width / d;
       const lh = lit.c.height / d;
       const capS = (lit.pad + lit.cap) * d;
+      // Where a lit stretch reaches its note's end, and where one starts at its note's start
+      // (note index -> [x, y] of the bar's cap centre), to light the slides between them.
+      const litEnds = new Map<number, [number, number]>();
+      const litStarts = new Map<number, [number, number]>();
       for (let q = 0; q < f.lit.length; q += 4) {
         const n = L.notes[f.lit[q]];
         // On the bar under it: the same rounding of the frame's grid.
@@ -850,11 +873,45 @@ export class LaneRenderer {
         const x0 = xa - nx0 < h * 0.5 ? nx0 : xa;
         const x1 = nx1 - xb < h * 0.5 ? nx1 : xb;
         const cap = Math.min(lit.cap, (x1 - x0) / 2);
+        const capR = Math.min(h / 2, (nx1 - nx0) / 2);
+        if (x1 === nx1) litEnds.set(f.lit[q], [nx1 - capR, y]);
+        if (x0 === nx0) litStarts.set(f.lit[q], [nx0 + capR, y]);
         if (cap <= 0.5) continue;
         ctx.drawImage(lit.c, 0, 0, capS, lit.c.height, x0 - lit.pad, top, lit.pad + cap, lh);
         ctx.drawImage(lit.c, lit.c.width - capS, 0, capS, lit.c.height, x1 - cap, top, lit.pad + cap, lh);
         if (x1 - cap > x0 + cap) ctx.drawImage(lit.c, (lw / 2) * d - 0.5, 0, 1, lit.c.height, x0 + cap, top, x1 - x0 - 2 * cap, lh);
       }
+      // A slide between two lit notes lights too, in the sung colour (owner, 2026-11-23:
+      // "the connection should match the color").
+      for (const [i, [bx, by]] of litStarts) {
+        const prev = litEnds.get(i - 1);
+        if (!prev || !joinedNotes(L, i)) continue;
+        const [ax, ay] = prev;
+        const dx = Math.max(1, bx - ax);
+        const curve = () => {
+          ctx.beginPath();
+          ctx.moveTo(ax, ay);
+          ctx.bezierCurveTo(ax + dx * 0.5, ay, bx - dx * 0.5, by, bx, by);
+        };
+        ctx.lineCap = "round";
+        if (!this.simple) {
+          ctx.globalAlpha = 0.28;
+          ctx.strokeStyle = this.style!.sung;
+          ctx.lineWidth = h * 1.7;
+          curve();
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = this.style!.sung;
+        ctx.lineWidth = h * 0.78;
+        curve();
+        ctx.stroke();
+        ctx.strokeStyle = "rgba(255,252,236,0.95)";
+        ctx.lineWidth = Math.max(1.2, h * 0.18);
+        curve();
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
     }
     ctx.restore();
 

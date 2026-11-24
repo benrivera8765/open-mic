@@ -99,6 +99,8 @@ export interface LaneNote {
   dim: boolean;
   graded: boolean;
   glideIn: number;
+  /** "line:word" of the lyric word the note belongs to, or null. */
+  word: string | null;
 }
 
 /** A lyric word in the strip under the bars: every word of the lyrics, at its own time. */
@@ -201,6 +203,7 @@ export function layoutLane(guide: PracticeGuide, lyrics: Lyrics | null, duration
     dim: n.dim,
     graded: n.graded,
     glideIn: n.glide_in,
+    word: n.word ? `${n.word[0]}:${n.word[1]}` : null,
   }));
   const pitched = notes.filter((n) => n.kind === "pitched" && Number.isFinite(n.lane));
   let lo = pitched.length ? Math.min(...pitched.map((n) => n.lane)) : 57;
@@ -215,19 +218,27 @@ export function layoutLane(guide: PracticeGuide, lyrics: Lyrics | null, duration
   const nowX = barX + nowOff;
   const pxPerSec = (barW - nowOff) / FUTURE_S;
 
-  // Words: every lyric word at its own time (owner 2026-11-22: the strip must match the
-  // lyrics below it), in up to WORD_ROWS rows; a word that fits no row (very fast singing)
-  // moves right just enough to clear the row that frees first.
+  // Words: every lyric word (owner 2026-11-22: the strip must match the lyrics below it),
+  // in up to WORD_ROWS rows; a word that fits no row (very fast singing) moves right just
+  // enough to clear the row that frees first. A word starts under the first bar sung on
+  // it (owner 2026-11-23: "you can't tell which lyrics go to which bar"), else at its
+  // lyric time.
   let wordRows = 0;
   const words: LaneWord[] = [];
   if (params.words && lyrics) {
     const gap = wordPx * 0.45;
     const rowEnd = new Array<number>(WORD_ROWS).fill(-Infinity);
-    for (const line of lyrics.lines) {
-      for (const wd of line.words) {
+    const firstBar = new Map<string, number>();
+    for (const n of notes) {
+      if (n.word === null || n.kind !== "pitched") continue;
+      const t = firstBar.get(n.word);
+      if (t === undefined || n.start < t) firstBar.set(n.word, n.start);
+    }
+    for (const [li, line] of lyrics.lines.entries()) {
+      for (const [wi, wd] of line.words.entries()) {
         const text = wd.chars.map((c) => c[0]).join("").trim();
         if (!text) continue;
-        const start = wd.start + lyricsOffsetS;
+        const start = firstBar.get(`${li}:${wi}`) ?? wd.start + lyricsOffsetS;
         const x = start * pxPerSec;
         const w = measure(text, wordPx);
         let row = rowEnd.findIndex((e) => x >= e + gap);
@@ -389,6 +400,11 @@ export interface LaneInputs {
   liveMs: number;
   /** No marker, no grade (WO2 4.4 "watch only"). */
   watchOnly: boolean;
+  /**
+   * Watch only that follows the singer (owner, 2026-11-22, for filming): a perfect voice
+   * rides the melody, with the marker, the tail and the lit bars of a flawless take.
+   */
+  follow?: boolean;
   reduceMotion: boolean;
   /** settings.practice.simple_lane: no tail, no glow. */
   simple: boolean;
@@ -481,6 +497,31 @@ function viewShiftOf(inp: LaneInputs): { shift: number; animating: boolean } {
 
 const scratch = { t: 0, midi: 0, level: 0 };
 
+/** Gaps shorter than this are sung through (a smooth slide to the next note); longer ones are rests. */
+const FOLLOW_SLIDE_GAP_S = 0.3;
+/** Leaps wider than this (semitones) are not slid through: the voice lifts off and lands on the next note. */
+const FOLLOW_SLIDE_MAX_ST = 4.5;
+
+/**
+ * The perfect voice of watch-only "follow": its pitch (lane units, key 0) at song time
+ * `ts`, or NaN in a rest or on an unpitched note. Exactly on every pitched note; across a
+ * short gap it slides with an S-curve from one note to the next, as a singer does.
+ */
+export function followLaneAt(L: LaneLayout, ts: number): number {
+  const notes = L.notes;
+  const j = firstNoteFrom(L, ts);
+  if (j >= notes.length) return Number.NaN;
+  const n = notes[j];
+  if (n.start <= ts) return n.kind === "pitched" ? n.lane : Number.NaN;
+  // In the gap before note j.
+  const p = j > 0 ? notes[j - 1] : null;
+  if (!p || p.kind !== "pitched" || n.kind !== "pitched") return Number.NaN;
+  const gap = n.start - p.end;
+  if (gap <= 0 || gap >= FOLLOW_SLIDE_GAP_S || Math.abs(n.lane - p.lane) > FOLLOW_SLIDE_MAX_ST) return Number.NaN;
+  const f = (ts - p.end) / gap;
+  return p.lane + (n.lane - p.lane) * f * f * (3 - 2 * f);
+}
+
 /** Everything one frame shows at lane time `inp.t`. */
 export function laneFrame(L: LaneLayout, inp: LaneInputs): LaneFrame {
   const t = inp.t;
@@ -525,6 +566,33 @@ export function laneFrame(L: LaneLayout, inp: LaneInputs): LaneFrame {
     const row = Math.round(lane);
     singer = { midi: scratch.midi, lane, y, row, name: noteName(row, inp.spelling), edge, cue };
   }
+  const follow = inp.watchOnly && !!inp.follow;
+  if (follow) {
+    const base = followLaneAt(L, t);
+    if (Number.isFinite(base)) {
+      const lane = base + steadyShift;
+      const edge: -1 | 0 | 1 = lane > viewHigh + 0.5 ? 1 : lane < viewLow - 0.5 ? -1 : 0;
+      const y = edge === 0 ? yOf(L, viewLow, lane) : edge > 0 ? L.barTop + L.headH * 0.5 : L.barBottom - L.headH * 0.5;
+      const row = Math.round(lane);
+      singer = { midi: lane + L.tuning / 100, lane, y, row, name: noteName(row, inp.spelling), edge, cue: 0 };
+    }
+    if (singer && !inp.reduceMotion && !inp.simple) {
+      // Tail: the perfect voice over the last TAIL_S, sampled every 1/60 s, broken at rests.
+      const step = 1 / 60;
+      let pen = false;
+      for (let k = 0; k * step <= TAIL_S; k++) {
+        const ts = t - k * step;
+        const ln = followLaneAt(L, ts);
+        if (!Number.isFinite(ln)) {
+          if (pen) tail.push(Number.NaN, Number.NaN);
+          pen = false;
+          continue;
+        }
+        tail.push(xOf(L, t, ts), yClamp(yOf(L, viewLow, ln + steadyShift)));
+        pen = true;
+      }
+    }
+  }
   if (singer && !inp.reduceMotion && !inp.simple && live) {
     // Tail: the last TAIL_S of values, broken at gaps; the newest point is the head itself.
     let prevT = Number.NaN;
@@ -545,7 +613,20 @@ export function laneFrame(L: LaneLayout, inp: LaneInputs): LaneFrame {
 
   // Lit parts: decided on-pitch stretches of graded notes in view.
   const lit: number[] = [];
-  if (live) {
+  if (follow) {
+    // The perfect voice hits every graded note from its start to the now line.
+    for (let k = firstNoteFrom(L, t0); k < L.notes.length && L.notes[k].start < t; k++) {
+      const n = L.notes[k];
+      if (n.kind !== "pitched" || !n.graded || n.dim) continue;
+      const to = Math.min(n.end, t);
+      for (const rg of regions) {
+        const a = Math.max(n.start, rg.t0);
+        const b = Math.min(to, rg.t1);
+        if (b <= a) continue;
+        lit.push(n.i, xOf(L, t, a), xOf(L, t, b), yOf(L, viewLow, n.lane + rg.shift));
+      }
+    }
+  } else if (live) {
     for (let k = firstNoteFrom(L, t0); k < L.notes.length && L.notes[k].start < t + 0.1; k++) {
       const n = L.notes[k];
       const h = live.hitsOf(n.i);

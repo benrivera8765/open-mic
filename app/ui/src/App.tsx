@@ -19,9 +19,11 @@
 // (resolved: "reduce" or "full"), data-platform, data-fullscreen, data-screen.
 // Colours chosen in Settings are exposed as CSS variables --sung, --upcoming and
 // --marker-color.
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import type { Api } from "./api/client";
 import type { AppInfo } from "./api/types";
+import { lookOf } from "./api/defaults";
+import { setFxFps } from "./lib/fxrate";
 import { SkinConsole, useWindowMinimised } from "./components/Jukebox";
 import { KeyControl } from "./components/KeyControl";
 import { Library } from "./components/Library";
@@ -148,6 +150,14 @@ function useDocumentAttributes(): void {
     root.dataset.platform = platform;
     root.dataset.fullscreen = fullscreen ? "on" : "off";
     root.dataset.screen = screen;
+    // Theme colours and metals reach every screen (the plain UI's accent too): skin.css.
+    const look = lookOf(ui);
+    root.dataset.jkGlow = look.glow;
+    root.dataset.jkMetal = look.metal;
+    root.dataset.jkAccents = look.accents;
+    root.dataset.jkTheme = look.theme;
+    // The animation frame rate (Windows only, D-274).
+    setFxFps(platform === "windows" && look.fx_fps !== "standard" ? Number(look.fx_fps) : 0);
     if (ui) {
       root.style.setProperty("--sung", ui.colors.sung);
       root.style.setProperty("--upcoming", ui.colors.upcoming);
@@ -296,6 +306,11 @@ function SkinApp({ api, info }: { api: Api; info: AppInfo }) {
   const overlay = useApp((s) => s.overlay);
   const motion = useResolvedMotion(ui?.motion ?? "system");
   const minimised = useWindowMinimised(api);
+  const look = lookOf(ui);
+  const frameLook = useMemo(
+    () => ({ cabinet: look.cabinet, frame: look.frame, accents: look.accents, lattice: look.lattice, innerTrim: look.inner_trim, metal: look.metal, glow: look.glow }),
+    [look.cabinet, look.frame, look.accents, look.lattice, look.inner_trim, look.metal, look.glow],
+  );
   useEffect(() => {
     // Ask for the lyrics face now; the ticker re-measures when fonts finish loading.
     document.fonts?.load(SKIN_LYRICS_FONT).catch(() => undefined);
@@ -309,10 +324,12 @@ function SkinApp({ api, info }: { api: Api; info: AppInfo }) {
       </a>
       <JukeboxFrame
         class={`app-skin${fullscreen ? " app-skin--fullscreen" : ""}`}
-        crest={<Badge name={info.name} />}
+        crest={<Badge name={info.name} field={look.badge_field} lettering={look.badge_text} rim={look.badge_rim} metal={look.metal} />}
         bubbles={ui?.bubbles ?? true}
         motion={motion}
         paused={minimised}
+        look={frameLook}
+        gpu={look.gpu_fx && info.platform === "windows"}
         console={<SkinConsole />}
       >
         <div class="skin-screen">

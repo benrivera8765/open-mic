@@ -9,7 +9,40 @@ export interface MedallionProps {
   class?: string;
   /** Accessible label; decorative (hidden from assistive tech) when absent. */
   title?: string;
+  /** A thin silver chrome ring between the gold bezel and the red enamel (owner, 2026-11-22). */
+  trim?: boolean;
+  /** The bezel and star: gold chrome (default), bronze (Molten), chrome, brass or gunmetal. */
+  metal?: "gold" | "bronze" | "chrome" | "brass" | "gunmetal";
+  /** The thin ring's metal: silver chrome (default), iron or copper. */
+  trimFinish?: "silver" | "iron" | "copper";
+  /** The enamel disc, following the theme's glow: red (pink glow, default), ember, aqua, violet, amber, lime. */
+  enamel?: "pink" | "ember" | "aqua" | "violet" | "amber" | "lime";
 }
+
+/** Bezel stops and the star's light and dark facets (long points, short points). */
+const METALS = {
+  gold: { bezel: ["#fff6d8", "#d9b25a", "#7a5a1c", "#e9cf86", "#8a6624"], line: "#5a3f10", facets: ["#fff1bf", "#f3d57a", "#d09a2c", "#a8761c"] },
+  bronze: { bezel: ["#ffe0c2", "#d08a52", "#6a3414", "#eab084", "#8a4a20"], line: "#4a2008", facets: ["#ffe2c4", "#f0b080", "#c0682c", "#94461a"] },
+  chrome: { bezel: ["#ffffff", "#c4cbd3", "#56606a", "#e6eaee", "#727a84"], line: "#2a3038", facets: ["#ffffff", "#e2e7ec", "#9aa3ad", "#727b86"] },
+  brass: { bezel: ["#fff2c4", "#d8b45a", "#6e5216", "#ecd48c", "#86661e"], line: "#4a360a", facets: ["#fff4cc", "#ecd488", "#c4962e", "#9a7418"] },
+  gunmetal: { bezel: ["#d8dfe6", "#7e8a96", "#262d34", "#aeb8c2", "#46505a"], line: "#14181c", facets: ["#e4eaf0", "#b8c2cc", "#5a6672", "#3a444e"] },
+} as const;
+
+/** Enamel disc: light, middle, dark. */
+const ENAMELS = {
+  pink: ["#ff4a5f", "#c8102e", "#5e0513"],
+  ember: ["#ff7a3a", "#c8360a", "#5e1604"],
+  aqua: ["#5ad0ff", "#0a6ab0", "#04284a"],
+  violet: ["#b884ff", "#5a1ab0", "#200648"],
+  amber: ["#ffc860", "#b8740a", "#4a2a02"],
+  lime: ["#9aff6a", "#2a9a10", "#0a3a04"],
+} as const;
+
+const TRIMS = {
+  silver: ["#ffffff", "#c3cad2", "#5c646e", "#e3e8ed", "#6f7782"],
+  iron: ["#a8aeb4", "#5c6268", "#1e2124", "#7c8288", "#2c3034"],
+  copper: ["#ffd8b8", "#e08a54", "#7a3412", "#f6b890", "#8a4020"],
+} as const;
 
 /** Polygon points of one facet of a star point at angle `a` (radians, 0 = up). */
 function facet(a: number, r: number, inner: number, half: number, side: 1 | -1): string {
@@ -24,8 +57,10 @@ for (let i = 0; i < 8; i++) {
   POINTS.push({ a: (i * Math.PI) / 4, r: i % 2 === 0 ? 35 : 21 });
 }
 
-export function Medallion({ class: className, title }: MedallionProps) {
+export function Medallion({ class: className, title, trim = false, metal = "gold", trimFinish = "silver", enamel = "pink" }: MedallionProps) {
   const id = useSvgId("jkm");
+  const m = METALS[metal];
+  const t = TRIMS[trimFinish];
   return (
     <svg
       class={`jk-medallion${className ? ` ${className}` : ""}`}
@@ -36,17 +71,24 @@ export function Medallion({ class: className, title }: MedallionProps) {
     >
       <defs>
         <linearGradient id={`${id}-bezel`} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#fff6d8" />
-          <stop offset="0.3" stop-color="#d9b25a" />
-          <stop offset="0.5" stop-color="#7a5a1c" />
-          <stop offset="0.7" stop-color="#e9cf86" />
-          <stop offset="1" stop-color="#8a6624" />
+          <stop offset="0" stop-color={m.bezel[0]} />
+          <stop offset="0.3" stop-color={m.bezel[1]} />
+          <stop offset="0.5" stop-color={m.bezel[2]} />
+          <stop offset="0.7" stop-color={m.bezel[3]} />
+          <stop offset="1" stop-color={m.bezel[4]} />
         </linearGradient>
         <radialGradient id={`${id}-enamel`} cx="0.45" cy="0.4" r="0.65">
-          <stop offset="0" stop-color="#ff4a5f" />
-          <stop offset="0.5" stop-color="#c8102e" />
-          <stop offset="1" stop-color="#5e0513" />
+          <stop offset="0" stop-color={ENAMELS[enamel][0]} />
+          <stop offset="0.5" stop-color={ENAMELS[enamel][1]} />
+          <stop offset="1" stop-color={ENAMELS[enamel][2]} />
         </radialGradient>
+        <linearGradient id={`${id}-silver`} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color={t[0]} />
+          <stop offset="0.3" stop-color={t[1]} />
+          <stop offset="0.5" stop-color={t[2]} />
+          <stop offset="0.7" stop-color={t[3]} />
+          <stop offset="1" stop-color={t[4]} />
+        </linearGradient>
         <linearGradient id={`${id}-gloss`} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0" stop-color="#fff" stop-opacity="0.5" />
           <stop offset="1" stop-color="#fff" stop-opacity="0" />
@@ -54,8 +96,9 @@ export function Medallion({ class: className, title }: MedallionProps) {
       </defs>
       <circle cx="50" cy="51.5" r="48" fill="#000" opacity="0.45" />
       <circle cx="50" cy="50" r="48" fill={`url(#${id}-bezel)`} />
-      <circle cx="50" cy="50" r="43.5" fill="none" stroke="#5a3f10" stroke-width="1" />
-      <circle cx="50" cy="50" r="42.5" fill={`url(#${id}-enamel)`} />
+      <circle cx="50" cy="50" r="43.5" fill="none" stroke={m.line} stroke-width="1" />
+      {trim && <circle cx="50" cy="50" r="43" fill={`url(#${id}-silver)`} stroke="#2b2f35" stroke-width="0.5" />}
+      <circle cx="50" cy="50" r={trim ? 40.4 : 42.5} fill={`url(#${id}-enamel)`} stroke={trim ? "#2b2f35" : "none"} stroke-width="0.5" />
       {/* Fine engine-turned rings in the enamel. */}
       <circle cx="50" cy="50" r="37.5" fill="none" stroke="#fff" stroke-opacity="0.13" stroke-width="0.6" />
       <circle cx="50" cy="50" r="31" fill="none" stroke="#fff" stroke-opacity="0.1" stroke-width="0.5" />
@@ -65,12 +108,12 @@ export function Medallion({ class: className, title }: MedallionProps) {
         const inner = i % 2 === 0 ? 8.5 : 7;
         return (
           <g key={i}>
-            <polygon points={facet(p.a, p.r, inner, Math.PI / 8, -1)} fill={i % 2 === 0 ? "#fff1bf" : "#f3d57a"} />
-            <polygon points={facet(p.a, p.r, inner, Math.PI / 8, 1)} fill={i % 2 === 0 ? "#d09a2c" : "#a8761c"} />
+            <polygon points={facet(p.a, p.r, inner, Math.PI / 8, -1)} fill={i % 2 === 0 ? m.facets[0] : m.facets[1]} />
+            <polygon points={facet(p.a, p.r, inner, Math.PI / 8, 1)} fill={i % 2 === 0 ? m.facets[2] : m.facets[3]} />
           </g>
         );
       })}
-      <circle cx="50" cy="50" r="4.2" fill={`url(#${id}-bezel)`} stroke="#5a3f10" stroke-width="0.6" />
+      <circle cx="50" cy="50" r="4.2" fill={`url(#${id}-bezel)`} stroke={m.line} stroke-width="0.6" />
       <ellipse cx="50" cy="30" rx="30" ry="15" fill={`url(#${id}-gloss)`} />
     </svg>
   );

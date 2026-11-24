@@ -375,6 +375,67 @@ export type LyricsMotion = "word" | "letter";
 export type LyricsDisplay = "page" | "scroll";
 export type LibrarySort = "title" | "artist" | "recent" | "key";
 
+/** Jukebox customisation (owner, 2026-11-22). Stored by the core as unknown `ui.look` keys (UiSettings.extra), so an older core keeps them as they are. */
+export type CabinetFinish = "pearl" | "walnut" | "maple" | "aquarium" | "forge" | "ocean" | "brass" | "cyber" | "deco" | "aero";
+export type FrameStyle = "neon" | "pilaster" | "lava" | "light" | "ocean" | "fire" | "water" | "steam" | "data" | "diesel" | "aero";
+export type AccentFinish = "silver" | "red" | "iron" | "copper";
+export type BadgeField = "lapis" | "red" | "silver" | "magma" | "copper" | "carbon" | "glass";
+export type BadgeLettering = "gold" | "cream" | "ember" | "neon" | "white";
+export type BadgeRim = "lapis" | "gold";
+export type LatticeFinish = "silver" | "gold" | "iron";
+/** The warm metal of rims, rings, bezels and plates: gold chrome or bronze. */
+export type MetalFinish = "gold" | "bronze" | "chrome" | "brass" | "gunmetal";
+/** The colour lit plates, faders, focus rings and the screen's top glow take. */
+export type GlowColor = "pink" | "ember" | "aqua" | "violet" | "amber" | "lime";
+/** The colour of the practice lane's note bars. */
+export type LaneBars = "pink" | "ember" | "aqua" | "violet" | "amber" | "lime";
+/** A theme: a preset of every look option (and the lyric colours); "custom" = none. */
+export type ThemeId = "deluxe" | "classic" | "ocean" | "electric" | "molten" | "water" | "steampunk" | "cyberpunk" | "dieselpunk" | "aero" | "custom";
+export type CelebrationKind = "mix" | "starburst" | "fireworks" | "rings" | "bloom" | "inferno";
+/** How often perfect phrases are celebrated: nearly perfect ones too, every one, every 2nd / 3rd, at most every 30 s. */
+export type CelebrateFreq = "often" | "every" | "second" | "third" | "rare";
+/** What comes off the pitch cursor while the singer is on pitch (owner, 2026-11-23). */
+export type PitchFx = "off" | "sparks" | "rings" | "stars" | "flames" | "notes";
+export interface LookSettings {
+  /** The cabinet face: animated pearlescent glow (default), dark walnut, light maple, or an aquarium. */
+  cabinet: CabinetFinish;
+  /** The border round the screen: neon bubble tubes (default), pearl pilasters with two small bubble tubes, a lava lamp, a lightning tube of blue water ("light"), or an ocean tube with fish (goes with the aquarium cabinet). */
+  frame: FrameStyle;
+  /** The bands between the chrome rings (columns and crest clamps): silver chrome (default) or red enamel. */
+  accents: AccentFinish;
+  /** The badge's field inside its medium gold border. */
+  badge_field: BadgeField;
+  /** The badge's lettering. */
+  badge_text: BadgeLettering;
+  /** The badge's frame: lapis lazuli with a thin gold edge (default) or gold chrome. */
+  badge_rim: BadgeRim;
+  /** The bars of the speaker lattices (their surround stays gold). */
+  lattice: LatticeFinish;
+  /** A thin silver chrome line inside the gold of the plates, the key dial, the grilles and the medallions. */
+  inner_trim: boolean;
+  /** Watch only: a perfect voice line rides the melody (for filming). */
+  watch_follow: boolean;
+  /** Windows: the forge's flowing lava and the fire pipe drawn on the GPU (WebGL); off = the lighter 2D versions. */
+  gpu_fx: boolean;
+  /** Windows: the animation frame rate, "standard" (as designed: effects 8-30 fps, lyrics and lane 60) or up to 60 / 120 / 240 fps. */
+  fx_fps: "standard" | "60" | "120" | "240";
+  /** A burst of colour when a phrase is sung perfectly (also in watch only with watch_follow). */
+  celebrate: boolean;
+  celebration: CelebrationKind;
+  /** How often a perfect phrase is celebrated. */
+  celebrate_freq: CelebrateFreq;
+  /** Sparks (or another effect) coming off the pitch cursor while on pitch. */
+  pitch_fx: PitchFx;
+  /** Gold chrome or bronze for every warm metal part. */
+  metal: MetalFinish;
+  /** Glow colour of lit plates and faders, focus rings and the top of the screen. */
+  glow: GlowColor;
+  /** Colour of the practice lane's note bars. */
+  lane_bars: LaneBars;
+  /** The theme last applied (settings > Themes); any option changed after it is "modified". */
+  theme: ThemeId;
+}
+
 export interface AppSettings {
   ui: {
     skin: boolean;
@@ -396,6 +457,8 @@ export interface AppSettings {
     colors: { sung: string; upcoming: string; marker: string };
     library_sort: LibrarySort;
     fullscreen_stage: boolean;
+    /** Jukebox customisation; absent from a settings file written before it existed (read with lookOf()). */
+    look?: LookSettings;
   };
   audio: {
     device_id: string | null;
@@ -416,7 +479,7 @@ export interface AppSettings {
 
 /** `settings_set` takes a deep partial (deep-merged by the core). */
 export type AppSettingsChanges = {
-  ui?: Partial<Omit<AppSettings["ui"], "colors">> & { colors?: Partial<AppSettings["ui"]["colors"]> };
+  ui?: Partial<Omit<AppSettings["ui"], "colors" | "look">> & { colors?: Partial<AppSettings["ui"]["colors"]>; look?: Partial<LookSettings> };
   audio?: Partial<AppSettings["audio"]>;
   practice?: Partial<PracticeAppSettings>;
 };
