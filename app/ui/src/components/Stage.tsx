@@ -3,7 +3,8 @@
 // with its colour wipe, or the scrolling ticker: settings.ui.lyrics_display, D-218);
 // full-screen mode shows only this. Class hooks: .stage, .stage--fullscreen,
 // .stage__info, .stage__title, .stage__artist, .stage__key, .stage__time,
-// .stage__lane, .stage__empty, .stage__unchecked, .stage__tools, .stage__practice.
+// .stage__lane, .stage__empty, .stage__unchecked, .stage__tools, .stage__practice,
+// .stage__welcome (the no-song message), .stage__meta-form (Edit details).
 //
 // Practice mode (WO2 4.5) is a mode of this screen, not a second player: the Practice
 // plate (or P) turns it on; the lane and the lyrics then share the lyrics area
@@ -33,21 +34,27 @@ function MetadataEditor({ onClose }: { onClose: () => void }) {
         void saveMetadata({ title: title.trim(), artist: artist.trim(), album: album.trim() || null }).then((ok) => ok && onClose());
       }}
     >
-      <label>
-        Title <input value={title} required onInput={(e) => setTitle((e.currentTarget as HTMLInputElement).value)} />
+      {/* The title field is the widest (style.css): a normal title fits without scrolling. */}
+      <label class="stage__meta-field stage__meta-field--title">
+        <span class="stage__meta-label">Title</span>
+        <input value={title} required onInput={(e) => setTitle((e.currentTarget as HTMLInputElement).value)} />
       </label>
-      <label>
-        Artist <input value={artist} onInput={(e) => setArtist((e.currentTarget as HTMLInputElement).value)} />
+      <label class="stage__meta-field">
+        <span class="stage__meta-label">Artist</span>
+        <input value={artist} onInput={(e) => setArtist((e.currentTarget as HTMLInputElement).value)} />
       </label>
-      <label>
-        Album <input value={album} onInput={(e) => setAlbum((e.currentTarget as HTMLInputElement).value)} />
+      <label class="stage__meta-field">
+        <span class="stage__meta-label">Album</span>
+        <input value={album} onInput={(e) => setAlbum((e.currentTarget as HTMLInputElement).value)} />
       </label>
-      <button type="submit" class="button button--primary">
-        Save details
-      </button>
-      <button type="button" class="button" onClick={onClose}>
-        Cancel
-      </button>
+      <div class="stage__meta-actions">
+        <button type="submit" class="button button--primary">
+          Save details
+        </button>
+        <button type="button" class="button" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
     </form>
   );
 }
@@ -63,12 +70,17 @@ export function Stage() {
   const practising = usePractice((p) => p.on);
 
   if (!song || !st || !ui) {
+    // One centred group (heading, line, button), so the button sits under the words
+    // instead of floating at the bottom of the empty stage.
     return (
       <div class="stage stage--empty">
-        <p class="stage__empty">Pick a song in the library to start singing.</p>
-        <button type="button" class="button button--primary" onClick={() => go("library")}>
-          Open the library
-        </button>
+        <div class="stage__welcome">
+          <h2 class="stage__welcome-title">No song loaded</h2>
+          <p class="stage__empty">Pick a song in the library to start singing.</p>
+          <button type="button" class="button button--primary stage__welcome-button" onClick={() => go("library")}>
+            Open the library
+          </button>
+        </div>
       </div>
     );
   }

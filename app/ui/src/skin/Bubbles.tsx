@@ -190,8 +190,10 @@ export function Bubbles({ geometry, running, maxBubbles = MAX_BUBBLES, channels 
         return;
       }
       const t0 = performance.now();
-      const dt = (now - last) / 1000;
-      last = now;
+      const dt = Math.min(0.1, (now - last) / 1000);
+      // Advance by whole periods (as lib/fxrate fxLoop does): with last = now a 144 Hz
+      // screen drew 60 fps bubbles at 48 fps and 120 fps ones at 72.
+      last = now - last > frameMs * 4 ? now : last + frameMs * Math.max(1, Math.floor((now - last) / frameMs));
       field.step(dt);
       for (let i = 0; i < dirtyCount; i++) {
         const j = i * 4;

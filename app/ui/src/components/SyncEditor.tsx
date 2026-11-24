@@ -95,6 +95,9 @@ function Offsets() {
   );
 }
 
+/** Room a time label needs after its tick ("10:40" in the label's size, with its padding). */
+const LABEL_ROOM_PX = 48;
+
 /** Timeline of line blocks; drag a block to move its line in time; click to seek. */
 function Timeline({ d, selected, onSelect, onMove, duration }: { d: Draft; selected: number; onSelect: (i: number) => void; onMove: (i: number, start: number) => void; duration: number }) {
   const [pps, setPps] = useState(40); // pixels per second
@@ -102,6 +105,21 @@ function Timeline({ d, selected, onSelect, onMove, duration }: { d: Draft; selec
   const [dragging, setDragging] = useState<{ i: number; start: number } | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const lines = d.lyrics.lines;
+  // What the scroller shows (track pixels), so the time label at its right edge can be
+  // drawn inside it.
+  const [view, setView] = useState({ left: 0, width: Number.POSITIVE_INFINITY });
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const update = () => setView((v) => (v.left === el.scrollLeft && v.width === el.clientWidth ? v : { left: el.scrollLeft, width: el.clientWidth }));
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      el.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
 
   // Keep the playhead in view while playing.
   useEffect(() => {
@@ -152,11 +170,18 @@ function Timeline({ d, selected, onSelect, onMove, duration }: { d: Draft; selec
             void seek((e.clientX - r.left) / pps);
           }}
         >
-          {Array.from({ length: Math.floor(duration / 10) + 1 }, (_, k) => (
-            <span key={k} class="sync__second" style={{ left: `${k * 10 * pps}px` }}>
-              {formatTime(k * 10)}
-            </span>
-          ))}
+          {Array.from({ length: Math.floor(duration / 10) + 1 }, (_, k) => {
+            // A label too close to the end of the track, or to the right edge of what the
+            // scroller shows, is drawn to the left of its tick, so it is not cut off.
+            const x = k * 10 * pps;
+            const right = Math.min(Math.max(duration, 1) * pps, view.left + view.width);
+            const end = x < right && right - x < LABEL_ROOM_PX;
+            return (
+              <span key={k} class={`sync__second${end && k > 0 ? " sync__second--end" : ""}`} style={{ left: `${k * 10 * pps}px` }}>
+                {formatTime(k * 10)}
+              </span>
+            );
+          })}
           {lines.map((l, i) => {
             const start = dragging?.i === i ? dragging.start : l.start;
             return (

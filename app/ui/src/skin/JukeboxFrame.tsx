@@ -363,11 +363,23 @@ export function JukeboxFrame({ children, console: consoleContent, crest, bubbles
   const [measured, setMeasured] = useState<Measured | null>(null);
   /** 0 = standard rates; otherwise the frame rate setting (D-274). */
   const fxCap = useEffectFps(0);
-  /** A GPU effect that could not start (no WebGL, lost context): its 2D version from then on. */
-  const [lavaFailed, setLavaFailed] = useState(false);
-  const [fireFailed, setFireFailed] = useState(false);
+  /**
+   * GPU effects that could not start or whose context was lost for good: that kind only
+   * shows its 2D version (the other themes keep theirs). Turning "GPU lava and fire" off
+   * and on again gives every one another try.
+   */
+  const [cabFailed, setCabFailed] = useState<ReadonlySet<string>>(() => new Set());
+  const [pipeFailed, setPipeFailed] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    if (!gpu) {
+      setCabFailed((s) => (s.size ? new Set() : s));
+      setPipeFailed((s) => (s.size ? new Set() : s));
+    }
+  }, [gpu]);
   const gpuCabinet = (GPU_CABINETS as readonly string[]).includes(look.cabinet) ? (look.cabinet as GpuCabinet) : null;
   const gpuPipe = (GPU_PIPES as readonly string[]).includes(look.frame) ? (look.frame as GpuPipe) : null;
+  const lavaFailed = gpuCabinet ? cabFailed.has(gpuCabinet) : false;
+  const fireFailed = gpuPipe ? pipeFailed.has(gpuPipe) : false;
   const glassPipe = !!GLASS_PIPES[look.frame];
   const visible = usePageVisible();
   const animate = motion === "full";
@@ -517,7 +529,7 @@ export function JukeboxFrame({ children, console: consoleContent, crest, bubbles
             </>
           )}
           {gpuCabinet && gpu && !lavaFailed && g && (
-            <CabinetGL kind={gpuCabinet} class="jk-lava" width={g.width} height={g.height} running={running} animate={animate} onFail={() => setLavaFailed(true)} />
+            <CabinetGL kind={gpuCabinet} class="jk-lava" width={g.width} height={g.height} running={running} animate={animate} onFail={() => setCabFailed((s) => new Set(s).add(gpuCabinet))} />
           )}
           {look.cabinet === "forge" && !(gpu && !lavaFailed) && (
             <>
@@ -544,7 +556,7 @@ export function JukeboxFrame({ children, console: consoleContent, crest, bubbles
         {g && look.frame === "light" && <Lightning geometry={g} running={running && animate} class="jk-frame-layer jk-bubbles" />}
         {g && look.frame === "ocean" && <OceanTube geometry={g} running={running && animate} class="jk-frame-layer jk-bubbles" />}
         {g && gpuPipe && gpu && !fireFailed && (
-          <PipeGL kind={gpuPipe} geometry={g} running={running && animate} onFail={() => setFireFailed(true)} class="jk-frame-layer jk-bubbles" />
+          <PipeGL kind={gpuPipe} geometry={g} running={running && animate} onFail={() => setPipeFailed((s) => new Set(s).add(gpuPipe))} class="jk-frame-layer jk-bubbles" />
         )}
         {g && look.frame === "fire" && !(gpu && !fireFailed) && <FireTube geometry={g} running={running && animate} class="jk-frame-layer jk-bubbles" />}
         {art && <img class="jk-frame-layer jk-frame-trim" src={art.trim} alt="" aria-hidden="true" draggable={false} />}

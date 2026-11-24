@@ -153,7 +153,12 @@ function NotReadyPanel({ st, song }: { st: PracticeState; song: SongDetail }) {
 function Chips({ st }: { st: PracticeState }) {
   const chips: ComponentChildren[] = [];
   if (st.phase === "watch_only") {
+    // PREVIEW: with the follow voice on, watch only shows perfect phrases and their
+    // celebrations; the marker says a screenshot of it is a preview, not a sung score.
     chips.push(
+      <span key="p" class="practice-chip practice-chip--preview" title="Watch only is a preview: nothing you sing is listened to or graded">
+        Preview
+      </span>,
       <button key="w" type="button" class="practice-chip practice-chip--watch" title={st.watch_only?.message ?? ""} onClick={() => void openPicker()}>
         Watch only
       </button>,
@@ -190,18 +195,38 @@ function Chips({ st }: { st: PracticeState }) {
   return <div class="practice__chips">{chips}</div>;
 }
 
-/** Watch only for a reason the singer can fix: say so with the exact steps. */
-function WatchOnlyNote({ st }: { st: PracticeState }) {
+/**
+ * The reasons for watch only the singer hid with "Hide", for the rest of this run of the
+ * app: the note does not come back each time practice is turned on (the Watch only chip
+ * stays, and opens the input picker).
+ */
+const hiddenWatchNotes = new Set<string>();
+
+/** Test hook: forget the hidden notes (a new run of the app). */
+export function resetHiddenWatchNotes(): void {
+  hiddenWatchNotes.clear();
+}
+
+/**
+ * Watch only for a reason the singer can fix: say so with the exact steps, in a slim
+ * banner above the lane (never over the notes).
+ */
+function WatchOnlyNote({ st, follow }: { st: PracticeState; follow: boolean }) {
   const w = st.watch_only;
   const perm = usePractice((s) => s.permission);
-  const [hidden, setHidden] = useState<string | null>(null);
-  if (!w || w.code === "chosen" || hidden === w.code) return null;
+  const [, rerender] = useState(0);
+  if (!w || w.code === "chosen" || hiddenWatchNotes.has(w.code)) return null;
   const windowsOff = perm?.windows && (perm.windows.microphone_access === "deny" || perm.windows.desktop_apps === "deny" || perm.windows.user_access === "deny");
+  // With the follow voice on, watch only shows perfect phrases (and their celebrations):
+  // say that this is the preview, so it is never read as the singer's own grade.
+  const preview = follow
+    ? "Watch-only preview: a perfect voice follows the melody. Your own voice is not graded until you choose a microphone."
+    : "Watch-only preview: the notes and keys show the melody. Your own voice is not graded until you choose a microphone.";
   return (
-    <div class="practice-note" role="status">
+    <div class="practice-note practice-note--banner" role="status">
       <p>
         <strong>{w.code === "no_device" ? "No microphone found." : w.code === "input_lost" ? "The input stopped." : windowsOff ? "Windows' microphone privacy switch is off." : "The microphone is not allowed."}</strong>{" "}
-        {w.message} The notes and keys still show the melody; nothing is graded.
+        {w.message} {preview}
       </p>
       <div class="practice-note__actions">
         {(w.code === "permission_denied" || w.code === "restricted") && (
@@ -212,7 +237,15 @@ function WatchOnlyNote({ st }: { st: PracticeState }) {
         <button type="button" class="button button--small" onClick={() => void openPicker()}>
           Choose input…
         </button>
-        <button type="button" class="button button--small" onClick={() => setHidden(w.code)} title="The Watch only chip stays at the top">
+        <button
+          type="button"
+          class="button button--small"
+          onClick={() => {
+            hiddenWatchNotes.add(w.code);
+            rerender((n) => n + 1);
+          }}
+          title="Hidden until the app is closed; the Watch only chip stays at the top of the lane"
+        >
           Hide
         </button>
       </div>
@@ -287,6 +320,8 @@ export function PracticeView({ song, lyricsOffsetS, deviceOffsetS }: { song: Son
   const laneReady = !!st && !!p.guide && (st.phase === "listening" || st.phase === "watch_only" || st.phase === "result");
   return (
     <div class={`practice${showLyrics ? "" : " practice--lane-only"}`} data-phase={st?.phase ?? "starting"}>
+      {/* In the flow above the lane, not over it: the notes are never covered. */}
+      {st && laneReady && <WatchOnlyNote st={st} follow={look.watch_follow} />}
       <div class="practice__lane">
         {laneReady && (
           <PracticeLane
@@ -312,7 +347,6 @@ export function PracticeView({ song, lyricsOffsetS, deviceOffsetS }: { song: Son
           />
         )}
         {st && laneReady && <Chips st={st} />}
-        {st && laneReady && <WatchOnlyNote st={st} />}
       </div>
       {showLyrics && laneReady && (
         <div class="practice__lyrics">

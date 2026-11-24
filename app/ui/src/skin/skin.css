@@ -1039,7 +1039,7 @@
 
 .jk-rack-inner {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, clamp(320px, 44vh, 950px)), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, clamp(320px, 52vh, 1100px)), 1fr));
   gap: clamp(6px, 1vh, 22px) clamp(8px, 1.1vw, 42px);
   padding: clamp(8px, 1.3vh, 28px);
   border-radius: 8px;
@@ -1773,4 +1773,18 @@
 
 .jk-frame[data-jk-frame-style="aero"] .jk-screen-strip {
   background: linear-gradient(180deg, #ffffff 0%, #bff6ff 30%, #4ab8ff 65%, #7aee3a 100%);
+}
+
+/* The console's bare readouts (time, CLIP) sit on the cabinet, which can be bright lava,
+   a neon city or a sunny sky: a small dark pill like the fader labels keeps them legible
+   on every cabinet (pre-launch review, D-277). */
+.jk-frame .skin-transport__time,
+.jk-frame .skin-clip__text {
+  padding: 0.12em 0.5em;
+  border-radius: 0.5em;
+  background: rgba(8, 6, 12, 0.72);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  text-shadow: none;
 }

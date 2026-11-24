@@ -1,5 +1,26 @@
 # Screenshots
 
+## Current (Open Mic, 24 Nov 2026)
+
+Taken for the README in headless Microsoft Edge with the app's mock back end and its
+public-domain demo songs (`?demo=1` leaves the broken-file test examples out), at 1440 x 900
+(`sing-molten`, `practice-cyberpunk`, `themes`) and 1280 x 800 (`theme-*`), saved as JPEG
+(quality 84). The GPU cabinets and pipes are drawn by Edge's software renderer here; on a
+graphics card they look the same.
+
+| file | what it shows |
+|---|---|
+| `sing-molten.jpg` | singing "Twinkle, Twinkle, Little Star" at +2 in the Molten theme: fire in the pipes, a lava cabinet, the gold wipe |
+| `practice-cyberpunk.jpg` | practice mode in watch only (a perfect voice follows the melody, marked PREVIEW) in the Cyberpunk theme, with a perfect-phrase celebration |
+| `theme-deluxe.jpg`, `theme-water.jpg`, `theme-steampunk.jpg`, `theme-aero.jpg` | the library in four themes |
+| `themes.jpg` | Settings > Themes |
+
+Content: "Twinkle, Twinkle, Little Star" (Jane Taylor, 1806), "Frère Jacques", "Row, Row,
+Row Your Boat" (1852) and "Mary Had a Little Lamb" (Sarah Josepha Hale, 1830) are public
+domain; their audio in the mock is generated.
+
+## Earlier captures (under the working name Jukeoke)
+
 Captures of the app taken during testing on 2026-11-17 (and 18 for the two `stage-page-*` files) on Windows 11 (WebView2), reduced
 for the README: scaled to 1200 x 750 with a Lanczos filter (from 1440 x 900; `key-dial.png`
 is a 640 x 360 crop, not scaled) and, for the skinned views, colour depth reduced to 6 bits

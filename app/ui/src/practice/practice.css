@@ -154,6 +154,17 @@
   color: #d9c8ff;
 }
 
+/* Next to Watch only: a filled tag, so a screenshot of watch only (perfect phrases and
+   all) is not read as a sung score. Not a button. */
+.practice-chip--preview,
+.app-skin .practice-chip--preview {
+  cursor: default;
+  border-color: #b08cff;
+  background: #b08cff;
+  color: #170f26;
+  box-shadow: none;
+}
+
 .practice-chip--score {
   cursor: default;
   border-color: var(--sung);
@@ -177,20 +188,15 @@
   transform-origin: bottom;
 }
 
-/* A plain note over the lane's bottom (watch only for a reason the singer can fix). */
+/* A plain note: watch only for a reason the singer can fix (the banner), or the input
+   picker's permission note (inline). Never over the lane: a note there hid the notes. */
 .practice-note {
-  position: absolute;
-  left: 50%;
-  bottom: clamp(30px, 6vh, 140px);
-  transform: translateX(-50%);
-  width: min(46rem, 80%);
   padding: 0.6em 0.9em;
   border: 1px solid rgba(255, 210, 63, 0.7);
   border-radius: 0.6rem;
   background: rgba(14, 10, 20, 0.92);
   color: var(--stage-fg);
   font-size: 0.9rem;
-  z-index: 3;
 }
 
 .practice-note p {
@@ -198,9 +204,6 @@
 }
 
 .practice-note--inline {
-  position: static;
-  transform: none;
-  width: auto;
   margin: 0 0 0.8em;
 }
 
@@ -208,6 +211,48 @@
   display: flex;
   gap: 0.4em;
   flex-wrap: wrap;
+}
+
+/* The watch-only banner: a slim strip in the flow above the lane (the lane gives up the
+   room), the words on the left and the actions on the right. */
+.practice-note--banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5em 1em;
+  padding: 0.3em 0.45em 0.3em 0.8em;
+  border-color: rgba(255, 210, 63, 0.55);
+  border-radius: 0.5rem;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.practice-note--banner p {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.practice-note--banner strong {
+  color: #ffd23f;
+}
+
+.practice-note--banner .practice-note__actions {
+  flex: none;
+  flex-wrap: nowrap;
+}
+
+/* In a short window the lane's own minimum would push the stage past the frame by the
+   banner's height (seen at 1024x700): the lane takes that height off its minimum. */
+.practice-note--banner + .practice__lane {
+  min-height: clamp(110px, calc(29vh - 46px), 1300px);
+}
+
+/* A narrow window: the actions go under the words. */
+@media (max-width: 760px) {
+  .practice-note--banner {
+    flex-wrap: wrap;
+  }
 }
 
 /* ---------- panels over the practice area ---------- */
@@ -616,9 +661,28 @@
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+/* More lines than fit: the edge where lines are hidden fades out (data-more is set by
+   Result.tsx on scroll and resize), so a row cut there reads as "scroll for more". */
+.practice-result__lines[data-more="below"] {
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 2.6em), rgba(0, 0, 0, 0.12));
+  mask-image: linear-gradient(180deg, #000 calc(100% - 2.6em), rgba(0, 0, 0, 0.12));
+}
+
+.practice-result__lines[data-more="above"] {
+  -webkit-mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.12), #000 2.6em);
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.12), #000 2.6em);
+}
+
+.practice-result__lines[data-more="both"] {
+  -webkit-mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.12), #000 2.6em, #000 calc(100% - 2.6em), rgba(0, 0, 0, 0.12));
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.12), #000 2.6em, #000 calc(100% - 2.6em), rgba(0, 0, 0, 0.12));
+}
+
+/* The last column is a fixed width, not auto: rows without "Guide wrong?" (lines that
+   were not graded) keep their bars and scores in line with the rows that have it. */
 .practice-result__row {
   display: grid;
-  grid-template-columns: minmax(0, 2.2fr) minmax(4rem, 1fr) 5.8em 4.3em auto;
+  grid-template-columns: minmax(0, 2.2fr) minmax(4rem, 1fr) 5.8em 4.6em 7.4em;
   gap: 0.75em;
   align-items: center;
   padding: 0.2em 0.4em;
@@ -635,14 +699,9 @@
     column-gap: clamp(20px, 2.4vw, 90px);
   }
 
-  /* Narrower rows: the sharp / flat sign alone (its cents in the tooltip). */
   .practice-result__row {
-    grid-template-columns: minmax(0, 2.4fr) minmax(3rem, 0.8fr) 5.4em 1.1em auto;
+    grid-template-columns: minmax(0, 2.4fr) minmax(3rem, 0.8fr) 5.4em 4.6em 7.4em;
     gap: 0.7em;
-  }
-
-  .practice-result__ltword {
-    display: none;
   }
 }
 
@@ -688,6 +747,12 @@
 .practice-result__ltend {
   color: #c9c0d6;
   font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+/* The sign larger than its word, both in the column's own colour. */
+.practice-result__ltend > span {
+  font-size: 1.15em;
 }
 
 /* Weak lines: a red tab, a red bar and the word "weak" (never colour alone). */
@@ -714,6 +779,11 @@
   opacity: 0.55;
 }
 
+.practice-result__lact {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .practice-result__exclude {
   font: inherit;
   font-size: 0.75rem;
@@ -722,7 +792,23 @@
   border-radius: 0.3rem;
   background: transparent;
   color: #c9c0d6;
+  white-space: nowrap;
   cursor: pointer;
+}
+
+.practice-result__exclude:hover {
+  border-color: #8a7d9c;
+  color: var(--stage-fg);
+}
+
+/* "Guide wrong?" stays in view on the weak and excluded lines, where it is likely to be
+   wanted; on the other graded lines it shows when the row is hovered or a key moves the
+   focus into it (it stays in the tab order), so a long breakdown is not a column of
+   identical buttons. Screens without hover show it on every graded line. */
+@media (hover: hover) {
+  .practice-result__row:not(.practice-result__row--weak):not(.practice-result__row--excluded):not(:hover):not(:focus-within) .practice-result__exclude {
+    opacity: 0;
+  }
 }
 
 .practice-result__actions {

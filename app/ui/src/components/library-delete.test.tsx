@@ -94,7 +94,7 @@ describe("deleting songs, jukebox look (skin on)", () => {
     // Cancel.
     strip(/Frère Jacques/)!.querySelector<HTMLButtonElement>(".library__trash")!.click();
     await until(() => !!dialog());
-    expect(q(".confirm__title")!.textContent).toBe("Delete “Traditional - Frère Jacques”?");
+    expect(q(".confirm__title")!.textContent).toBe("Delete “Frère Jacques” (Traditional)?");
     expect(q(".confirm__body")!.textContent).toMatch(/^It moves to Deleted songs, where you can restore it or delete it for good\./);
     // Focus moves to Cancel in an effect after the dialog renders (later on a busy PC).
     await until(() => !!document.activeElement?.classList.contains("confirm__cancel"));
@@ -143,7 +143,7 @@ describe("deleting songs, jukebox look (skin on)", () => {
     (document.activeElement as HTMLElement | null)?.blur();
     press("Delete");
     await until(() => !!dialog());
-    expect(q(".confirm__title")!.textContent).toBe("Delete “Jane Taylor (1806) - Twinkle, Twinkle, Little Star”?");
+    expect(q(".confirm__title")!.textContent).toBe("Delete “Twinkle, Twinkle, Little Star” (Jane Taylor, 1806)?");
     expect(q(".confirm__note")!.textContent).toBe("It is playing now; it will stop.");
     q<HTMLButtonElement>(".confirm__ok")!.click();
     await until(() => !dialog() && !strip(/Twinkle, Twinkle, Little Star/));
@@ -171,7 +171,7 @@ describe("deleting songs, jukebox look (skin on)", () => {
     card.focus();
     press("Delete", card);
     await until(() => !!dialog());
-    expect(q(".confirm__title")!.textContent).toBe("Delete “Traditional (1852) - Row, Row, Row Your Boat”?");
+    expect(q(".confirm__title")!.textContent).toBe("Delete “Row, Row, Row Your Boat” (Traditional, 1852)?");
     press("Escape", document.activeElement!);
     await until(() => !dialog());
     expect(await libraryIds(api)).toContain("Traditional - Row, Row, Row Your Boat.jksong");
@@ -288,7 +288,7 @@ describe("deleting songs, jukebox look (skin on)", () => {
     const freeBefore = (await api.libraryList()).free_bytes;
     deletedRow(/Mary Had/)!.querySelector<HTMLButtonElement>(".deleted-song__purge")!.click();
     await until(() => !!dialog());
-    expect(q(".confirm__title")!.textContent).toBe("Delete “Sarah Josepha Hale (1830) - Mary Had a Little Lamb” for good?");
+    expect(q(".confirm__title")!.textContent).toBe("Delete “Mary Had a Little Lamb” (Sarah Josepha Hale, 1830) for good?");
     expect(q(".confirm__body")!.textContent).toBe("This cannot be undone. The song file is removed from the drive, freeing 52.0 MB.");
     expect(q(".confirm__ok")!.textContent).toBe("Delete for good");
     press("Escape", document.activeElement!);

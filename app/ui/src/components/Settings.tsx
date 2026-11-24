@@ -321,7 +321,7 @@ function PracticeSettings() {
         label="Watch only follows the singer"
         checked={lookOf(settings.ui).watch_follow}
         onChange={(v) => setLook({ watch_follow: v })}
-        hint="With no microphone (Watch only), a perfect voice rides the melody: the marker, its trail and the lit notes of a flawless take, so it looks right on video."
+        hint="With no microphone (Watch only), a perfect voice rides the melody: the marker, its trail and the lit notes of a flawless take, so a performance without a microphone still shows a singer on the melody."
       />
       <Toggle
         label="Celebrate perfect phrases"
@@ -456,7 +456,7 @@ export function Settings() {
   return (
     <div class="settings">
       <Section title="Look">
-        <Toggle label="Jukebox look" checked={ui.skin} onChange={(v) => changeSettings({ ui: { skin: v } })} hint="Off shows this plain layout." />
+        <Toggle label="Jukebox look" checked={ui.skin} onChange={(v) => changeSettings({ ui: { skin: v } })} hint="Off: a plain, flat layout." />
         <Toggle label="Bubbles" checked={ui.bubbles} disabled={!ui.skin} onChange={(v) => changeSettings({ ui: { bubbles: v } })} hint="Bubbles never run when motion is reduced." />
         <Select<MotionSetting>
           label="Motion"
@@ -524,7 +524,7 @@ export function Settings() {
         />
         <p class="hint">For both displays: how the colour wipe moves through a line, or how the ticker moves under the marker. Smooth: it never stops while a line is sung, slower for a held word and faster for quick ones, and each word is reached as it is sung. Exact: every letter is reached exactly while it is sung, which makes it speed up and slow down within words.</p>
         <Slider label="Text size" value={ui.lyrics_text_size} min={28} max={120} step={2} format={(v) => `${v} px`} onInput={(v) => changeSettings({ ui: { lyrics_text_size: v } }, 300)} />
-        <p class="hint">Measured on a 1440 × 900 window and scaled with the window. Static lines: a line too long for the screen is made smaller or split over two rows. Ticker: if a fast passage would not leave at least 2 seconds of upcoming words on screen, the text is made smaller for that song.</p>
+        <p class="hint">The size on a 1440 × 900 window; it scales with the window. Static lines: a line too long for the screen is made smaller or split over two rows. Ticker: if a fast passage would not leave at least 2 seconds of upcoming words on screen, the text is made smaller for that song.</p>
         <Slider
           label="Marker position (from the left)"
           value={Math.round(ui.marker_position * 100)}
@@ -624,11 +624,17 @@ export function Settings() {
             {info.capabilities.recorder.available ? "Available" : `Not available: ${info.capabilities.recorder.reason ?? ""}`}
             {info.capabilities.recorder.permission !== "not_required" ? ` (permission: ${info.capabilities.recorder.permission.replace("_", " ")})` : ""}
           </dd>
-          <dt>Web engine</dt>
-          <dd>
-            <code>{navigator.userAgent}</code>
-          </dd>
         </dl>
+        {/* The web engine's user-agent string is for bug reports, not for reading: folded away. */}
+        <details class="settings__details">
+          <summary>Details</summary>
+          <dl class="facts">
+            <dt>Web engine</dt>
+            <dd>
+              <code>{navigator.userAgent}</code>
+            </dd>
+          </dl>
+        </details>
         {info.translocated && (
           <p class="note note--warn">
             macOS is running this app from a temporary copy, so it cannot see the folder it came from. Move the app out of Downloads, or follow the first-launch steps in the manual.

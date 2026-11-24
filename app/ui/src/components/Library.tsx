@@ -21,6 +21,8 @@
 // Deleting: .library__trash (a card's delete control), .library__views (Songs /
 // Deleted songs), .library__select-bar, .library__strip--ticked, .title-strip--ticked,
 // .deleted, .deleted-song, .confirm (the dialog), .confirm__cancel, .confirm__ok.
+// The skinned strip's plates sit in .library__strip-actions, an overlay shown on the
+// hovered or focused strip (skin-app.css). No songs at all: .library__empty--none.
 //
 // Practice data (Work Order 2, APP_API 12.3: the melody guide practice mode draws and
 // grades against): each song says whether practice is ready (a badge on the plain card,
@@ -42,6 +44,7 @@ import {
   deleteSongs,
   guideNeedsAdding,
   getApiSync,
+  go,
   loadSong,
   purgeSongs,
   refreshDeleted,
@@ -178,14 +181,17 @@ export function practiceBadge(g: GuideStatus | undefined): { text: string; kind:
   }
 }
 
-/** Short notes about a song for the skinned title strip (the plain card shows them as badges). */
+/**
+ * Short notes about a song for the skinned title strip (the plain card shows them as
+ * badges). The Studio preset is left off: on its own, "Clean" read like "no explicit
+ * lyrics", and the strip's one line has no room to say "made with the Clean preset".
+ */
 function stripNote(song: SongSummary): string | undefined {
   if (song.error) return song.error;
   const notes: string[] = [];
   if (!song.has_lyrics) notes.push("No lyrics");
   else if (!song.lyrics_checked) notes.push("Lyrics not checked");
   if (song.semitones !== 0) notes.push(`Key ${signed(song.semitones)}`);
-  if (song.preset === "clean") notes.push("Clean");
   const practice = practiceBadge(song.guide);
   if (practice) notes.push(practice.text);
   return notes.length ? notes.join(" · ") : undefined;
@@ -241,7 +247,7 @@ function SkinCard({ song, code, current, picking, onDelete }: { song: SongSummar
   return (
     <div
       ref={ref}
-      class={`library__strip${current ? " library__strip--current" : ""}${damaged ? " library__strip--damaged" : ""}${picking?.ticked ? " library__strip--ticked" : ""}${picking ? " library__strip--picking" : ""}${!picking && !damaged && guideNeedsAdding(song.guide) ? " library__strip--can-add" : ""}`}
+      class={`library__strip${current ? " library__strip--current" : ""}${damaged ? " library__strip--damaged" : ""}${picking?.ticked ? " library__strip--ticked" : ""}${picking ? " library__strip--picking" : ""}`}
       data-song-id={song.song_id}
       data-practice={damaged ? undefined : practiceBadge(song.guide)?.kind}
     >
@@ -289,7 +295,12 @@ function Card({ song, code, current, picking, onDelete }: { song: SongSummary; c
             {!song.has_lyrics && <span class="title-strip__badge">No lyrics</span>}
             {song.has_lyrics && !song.lyrics_checked && <span class="title-strip__badge title-strip__badge--warn">Lyrics not checked</span>}
             {song.semitones !== 0 && <span class="title-strip__badge">Key {signed(song.semitones)}</span>}
-            {song.preset === "clean" && <span class="title-strip__badge">Clean</span>}
+            {/* "Made with": the preset's name alone ("Clean") read like "no explicit lyrics". */}
+            {song.preset === "clean" && (
+              <span class="title-strip__badge" title="Made in the Studio with the Clean preset">
+                Made with Clean
+              </span>
+            )}
             {practice && (
               <span class={`title-strip__badge title-strip__badge--practice title-strip__badge--practice-${practice.kind}`} title={practice.title}>
                 {practice.text}
@@ -462,6 +473,18 @@ export function ConfirmDialog(props: {
   );
 }
 
+/**
+ * A song as the confirmation names it: the title first, as the strip prints it, and the
+ * artist after it, “Frère Jacques” (Traditional). A year the artist field already holds
+ * in brackets joins with a comma, “Twinkle, Twinkle, Little Star” (Jane Taylor, 1806),
+ * so the brackets never nest.
+ */
+export function confirmName(s: { title: string; artist: string }): string {
+  const title = `“${s.title || "Untitled"}”`;
+  const artist = s.artist.trim().replace(/\s*\(([^()]*)\)$/, ", $1");
+  return artist ? `${title} (${artist})` : title;
+}
+
 /** The text and action of each question (D-230's wording). */
 function AskDialog({ ask, skin, onDone }: { ask: Ask; skin: boolean; onDone: (confirmed: boolean) => void }) {
   const library = useApp((s) => s.library);
@@ -477,7 +500,7 @@ function AskDialog({ ask, skin, onDone }: { ask: Ask; skin: boolean; onDone: (co
     return (
       <ConfirmDialog
         skin={skin}
-        title={one ? `Delete “${songLabel(one)}”?` : `Delete ${ask.ids.length} songs?`}
+        title={one ? `Delete ${confirmName(one)}?` : `Delete ${ask.ids.length} songs?`}
         confirmLabel={one ? "Delete" : `Delete ${ask.ids.length} songs`}
         onConfirm={() => run(deleteSongs(ask.ids))}
         onCancel={cancel}
@@ -503,7 +526,7 @@ function AskDialog({ ask, skin, onDone }: { ask: Ask; skin: boolean; onDone: (co
     return (
       <ConfirmDialog
         skin={skin}
-        title={one ? `Delete “${songLabel(one)}” for good?` : `Delete ${ask.ids.length} songs for good?`}
+        title={one ? `Delete ${confirmName(one)} for good?` : `Delete ${ask.ids.length} songs for good?`}
         confirmLabel="Delete for good"
         onConfirm={() => run(purgeSongs(ask.ids))}
         onCancel={cancel}
@@ -651,6 +674,7 @@ export function Library({ skin = false }: { skin?: boolean }) {
   const searchFocus = useApp((s) => s.searchFocus);
   const deletedList = useApp((s) => s.deleted);
   const platform = useApp((s) => s.info?.platform ?? "windows");
+  const studioHere = useApp((s) => s.info?.capabilities.studio.available ?? false);
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"songs" | "deleted">("songs");
   const [picking, setPicking] = useState(false);
@@ -670,6 +694,9 @@ export function Library({ skin = false }: { skin?: boolean }) {
   const codes = useMemo(() => new Map(songs.map((s, i) => [s.song_id, selectionCode(i)])), [songs]);
   const playable = songs.filter((s) => !s.error).length;
   const deletedCount = deletedList?.count ?? library?.deleted_count ?? 0;
+  // An empty library shows its own centred message; search and sort have nothing to
+  // work on then, so they stay hidden (Deleted songs keeps its search).
+  const noSongs = !!library && songs.length === 0 && view === "songs";
 
   // Ticks of songs that are gone (deleted, or removed by hand) are dropped.
   useEffect(() => {
@@ -729,7 +756,11 @@ export function Library({ skin = false }: { skin?: boolean }) {
     if (confirmed && was?.kind === "delete") stopPicking();
   };
 
-  const search = (
+  // A short placeholder (the long one was cut off in narrow toolbars); what it searches
+  // and the shortcut, in the Mac's or the PC's spelling, are in the tooltip.
+  const mac = platform === "macos";
+  const searchTip = `${view === "deleted" ? "Search the deleted songs by" : "Search the library by"} title, artist or album (${mac ? "⌘F" : "Ctrl+F"})`;
+  const search = !noSongs && (
     <div class="field field--search library__search">
       <label for="library-search" class="visually-hidden">
         {view === "deleted" ? "Search deleted songs" : "Search songs"}
@@ -739,7 +770,9 @@ export function Library({ skin = false }: { skin?: boolean }) {
         ref={searchRef}
         class={skin ? "jk-glass-input" : undefined}
         type="search"
-        placeholder={view === "deleted" ? "Search deleted songs" : "Search title, artist or album (Ctrl+F)"}
+        placeholder={view === "deleted" ? "Search deleted songs" : "Search songs"}
+        title={searchTip}
+        aria-keyshortcuts={mac ? "Meta+F" : "Control+F"}
         value={query}
         onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)}
         onKeyDown={(e) => {
@@ -764,14 +797,24 @@ export function Library({ skin = false }: { skin?: boolean }) {
       )}
     </p>
   );
+  // No songs at all: a centred welcome (heading, where songs come from, and the way to
+  // the Studio when this computer can run it) instead of a grey line in an empty rack.
   const empty = (
     <>
       {library && songs.length === 0 && (
-        <div class="library__empty">
-          <p>No songs yet.</p>
-          <p>
+        <div class="library__empty library__empty--none" role="status">
+          <h2 class="library__empty-title">No songs yet</h2>
+          <p class="library__empty-text">
             Put <code>.jksong</code> files in <code>{libraryPath}</code>, or make one in the Studio on a Windows computer with an NVIDIA graphics card.
           </p>
+          {studioHere &&
+            (skin ? (
+              <PlateButton class="library__empty-studio" label="Open the Studio" title="Make a song from an audio file" onClick={() => go("studio")} />
+            ) : (
+              <button type="button" class="button button--primary library__empty-studio" title="Make a song from an audio file" onClick={() => go("studio")}>
+                Open the Studio
+              </button>
+            ))}
         </div>
       )}
       {songs.length > 0 && shown.length === 0 && <p class="library__empty">No song matches “{query}”.</p>}
@@ -846,7 +889,7 @@ export function Library({ skin = false }: { skin?: boolean }) {
       <div class={`library library--skin${picking ? " library--picking" : ""}${view === "deleted" ? " library--deleted" : ""}`}>
         <div class="library__toolbar">
           {search}
-          {view === "songs" && !picking && (
+          {view === "songs" && !picking && !noSongs && (
             <div class="library__sort library__sort--plates" role="group" aria-label="Sort by">
               {SORTS.map((o) => (
                 <PlateButton
@@ -894,7 +937,7 @@ export function Library({ skin = false }: { skin?: boolean }) {
     <div class={`library${picking ? " library--picking" : ""}${view === "deleted" ? " library--deleted" : ""}`}>
       <div class="library__toolbar">
         {search}
-        {view === "songs" && !picking && (
+        {view === "songs" && !picking && !noSongs && (
           <div class="library__sort">
             <Select<LibrarySort> label="Sort by" value={sort} options={SORTS} onChange={(v) => changeSettings({ ui: { library_sort: v } })} />
           </div>

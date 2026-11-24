@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "license": "GPL-3.0-or-later",
-  "description": "Web UI of the Jukeoke desktop app (Preact + TypeScript, rendered by Tauri's system web view).",
+  "description": "Web UI of the Open Mic desktop app (Preact + TypeScript, rendered by Tauri's system web view).",
   "type": "module",
   "scripts": {
     "dev": "vite",

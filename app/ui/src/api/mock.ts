@@ -15,6 +15,7 @@
 //                          "Record songs separately" then explain; default: 1 on Windows)
 //   ?empty=1               empty library
 //   ?many=200              add generated filler songs (library performance)
+//   ?demo=1                leave out the broken-file examples (clean screenshots)
 //   ?skin=0                start with the plain look (settings.ui.skin off)
 //   ?lyricsmotion=letter   start with the letter-exact pace (settings.ui.lyrics_motion)
 //   ?lyricsdisplay=scroll  start with the scrolling ticker instead of the page display
@@ -146,6 +147,8 @@ export interface MockOptions {
   /** Media players open (Windows; the Mac has no player link). */
   players: number;
   empty: boolean;
+  /** Leave the broken-file examples out of the library (README / LinkedIn screenshots). */
+  demo: boolean;
   many: number;
   /** settings.ui.skin at start (the jukebox look); the tests run both looks. */
   skin: boolean;
@@ -194,6 +197,7 @@ const DEFAULT_OPTIONS: MockOptions = {
   recorder: "not_required",
   players: 1,
   empty: false,
+  demo: false,
   many: 0,
   skin: true,
   lyricsMotion: "word",
@@ -257,7 +261,7 @@ const MOCK_PLAYLIST: MockTrack[] = [
 
 function mockSong(folder: string, n: number, t: MockTrack, status: RecordedSong["status"], reason: string | null): RecordedSong {
   const stem = `${String(n).padStart(2, "0")} ${t.artist} - ${t.title}`;
-  const dir = `C:\\Jukeoke\\Recordings\\${folder}`;
+  const dir = `E:\\Recordings\\${folder}`;
   return {
     path: `${dir}\\${stem}.wav`,
     name: `${stem}.wav`,
@@ -285,7 +289,7 @@ function demoSession(): RecordingSession {
   ];
   return {
     folder,
-    path: `C:\\Jukeoke\\Recordings\\${folder}`,
+    path: `E:\\Recordings\\${folder}`,
     created: folder,
     player: "MusicPlayer",
     player_id: "MusicPlayer.exe",
@@ -297,8 +301,8 @@ function demoSession(): RecordingSession {
     song_count: 3,
     songs,
     excluded: [
-      { path: `C:\\Jukeoke\\Recordings\\${folder}\\_excluded\\Part 03 - advertisement - Advertisement.wav`, name: "Part 03 - advertisement - Advertisement.wav", reason: "advertisement", duration_s: 15.9 },
-      { path: `C:\\Jukeoke\\Recordings\\${folder}\\_excluded\\Part 05 - after playback stopped.wav`, name: "Part 05 - after playback stopped.wav", reason: "after playback stopped", duration_s: 29.0 },
+      { path: `E:\\Recordings\\${folder}\\_excluded\\Part 03 - advertisement - Advertisement.wav`, name: "Part 03 - advertisement - Advertisement.wav", reason: "advertisement", duration_s: 15.9 },
+      { path: `E:\\Recordings\\${folder}\\_excluded\\Part 05 - after playback stopped.wav`, name: "Part 05 - after playback stopped.wav", reason: "after playback stopped", duration_s: 29.0 },
     ],
   };
 }
@@ -397,7 +401,7 @@ export class MockApi implements Api {
     this.settings.ui.lyrics_display = this.o.lyricsDisplay;
     this.settings.ui.show_next_line = this.o.showNextLine;
     this.settings.ui.show_marker = this.o.showMarker;
-    const lib = this.o.empty ? [] : [...demoLibrary(), ...fillerSongs(this.o.many)];
+    const lib = this.o.empty ? [] : [...demoLibrary().filter((d) => !this.o.demo || !d.summary.error), ...fillerSongs(this.o.many)];
     this.songs = lib.map((demo, i) => ({
       demo,
       settings: { ...demo.settings, levels: { ...demo.settings.levels } },
@@ -452,6 +456,7 @@ export class MockApi implements Api {
     const r = q.get("recorder");
     if (r === "denied" || r === "not_determined" || r === "granted" || r === "unavailable") o.recorder = r;
     if (q.get("empty") === "1") o.empty = true;
+    if (q.get("demo") === "1") o.demo = true;
     const players = Number(q.get("players"));
     if (q.has("players") && players >= 0) o.players = Math.min(3, Math.floor(players));
     if (q.get("skin") === "0") o.skin = false;
@@ -545,7 +550,7 @@ export class MockApi implements Api {
             "This computer has 8 GB of memory; the Studio needs at least 12 GB.",
           ]
         : [];
-    const root = mac ? "/Volumes/JUKEOKE" : "E:\\";
+    const root = mac ? "/Volumes/OPEN MIC" : "E:\\";
     const p = (name: string) => (mac ? `${root}/${name}` : `${root}${name}`);
     return this.reply<AppInfo>({
       name: "Open Mic",
@@ -764,7 +769,7 @@ export class MockApi implements Api {
     const songs = [...this.deletedSongs]
       .reverse()
       .map(({ entry }) => ({ ...entry, restore_to: this.restoreTarget(entry.original_song_id) }));
-    return { songs, count: songs.length, total_bytes: songs.reduce((t, s) => t + s.file_bytes, 0), folder: this.o.platform === "macos" ? "/Volumes/JUKEOKE/Deleted" : "E:\\Deleted" };
+    return { songs, count: songs.length, total_bytes: songs.reduce((t, s) => t + s.file_bytes, 0), folder: this.o.platform === "macos" ? "/Volumes/OPEN MIC/Deleted" : "E:\\Deleted" };
   }
 
   private deletedChanged(): void {
@@ -1299,7 +1304,7 @@ export class MockApi implements Api {
     const idle = l.opts.auto_stop_idle_s ?? 30;
     return {
       folder: l.folder,
-      path: `C:\\Jukeoke\\Recordings\\${l.folder}`,
+      path: `E:\\Recordings\\${l.folder}`,
       current: { title: t.title, artist: t.artist, album: t.album },
       playback: l.player.status,
       songs: l.played.filter((i) => !MOCK_PLAYLIST[i % MOCK_PLAYLIST.length].ad).length,
@@ -1332,7 +1337,7 @@ export class MockApi implements Api {
     });
     return {
       folder: l.folder,
-      path: `C:\\Jukeoke\\Recordings\\${l.folder}`,
+      path: `E:\\Recordings\\${l.folder}`,
       created: l.folder,
       player: l.player.app_name,
       player_id: l.player.source_app_id,
@@ -1456,7 +1461,7 @@ export class MockApi implements Api {
       has_video: video,
       embedded_lyrics: ext === "flac" ? { present: true, synced: false, text: "Twinkle, twinkle, little star,\nHow I wonder what you are!" } : { present: false, synced: false, text: null },
       // The demo FLAC carries a cover (served by studioCoverPreview), the others none.
-      cover_path: ext === "flac" ? "C:\\Jukeoke\\Settings\\tmp\\studio\\covers\\cover-demo.png" : null,
+      cover_path: ext === "flac" ? "E:\\Settings\\tmp\\studio\\covers\\cover-demo.png" : null,
     });
   }
 
@@ -1721,7 +1726,7 @@ export class MockApi implements Api {
     ];
     return new Promise((resolve) =>
       setTimeout(
-        () => resolve({ report_path: mac ? "/Volumes/JUKEOKE/Settings/selfcheck-2026-11-17.txt" : "E:\\Settings\\selfcheck-2026-11-17.txt", passed: items.every((i) => i.ok), items }),
+        () => resolve({ report_path: mac ? "/Volumes/OPEN MIC/Settings/selfcheck-2026-11-17.txt" : "E:\\Settings\\selfcheck-2026-11-17.txt", passed: items.every((i) => i.ok), items }),
         700,
       ),
     );
