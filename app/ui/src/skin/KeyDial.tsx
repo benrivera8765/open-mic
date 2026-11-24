@@ -32,6 +32,9 @@ import {
   wheelSteps,
 } from "./keydial-math";
 
+
+/** Drag gearing: the hand turns this much further than the pointer moves (one semitone per ~22 degrees). */
+const DRAG_GEAR = 0.5;
 export interface KeyDialProps {
   semitones: number;
   min?: number;
@@ -217,12 +220,14 @@ export function KeyDial({
     let steps: number;
     if (d.near) {
       // Grabbed near the centre: angles are meaningless there, use vertical travel.
-      steps = Math.round((d.startY - e.clientY) / Math.max(10, d.radius * 0.28));
+      steps = Math.round((d.startY - e.clientY) / Math.max(16, d.radius * 0.5));
     } else {
       const a = pointerAngle(d.cx, d.cy, e.clientX, e.clientY);
       d.rotation += angleDelta(d.lastAngle, a);
       d.lastAngle = a;
-      steps = stepsForRotation(d.rotation, min, max);
+      // Half a turn of the hand per detent's worth of key: one semitone per about 22
+      // degrees, so the key can be turned on camera without overshooting.
+      steps = stepsForRotation(d.rotation * DRAG_GEAR, min, max);
     }
     const to = clampSemitones(d.base + steps, min, max);
     if (to !== shownRef.current) {

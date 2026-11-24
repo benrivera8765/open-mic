@@ -219,7 +219,7 @@ percentage in gold on black glass and the letter grade on a red-enamel lozenge; 
 X of Y notes", whether the singer tends sharp or flat and by about how much, the key
 ("A major → F♯ major (−3)") and octave, how much of the song was sung; the trust notes in
 an amber-ruled list when the result cannot be fully trusted; the line-by-line breakdown
-(one row per lyric line: the line, a gold bar, the score, ♯ sharp / ♭ flat, "Guide wrong?")
+(one row per lyric line: the line, a gold bar, the score, ♯ sharp / ♭ flat, "Guide wrong?" on graded lines: always on weak ones, otherwise on hover or focus; D-277)
 with weak lines (under 60) in red with a WEAK tag; the song's best and recent results; Sing
 again, Back to the lane, Leave practice.
 

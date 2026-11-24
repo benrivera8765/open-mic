@@ -4,9 +4,10 @@
 // singer tends sharp or flat and by about how much; the key and octave it was sung in and
 // how much of the song was sung; the honesty notes when the result cannot be fully trusted;
 // the line-by-line breakdown with the weak lines marked (and "the guide is wrong here" per
-// line, saved with the song); the song's best and recent results; Sing again. Class hooks:
-// .practice-result, .practice-result__dial, .practice-result__grade, .practice-result__row--weak.
-import { useRef } from "preact/hooks";
+// graded line, saved with the song); the song's best and recent results; Sing again. Class
+// hooks: .practice-result, .practice-result__dial, .practice-result__grade,
+// .practice-result__row--weak, .practice-result__lines[data-more].
+import { useEffect, useRef } from "preact/hooks";
 import type { PracticeResult, SongDetail } from "../api/types";
 import { lineText } from "../lib/lyrics";
 import { closeResult, excludeLine, singAgain, stopPractice, usePractice } from "../state/practice";
@@ -41,6 +42,27 @@ function shortDate(iso: string): string {
 
 function signedKey(k: number): string {
   return k === 0 ? "original key" : `${k > 0 ? "+" : "−"}${Math.abs(k)}`;
+}
+
+/** A line's lean shows from this many cents on (smaller is only in the tooltip). */
+export const LINE_LEAN_CENTS = 15;
+
+/**
+ * A line's lean in words, "♭ flat" or "♯ sharp", with its cents in the tooltip. The sign
+ * alone read as a stray glyph after the score (and says nothing to a screen reader).
+ */
+export function TendencyCell({ cents }: { cents: number | null }) {
+  if (cents === null) return <span class="practice-result__ltend" role="cell" />;
+  const a = Math.round(Math.abs(cents));
+  const sharp = cents > 0;
+  if (a < LINE_LEAN_CENTS) {
+    return <span class="practice-result__ltend" role="cell" title={`${sharp ? "+" : "−"}${a} cents on average: no clear lean`} />;
+  }
+  return (
+    <span class={`practice-result__ltend practice-result__ltend--${sharp ? "sharp" : "flat"}`} role="cell" title={`Sung ${sharp ? "sharp" : "flat"}: about ${a} cents ${sharp ? "high" : "low"} on average`}>
+      <span aria-hidden="true">{sharp ? "♯" : "♭"}</span> {sharp ? "sharp" : "flat"}
+    </span>
+  );
 }
 
 /** The chrome ring around the score, filled to the score in gold. */
@@ -100,6 +122,28 @@ export function PracticeResultScreen({ result, song }: { result: PracticeResult;
   const linesRef = useRef<HTMLDivElement>(null);
   /** "2 weak lines below": brings the first weak line into view in the breakdown. */
   const showWeak = () => linesRef.current?.querySelector(".practice-result__row--weak")?.scrollIntoView({ block: "nearest" });
+  // The breakdown scrolls when the lines do not all fit: its edge fades where more lines
+  // are hidden (data-more, practice.css), so a row cut by the edge reads as "scroll for
+  // more", not as a broken list. Set on the element itself: no re-render on scroll.
+  useEffect(() => {
+    const el = linesRef.current;
+    if (!el) return;
+    const update = () => {
+      const above = el.scrollTop > 1;
+      const below = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+      const more = above && below ? "both" : above ? "above" : below ? "below" : "";
+      if (more) el.dataset.more = more;
+      else delete el.dataset.more;
+    };
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    ro?.observe(el);
+    return () => {
+      el.removeEventListener("scroll", update);
+      ro?.disconnect();
+    };
+  }, [rows.length]);
   return (
     <section class="practice-result" aria-labelledby="practice-result-title">
       <header class="practice-result__head">
@@ -175,6 +219,9 @@ export function PracticeResultScreen({ result, song }: { result: PracticeResult;
           const span = lineSpan(line, start);
           const ex = isExcluded(span);
           const isWeak = score !== null && score < WEAK_LINE && !ex;
+          // Only a line that was graded can be graded wrongly ("not graded" lines have no
+          // button), and an excluded one keeps its "Count again".
+          const canExclude = ex || score !== null;
           return (
             <div key={`${line}-${start}`} class={`practice-result__row${isWeak ? " practice-result__row--weak" : ""}${ex ? " practice-result__row--excluded" : ""}`} role="row">
               <span class="practice-result__ltext" role="cell">
@@ -187,23 +234,21 @@ export function PracticeResultScreen({ result, song }: { result: PracticeResult;
                 {ex ? "excluded" : score === null ? (graded === 0 ? "not graded" : "—") : `${score}`}
                 {isWeak && <span class="practice-result__weak">weak</span>}
               </span>
-              <span class="practice-result__ltend" role="cell" title={tend === null ? "" : `${tend > 0 ? "+" : ""}${tend} cents`}>
-                {tend === null || Math.abs(tend) < 15 ? null : (
-                  <>
-                    {tend > 0 ? "♯" : "♭"}
-                    <span class="practice-result__ltword">{tend > 0 ? " sharp" : " flat"}</span>
-                  </>
+              <TendencyCell cents={tend} />
+              <span class="practice-result__lact" role="cell">
+                {canExclude && (
+                  <button
+                    type="button"
+                    class="practice-result__exclude"
+                    aria-pressed={ex}
+                    aria-label={`${ex ? "Count again" : "Guide wrong?"} “${lineLabel(line)}”`}
+                    title={ex ? "Count this line again" : "The practice data is wrong here: stop counting this line (saved with the song)"}
+                    onClick={() => void excludeLine(r.lines.basis === "lyrics" ? line : null, span.start, span.end, !ex)}
+                  >
+                    {ex ? "Count again" : "Guide wrong?"}
+                  </button>
                 )}
               </span>
-              <button
-                type="button"
-                class="practice-result__exclude"
-                aria-pressed={ex}
-                title={ex ? "Count this line again" : "The practice data is wrong here: stop counting this line (saved with the song)"}
-                onClick={() => void excludeLine(r.lines.basis === "lyrics" ? line : null, span.start, span.end, !ex)}
-              >
-                {ex ? "Count again" : "Guide wrong?"}
-              </button>
             </div>
           );
         })}

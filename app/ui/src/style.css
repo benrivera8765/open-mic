@@ -659,6 +659,38 @@ textarea {
   color: var(--muted);
 }
 
+/* No songs at all: a centred welcome in the empty screen. */
+.library__empty--none {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.8rem;
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: clamp(2rem, 14vh, 9rem) 1rem 2rem;
+  text-align: center;
+}
+
+.library__empty-title {
+  margin: 0;
+  font-size: 1.9rem;
+  color: var(--fg);
+}
+
+.library__empty-text {
+  margin: 0;
+  font-size: 1.1rem;
+  line-height: 1.5;
+}
+
+.library__empty-text code {
+  overflow-wrap: anywhere;
+}
+
+.library__empty-studio {
+  margin-top: 0.6rem;
+}
+
 .title-strip-rack {
   list-style: none;
   margin: 0;
@@ -790,23 +822,132 @@ button.title-strip:hover {
 
 /* ---------- stage ---------- */
 
-/* The stage fills the screen area; the mixer (when open) sits below it. */
+/* The stage fills the screen area; the mixer (when open) is a drawer on its right, as
+   tall as the stage. Below it the mixer overflowed the screen and made it scroll; beside
+   it the lyrics keep their height (the page display fits a line to the narrower width)
+   and nothing scrolls. The drawer never makes the screen taller (contain: size: its
+   content does not size the rows); if a short window cannot show all of it, the drawer
+   scrolls inside itself. */
 .stage-screen {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   min-height: 100%;
 }
 
 .stage-screen > .stage {
-  flex: 1 0 auto;
+  grid-column: 1;
+  grid-row: 1;
 }
 
 .stage-screen__tools {
+  grid-column: 1;
+  grid-row: 2;
   margin: 0.6rem 0 0;
 }
 
-.stage-screen .mixer {
-  margin-top: 0.6rem;
+.stage-screen > .mixer {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  width: clamp(18.5rem, 28vw, 27rem);
+  margin: 0 0 0 0.8rem;
+  padding: 0.6rem 0.9rem 0.7rem;
+  contain: size;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The drawer's rows: label, slider and value on one line, the label column narrower
+   than the full-width panel's (a long label wraps under itself). */
+.mixer--drawer .panel__title {
+  margin: 0 0 0.3rem;
+}
+
+.mixer--drawer .mixer__group {
+  margin-bottom: 0.5rem;
+}
+
+.mixer--drawer .field {
+  margin: 0.2rem 0;
+  gap: 0.3rem 0.5rem;
+  flex-wrap: nowrap;
+}
+
+.mixer--drawer .field--slider .field__label {
+  flex: 0 0 7.6rem;
+  line-height: 1.2;
+  font-size: 0.92rem;
+}
+
+.mixer--drawer .field--slider input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 4rem;
+}
+
+.mixer--drawer .field__value {
+  min-width: 3.1rem;
+  text-align: right;
+}
+
+/* A toggle's hint goes under its label, in small type. */
+.mixer--drawer .field--toggle {
+  flex-wrap: wrap;
+}
+
+.mixer--drawer .field--toggle .field__hint {
+  flex: 1 1 100%;
+  margin: -0.15rem 0 0 1.75rem;
+  font-size: 0.8rem;
+}
+
+.mixer--drawer .field--select {
+  flex-wrap: wrap;
+}
+
+.mixer--drawer .field--select select {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.mixer--drawer .hint,
+.mixer--drawer .mixer__format {
+  font-size: 0.82rem;
+  margin: 0.3rem 0;
+}
+
+/* Output device and Export: folded parts of the drawer. */
+.mixer__fold {
+  border-top: 1px solid var(--line);
+  padding: 0.35rem 0 0.1rem;
+}
+
+.mixer__fold-title {
+  cursor: pointer;
+  padding: 0.25rem 0;
+  font-weight: 600;
+}
+
+.mixer__fold-title:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 0.2rem;
+}
+
+/* Narrow windows: the drawer would squeeze the lyrics too much; it goes under them. */
+@media (max-width: 900px) {
+  .stage-screen {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .stage-screen > .mixer {
+    grid-column: 1;
+    grid-row: auto;
+    width: auto;
+    margin: 0.6rem 0 0;
+    contain: none;
+    overflow: visible;
+  }
 }
 
 .stage {
@@ -908,23 +1049,74 @@ button.title-strip:hover {
   margin: auto;
 }
 
+/* No song loaded: heading, line and button as one centred group. */
+.stage__welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9rem;
+  max-width: 36rem;
+  margin: auto;
+  padding: 2rem 1rem;
+  text-align: center;
+}
+
+.stage__welcome-title {
+  margin: 0;
+  font-size: 2rem;
+  line-height: 1.15;
+}
+
+.stage__welcome .stage__empty {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.stage__welcome-button {
+  margin-top: 0.4rem;
+  font-size: 1.05rem;
+  padding: 0.6rem 1.4rem;
+}
+
+/* Edit details: Title, Artist and Album side by side, the title field the widest (a
+   normal title such as "Twinkle, Twinkle, Little Star" fits), the buttons after them;
+   on a narrow stage the fields wrap onto rows of their own. */
 .stage__meta-form {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem 1rem;
+  gap: 0.6rem 1rem;
   align-items: end;
 }
 
-.stage__meta-form label {
+.stage__meta-field {
   display: flex;
   flex-direction: column;
-  font-size: 0.9rem;
+  gap: 0.25rem;
+  flex: 1 1 11rem;
+  min-width: 0;
+}
+
+.stage__meta-field--title {
+  flex: 2 1 20rem;
+}
+
+.stage__meta-label {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #d8d0e3;
 }
 
 .stage__meta-form input {
+  width: 100%;
+  font-size: 1.05rem;
   background: #221c2c;
   color: var(--stage-fg);
   border-color: #4b4258;
+}
+
+.stage__meta-actions {
+  display: flex;
+  gap: 0.5rem;
 }
 
 .ticker {
@@ -1087,6 +1279,13 @@ button.title-strip:hover {
   gap: 0.5rem 2rem;
 }
 
+/* Each offset's label on a line of its own above its slider: "Output delay for" plus a
+   long device name ("Speakers (Realtek High Definition Audio)") wrapped onto three
+   lines in the 13rem label column. */
+.sync__offset .field--slider .field__label {
+  flex: 1 1 100%;
+}
+
 .sync__scroller {
   overflow-x: auto;
   border: 1px solid var(--line);
@@ -1103,11 +1302,23 @@ button.title-strip:hover {
 .sync__second {
   position: absolute;
   top: 0.1rem;
+  z-index: 1;
   font-size: 0.7rem;
+  line-height: 1.1rem;
+  white-space: nowrap;
   color: var(--muted);
   border-left: 1px solid var(--line);
   padding-left: 0.2rem;
   pointer-events: none;
+}
+
+/* A label whose tick is near the end of the track, or near the right edge of the
+   scroller's view, sits left of its tick, so it is never cut off. */
+.sync__second--end {
+  transform: translateX(-100%);
+  border-left: 0;
+  border-right: 1px solid var(--line);
+  padding: 0 0.2rem 0 0;
 }
 
 .sync__block {
@@ -1137,11 +1348,13 @@ button.title-strip:hover {
   border-width: 2px;
 }
 
+/* The playhead starts under the row of time labels, so it never strikes through one. */
 .sync__playhead {
   position: absolute;
-  top: 0;
+  top: 1.2rem;
   bottom: 0;
   width: 2px;
+  margin-left: -1px;
   background: var(--focus);
   pointer-events: none;
 }
@@ -1849,6 +2062,51 @@ button.title-strip:hover {
 .selfcheck__summary--fail {
   color: var(--error);
   font-weight: 700;
+}
+
+.help__or {
+  color: var(--muted);
+}
+
+/* Folded technical text: the self-check's measurements, Settings' web engine string. */
+.selfcheck__details,
+.settings__details {
+  margin: 0.6rem 0;
+}
+
+.selfcheck__details > summary,
+.settings__details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  padding: 0.2rem 0;
+}
+
+.selfcheck__details > summary:focus-visible,
+.settings__details > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 0.2rem;
+}
+
+.selfcheck__facts {
+  margin: 0.4rem 0 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.selfcheck__facts dt {
+  font-weight: 700;
+  color: var(--fg);
+  margin-top: 0.4rem;
+}
+
+.selfcheck__facts dd {
+  margin: 0.1rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.settings__details .facts {
+  margin-top: 0.4rem;
 }
 
 /* ---------- narrow windows (1280x800 at larger text, split screen) ---------- */

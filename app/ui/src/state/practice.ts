@@ -161,11 +161,60 @@ export function initPractice(theApi: Api): void {
     document.addEventListener("visibilitychange", () => suspendFor(document.hidden));
   }
   // The microphone is open only while practice is on screen (WO2 4.4): leaving the singing
-  // screen (not full screen, which shows it alone) leaves practice.
+  // screen (not full screen, which shows it alone) leaves practice. Coming back to it with
+  // the same song still loaded turns practice on again, so a look at Settings does not
+  // quietly end it (the microphone stays closed while the singing screen is away).
   store.subscribe((s, prev) => {
-    if (!practiceStore.get().on) return;
-    if (s.screen !== "stage" && !s.fullscreen && (prev.screen === "stage" || prev.fullscreen)) void stopPractice();
-    if (!s.song) endLocally();
+    // Another song (or none): practice is not brought back for it.
+    if (resumeOnReturn && resumeOnReturn.songId !== s.song?.summary.song_id) resumeOnReturn = null;
+    if (practiceStore.get().on) {
+      if (!stageShown(s) && stageShown(prev)) void leaveForNow();
+      if (!s.song) endLocally();
+      return;
+    }
+    if (stageShown(s) && !stageShown(prev) && resumeOnReturn) resumeSoon(resumeOnReturn);
+  });
+}
+
+/** The singing screen is on show: the Sing screen, or full screen (which shows it alone). */
+function stageShown(s: { screen: string; fullscreen: boolean }): boolean {
+  return s.screen === "stage" || s.fullscreen;
+}
+
+/**
+ * Practice that was on when the singing screen was left, for that song: turned on again
+ * when the singer comes back to it with the same song loaded. The input, the octave and
+ * the strictness are kept by the core (saved for this computer and with the song), so
+ * starting again gives the same practice; only the choice of watch only is the UI's.
+ * Kept for this run of the app only, and dropped when practice is stopped or started by
+ * hand or another song is loaded.
+ */
+let resumeOnReturn: { songId: string; watchOnly: boolean } | null = null;
+
+/** The singing screen was left with practice on: close the microphone, remember to come back. */
+async function leaveForNow(): Promise<void> {
+  const p = practiceStore.get();
+  const songId = p.state?.song_id ?? store.get().song?.summary.song_id;
+  // Watch only chosen by the singer stays watch only; watch only because there was no
+  // usable input starts normally again (an input may have been plugged in meanwhile).
+  const memo = songId ? { songId, watchOnly: p.state?.phase === "watch_only" && p.state.watch_only?.code === "chosen" } : null;
+  resumeOnReturn = memo;
+  await endPractice();
+  // Back on the singing screen while the microphone was still closing: start again now.
+  if (memo && resumeOnReturn === memo && stageShown(store.get())) resumeSoon(memo);
+}
+
+/**
+ * Turns remembered practice back on, a moment later: P pressed on another screen goes to
+ * the singing screen and then toggles practice itself (App.tsx), and that press must win
+ * rather than switch the resumed practice straight off again.
+ */
+function resumeSoon(memo: { songId: string; watchOnly: boolean }): void {
+  queueMicrotask(() => {
+    const s = store.get();
+    if (resumeOnReturn !== memo || practiceStore.get().on || !stageShown(s) || s.song?.summary.song_id !== memo.songId) return;
+    resumeOnReturn = null;
+    void begin(memo.watchOnly);
   });
 }
 
@@ -240,6 +289,13 @@ export function practiceAvailable(): boolean {
 
 /** "Practice" pressed (the plate or P): explain the microphone first where the OS will ask. */
 export async function startPractice(): Promise<void> {
+  // Started by hand: this replaces any practice remembered from leaving the singing screen.
+  resumeOnReturn = null;
+  await begin(false);
+}
+
+/** Turns practice on for the loaded song: listening, or watch only (no microphone). */
+async function begin(watch: boolean): Promise<void> {
   const s = store.get();
   if (!api || !s.song) return;
   if (!api.practiceStart) {
@@ -250,6 +306,8 @@ export async function startPractice(): Promise<void> {
   keys.reset(heardOf(player), player?.key_segment ?? 0, 0);
   live.clear();
   practiceStore.set({ on: true, busy: true, state: null, guide: null, result: null, history: null, panel: null, musicSeen: false, error: null });
+  // Watch only never opens the microphone, so there is nothing to ask the OS for.
+  if (watch) return startSession(true);
   let perm: MicPermission | null = null;
   try {
     perm = api.micPermission ? await api.micPermission() : null;
@@ -297,6 +355,11 @@ export async function allowMicrophone(): Promise<void> {
 
 /** Practice without a microphone: notes and keys, no marker, no grade. */
 export async function watchOnly(): Promise<void> {
+  if (!practiceStore.get().on) {
+    // Asked for with practice off (the mock's ?practice=watch): turn it on as watch only.
+    resumeOnReturn = null;
+    return begin(true);
+  }
   practiceStore.set({ panel: null });
   const st = practiceStore.get().state;
   if (st?.active && api?.practiceStop) {
@@ -308,6 +371,12 @@ export async function watchOnly(): Promise<void> {
 
 /** Leaves practice mode (the microphone closes; a long enough take is graded and saved). */
 export async function stopPractice(): Promise<void> {
+  // Stopped by hand: it is not turned on again when the singing screen comes back.
+  resumeOnReturn = null;
+  await endPractice();
+}
+
+async function endPractice(): Promise<void> {
   if (!practiceStore.get().on) return;
   practiceStore.set({ busy: true });
   try {

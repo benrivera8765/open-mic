@@ -5,6 +5,13 @@
 // and "Export backing track". Song settings are saved into the song file by the core.
 // Class hooks: .mixer, .mixer__group, .mixer__clip, .mixer__clip--on, .mixer__device,
 // .mixer__export.
+//
+// On the Sing screen the mixer is a drawer beside the lyrics (.mixer--drawer; the layout
+// is in style.css under .stage-screen) and must fit the screen: the levels stay in view,
+// and the output device and the export, which nobody changes mid-song, fold away
+// (.mixer__fold, open once opened for the rest of the session). Elsewhere (Settings)
+// everything shows as before.
+import type { ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
 import type { ExportFormat } from "../api/types";
 import { formatRate, percent } from "../lib/format";
@@ -71,14 +78,38 @@ function OutputDevice() {
   );
 }
 
-function ExportBacking() {
+/** Folds the drawer opened this session (the drawer is rebuilt each time it opens). */
+const unfolded = new Set<string>();
+
+/** A part of the drawer that folds away: a disclosure, or the part as it is when not folding. */
+function Fold({ fold, title, open = false, children }: { fold: boolean; title: string; open?: boolean; children: ComponentChildren }) {
+  const [isOpen, setOpen] = useState(open || unfolded.has(title));
+  if (!fold) return <>{children}</>;
+  return (
+    <details
+      class="mixer__fold"
+      open={isOpen}
+      onToggle={(e) => {
+        const now = (e.currentTarget as HTMLDetailsElement).open;
+        if (now) unfolded.add(title);
+        else unfolded.delete(title);
+        setOpen(now);
+      }}
+    >
+      <summary class="mixer__fold-title">{title}</summary>
+      {children}
+    </details>
+  );
+}
+
+function ExportBacking({ fold }: { fold: boolean }) {
   const song = useApp((s) => s.song);
   const exports = useApp((s) => s.exports);
   const [format, setFormat] = useState<ExportFormat>("flac24");
   const jobs = Object.entries(exports);
   return (
     <div class="mixer__export">
-      <h3 class="panel__subtitle">Export backing track</h3>
+      {!fold && <h3 class="panel__subtitle">Export backing track</h3>}
       <p class="hint">Renders the current key and mix (guide vocal included at its level) to a lossless file in the Exports folder.</p>
       <div class="row">
         <Select<ExportFormat>
@@ -113,6 +144,8 @@ function ExportBacking() {
 }
 
 export function Mixer() {
+  const drawer = useApp((s) => s.screen === "stage");
+  const exporting = useApp((s) => Object.keys(s.exports).length > 0);
   const song = useApp((s) => s.song);
   const st = useApp((s) => s.songSettings);
   const master = useApp((s) => s.settings?.audio.master_volume ?? 1);
@@ -121,7 +154,7 @@ export function Mixer() {
   const lv = (key: "drums" | "other") => (v: number) => changeSongSettings({ levels: { ...(st?.levels ?? { drums: 1, other: 1 }), [key]: v } }, 40);
 
   return (
-    <Section title="Mixer" class="mixer">
+    <Section title="Mixer" class={`mixer${drawer ? " mixer--drawer" : ""}`}>
       <div class="mixer__group">
         <Toggle label="Backing vocals" checked={st?.backing_on ?? true} disabled={off || !roles.has("backing_vocals")} onChange={(v) => changeSongSettings({ backing_on: v })} />
         <Slider label="Backing level" value={st?.backing_level ?? 1} min={0} max={1} step={0.01} format={percent} disabled={off || !roles.has("backing_vocals") || !st?.backing_on} onInput={(v) => changeSongSettings({ backing_level: v }, 40)} />
@@ -140,8 +173,13 @@ export function Mixer() {
         <Slider label="Master volume" value={master} min={0} max={1} step={0.01} format={percent} onInput={(v) => void setMaster(v)} />
         <ClipLight />
       </div>
-      <OutputDevice />
-      <ExportBacking />
+      <Fold fold={drawer} title="Output device">
+        <OutputDevice />
+      </Fold>
+      {/* Open while an export runs or has news, so its progress or note is never folded away. */}
+      <Fold fold={drawer} title="Export backing track" open={exporting}>
+        <ExportBacking fold={drawer} />
+      </Fold>
     </Section>
   );
 }

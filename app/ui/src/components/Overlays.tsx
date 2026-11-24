@@ -3,7 +3,7 @@
 // Native <dialog> (Safari 15.4+, Chrome 37+): focus is trapped and Esc closes it.
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { SelfCheckResult } from "../api/types";
+import type { SelfCheckItem, SelfCheckResult } from "../api/types";
 import { errorMessage } from "../api/client";
 import { getApiSync, setOverlay } from "../state/app";
 import { measureLaneCost } from "../practice/lanecost";
@@ -35,12 +35,15 @@ function Dialog({ title, onClose, children, class: cls }: { title: string; onClo
   );
 }
 
+/** In a row's keys: the keys after it do the same as the keys before it. */
+export const OR = "or";
+
 /** Every keyboard shortcut, as handled in App.tsx. */
 export const SHORTCUTS: [keys: string[], what: string][] = [
   [["Space"], "Play / pause"],
   [["←", "→"], "Back / forward 5 seconds"],
-  [["[", "]"], "Key down / up one semitone"],
-  [["−", "+"], "Key down / up one semitone"],
+  // One row for both pairs of key-change keys (two rows with the same words read as a mistake).
+  [["[", "]", OR, "−", "+"], "Key down / up one semitone"],
   [["F"], "Full screen stage"],
   [["P"], "Practice mode on / off (sing and see your pitch)"],
   [["Esc"], "Leave full screen, close a window"],
@@ -59,12 +62,18 @@ export function HelpOverlay() {
           {SHORTCUTS.map(([keys, what]) => (
             <tr key={what + keys.join()}>
               <th scope="row">
-                {keys.map((k, i) => (
-                  <span key={k}>
-                    {i > 0 && (keys[0].startsWith("Ctrl") ? " + " : " / ")}
-                    <kbd>{k}</kbd>
-                  </span>
-                ))}
+                {keys.map((k, i) =>
+                  k === OR ? (
+                    <span key={`or-${i}`} class="help__or">
+                      {" or "}
+                    </span>
+                  ) : (
+                    <span key={k}>
+                      {i > 0 && keys[i - 1] !== OR && (keys[0].startsWith("Ctrl") ? " + " : " / ")}
+                      <kbd>{k}</kbd>
+                    </span>
+                  ),
+                )}
               </th>
               <td>{what}</td>
             </tr>
@@ -77,6 +86,53 @@ export function HelpOverlay() {
       </p>
     </Dialog>
   );
+}
+
+/**
+ * What a passed check means, in plain words, by the check's name (selfcheck.rs and
+ * practice/checks.rs name them). The core's detail lines are measurements for bug
+ * reports ("max diff 0", "600 frames at 1632x389 (x1)"): they stay in the saved report
+ * and under "Technical details", not in the list. A failed check shows its detail as
+ * it is, because that says what to do. Null: show the detail (an unknown check, or a
+ * detail that is already plain, such as "Skipped: ...").
+ */
+export function plainCheck(item: SelfCheckItem): string | null {
+  if (!item.ok) return null;
+  const d = item.detail.trim();
+  if (/^(skipped|not measured)\b/i.test(d)) return null;
+  switch (item.name) {
+    case "System":
+      return "This computer can run the app.";
+    case "Web engine":
+      return "The part of the system that draws the app is working.";
+    case "Memory":
+      return /less than 512 MB/i.test(d) ? "Memory is low: close other apps (web browsers especially) before singing, or playback may stutter." : "There is enough free memory.";
+    case "Output device":
+      return "Speakers or headphones are connected and ready.";
+    case "Test tone":
+      return /silence/i.test(d) ? "Sound reaches the speakers or headphones without dropouts (played silently)." : "The quiet test tone played without dropouts.";
+    case "Bundled test song":
+    case "Demo song":
+      return "The test song plays back exactly as it should.";
+    case "Key change":
+      return "Changing the key works: the right pitch, and the song keeps its length.";
+    case "Recorder":
+      return "Recording the performance works.";
+    case "Microphone permission":
+      return "The app is allowed to use the microphone.";
+    case "Microphone capture":
+      return "The microphone can be heard.";
+    case "Pitch tracker":
+      return "The app hears which note is sung.";
+    case "Practice guide":
+      return "Practice data can be made from a song's lead vocal.";
+    case "Practice score":
+      return "Practice scores come out right.";
+    case "Practice lane":
+      return "This computer draws the practice notes smoothly.";
+    default:
+      return null;
+  }
 }
 
 export function SelfCheckOverlay() {
@@ -116,13 +172,25 @@ export function SelfCheckOverlay() {
                   {it.ok ? "✓" : "✗"}
                 </span>
                 <strong>{it.name}</strong> <span class="visually-hidden">{it.ok ? "passed" : "failed"}</span>
-                <p>{it.detail}</p>
+                <p>{plainCheck(it) ?? it.detail}</p>
               </li>
             ))}
           </ul>
           <p>
             Report saved to <code>{result.report_path}</code>
           </p>
+          {/* The measurements, word for word as in the report, for whoever reads a bug report. */}
+          <details class="selfcheck__details">
+            <summary>Technical details</summary>
+            <dl class="selfcheck__facts">
+              {result.items.map((it) => (
+                <div key={it.name}>
+                  <dt>{it.name}</dt>
+                  <dd>{it.detail}</dd>
+                </div>
+              ))}
+            </dl>
+          </details>
         </>
       )}
       <div class="row">

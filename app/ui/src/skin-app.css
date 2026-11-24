@@ -291,11 +291,49 @@
   padding: 2rem 1rem;
 }
 
-/* ---------- library: deleting songs (D-230) ---------- */
+/* No songs at all: the welcome sits in the middle of the empty screen, lettered like
+   the cabinet's plates. */
+.library--skin .library__empty--none {
+  box-sizing: border-box;
+  min-height: 100%;
+  justify-content: center;
+  gap: clamp(10px, 1.6vh, 34px);
+  max-width: min(46rem, 100%);
+  padding: 2rem 1rem;
+}
 
-/* The strip and its trash plate share one grid cell: the plate sits on the strip's
-   right end, in room the strip keeps free for it, and shows on the hovered, focused
-   or current strip. */
+.app-skin .library--skin .library__empty-title {
+  font-size: clamp(24px, 4vh, 86px);
+  font-weight: 500;
+  color: var(--jk-cream);
+  text-shadow: 0 0 14px rgba(var(--jk-glow-rgb), 0.45);
+}
+
+.library--skin .library__empty-text {
+  font-size: clamp(14px, 2vh, 43px);
+  color: rgba(246, 239, 217, 0.8);
+}
+
+.library--skin .library__empty-text code {
+  color: var(--jk-cream);
+}
+
+/* ---------- library: the strip's plates (Add practice data, the bin; D-230) ---------- */
+
+/* The strip and its plates share one grid cell. The strip keeps its full width for the
+   title (no room is held back for plates that are hidden most of the time); the plates
+   show on the hovered or focused strip (the bin on the current one too, D-230) as an
+   overlay just left of the key and length, on a patch of the strip's own cream that
+   fades into the title, so they never sit on the key or the length. */
+.library--skin {
+  /* The strip's right padding and column gap (skin.css .jk-strip), and a fixed width
+     for its key and length ("E♭ min", the widest, is 3 times the key's size) so the
+     overlay knows where they start. */
+  --lib-strip-pad: clamp(10px, 1vw, 38px);
+  --lib-strip-gap: clamp(8px, 0.9vw, 35px);
+  --lib-meta-w: calc(clamp(12px, 1.7vh, 37px) * 3.05);
+}
+
 .library--skin .library__strip {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -306,43 +344,73 @@
   grid-area: 1 / 1;
 }
 
-.library--skin .library__strip .jk-strip {
-  padding-right: calc(clamp(10px, 1vw, 38px) + clamp(10px, 1.35vh, 29px) * 3.3);
+.library--skin .library__strip .jk-strip-meta {
+  min-width: var(--lib-meta-w);
 }
 
-.library--skin .library__strip--picking .jk-strip {
-  padding-right: clamp(10px, 1vw, 38px);
-}
-
-/* The strip's own plates (Add practice data, the bin), on its right end. */
 .library--skin .library__strip-actions {
   justify-self: end;
-  margin-right: clamp(8px, 0.8vw, 30px);
+  align-self: stretch;
   position: relative;
   z-index: 1;
   display: flex;
   align-items: center;
   gap: clamp(4px, 0.4vw, 15px);
-}
-
-.library--skin .library__trash,
-.library--skin .library__practice-add {
+  margin-right: calc(var(--lib-strip-pad) + var(--lib-meta-w));
+  padding: 0 var(--lib-strip-gap) 0 clamp(22px, 2.4vw, 90px);
   opacity: 0;
+  pointer-events: none;
   transition: opacity 120ms;
 }
 
-.library--skin .library__strip:hover .library__trash,
-.library--skin .library__strip:focus-within .library__trash,
-.library--skin .library__strip--current .library__trash,
-.library--skin .library__strip:hover .library__practice-add,
-.library--skin .library__strip:focus-within .library__practice-add,
-.library--skin .library__strip--current .library__practice-add {
+/* The cream patch: the strip's own paper (the same gradient over the same height, so
+   it matches), kept between the printed red rules, fading in from the left. */
+.library--skin .library__strip-actions::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  padding: 9px 0;
+  background:
+    repeating-linear-gradient(0deg, rgba(120, 90, 40, 0.035) 0 1px, rgba(120, 90, 40, 0) 1px 3px),
+    linear-gradient(180deg, #fcf8ea 0%, var(--jk-cream) 45%, #ece1c2 100%);
+  background-clip: content-box;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 clamp(18px, 2vw, 76px));
+  mask-image: linear-gradient(90deg, transparent 0, #000 clamp(18px, 2vw, 76px));
+}
+
+/* The current strip's paper is lighter (skin.css .jk-strip--selected). */
+.library--skin .library__strip--current .library__strip-actions::before {
+  background: linear-gradient(180deg, #fbf3dc 0%, #fcf6e4 50%, #faf0d6 100%);
+  background-clip: content-box;
+}
+
+/* A damaged strip is drawn at 55 % (skin.css .jk-strip:disabled): the same paper over
+   the rack's dark glass. */
+.library--skin .library__strip--damaged .library__strip-actions::before {
+  background:
+    linear-gradient(180deg, rgba(252, 248, 234, 0.55) 0%, rgba(246, 239, 217, 0.55) 45%, rgba(236, 225, 194, 0.55) 100%),
+    #150e13;
+  background-clip: content-box;
+}
+
+.library--skin .library__strip:hover .library__strip-actions,
+.library--skin .library__strip:focus-within .library__strip-actions,
+.library--skin .library__strip--current .library__strip-actions {
   opacity: 1;
 }
 
-/* Room on the strip for the practice plate too, when it has one. */
-.library--skin .library__strip--can-add .jk-strip {
-  padding-right: calc(clamp(10px, 1vw, 38px) + clamp(10px, 1.35vh, 29px) * 10);
+/* Only the plates take clicks: a click on the cream patch still opens the song. */
+.library--skin .library__strip:hover .library__strip-actions > *,
+.library--skin .library__strip:focus-within .library__strip-actions > *,
+.library--skin .library__strip--current .library__strip-actions > * {
+  pointer-events: auto;
+}
+
+/* On the current strip the bin stays (D-230) but "+ Practice" waits for the pointer or
+   the keyboard, so the current title keeps most of its room. */
+.library--skin .library__strip--current:not(:hover):not(:focus-within) .library__practice-add {
+  display: none;
 }
 
 .library--skin .library__practice {
@@ -679,6 +747,72 @@
 
 .app-skin .stage__unchecked {
   font-family: var(--jk-font-lyrics);
+}
+
+/* No song loaded: a lit heading over the line and the button, centred on the screen. */
+.app-skin .stage__welcome {
+  gap: clamp(10px, 1.8vh, 38px);
+  max-width: min(46rem, 100%);
+}
+
+.app-skin .stage__welcome-title {
+  font-family: var(--jk-font-display);
+  font-weight: 500;
+  font-size: clamp(26px, 4.4vh, 95px);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--jk-cream);
+  text-shadow: 0 0 16px rgba(var(--jk-glow-rgb), 0.5);
+}
+
+.app-skin .stage__welcome .stage__empty {
+  font-size: clamp(15px, 2.2vh, 47px);
+  color: rgba(246, 239, 217, 0.82);
+}
+
+.app-skin .stage__welcome-button {
+  font-size: clamp(13px, 1.9vh, 41px);
+  padding: 0.55em 1.4em;
+}
+
+/* Edit details on the dark screen: labels in the display face, like the plates. */
+.app-skin .stage__meta-label {
+  font-family: var(--jk-font-display);
+  font-weight: 500;
+  font-size: clamp(12px, 1.6vh, 34px);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(246, 239, 217, 0.85);
+}
+
+.app-skin .stage__meta-form input {
+  font-size: clamp(14px, 1.9vh, 41px);
+}
+
+/* The mixer drawer beside the lyrics (style.css .stage-screen): inside the screen's
+   rounded corner, with a thin scrollbar should a short window need one (where the web
+   view can style it; WebKit keeps its own). */
+.app-skin .stage-screen > .mixer {
+  margin-right: clamp(6px, 1vw, 36px);
+}
+
+@supports (scrollbar-width: thin) {
+  .app-skin .stage-screen > .mixer {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(246, 239, 217, 0.35) transparent;
+  }
+}
+
+.app-skin .mixer__fold {
+  border-top-color: var(--jk-panel-line, #4a3e56);
+}
+
+.app-skin .mixer__fold-title {
+  font-family: var(--jk-font-display);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--jk-cream);
 }
 
 /* Full-screen stage inside the frame: the lane takes what the screen has. */

@@ -15,6 +15,7 @@ import { MockApi, type MockOptions } from "../api/mock";
 import { go, store } from "../state/app";
 import { keys, practiceStore } from "../state/practice";
 import { keyAt } from "./pitch";
+import { resetHiddenWatchNotes } from "./PracticeView";
 import { PracticeResultScreen, tendencyText, WEAK_LINE } from "./Result";
 
 const root = document.createElement("div");
@@ -47,6 +48,7 @@ async function open(options: Partial<MockOptions> = {}, songId = TWINKLE): Promi
   render(null, root);
   store.set({ ready: false, info: null, settings: null, library: null, deleted: null, screen: "library", song: null, songSettings: null, player: null, modal: false, toasts: [], fullscreen: false, overlay: null, guideBatch: null });
   practiceStore.set({ on: false, busy: false, state: null, guide: null, result: null, history: null, panel: null, mics: null, meterDevice: null, levels: null, permission: null, musicSeen: false, error: null });
+  resetHiddenWatchNotes();
   current?.dispose();
   const api = new MockApi({ latencyMs: 0, ...options });
   current = api;
@@ -100,6 +102,67 @@ describe("practice mode on the singing screen (mock core)", () => {
     expect((await api.practiceState()).active).toBe(false);
   });
 
+  it("coming back to the singing screen with the same song turns practice on again (the microphone stayed closed while away)", async () => {
+    const api = await open();
+    await startViaPlate();
+    await until(() => phase() === "listening");
+    go("settings");
+    await until(() => !practiceStore.get().on);
+    expect((await api.practiceState()).active).toBe(false);
+    go("stage");
+    await until(() => phase() === "listening" && !!q(".practice"));
+    expect(q(".stage__practice")!.getAttribute("aria-pressed")).toBe("true");
+    expect((await api.practiceState()).active).toBe(true);
+    // Back from the stage before the microphone had finished closing: on again all the same.
+    go("library");
+    go("stage");
+    await until(() => phase() === "listening" && !practiceStore.get().busy);
+    await wait(50);
+    expect(practiceStore.get().on).toBe(true);
+    // Stopped by hand: not brought back.
+    q<HTMLButtonElement>(".stage__practice")!.click();
+    await until(() => !practiceStore.get().on);
+    go("library");
+    go("stage");
+    await wait(50);
+    expect(practiceStore.get().on).toBe(false);
+    // P pressed on another screen while practice is remembered: practice ends up on (the
+    // press is not undone by the automatic return).
+    await startViaPlate();
+    await until(() => phase() === "listening");
+    go("library");
+    await until(() => !practiceStore.get().on);
+    handleShortcut(new KeyboardEvent("keydown", { key: "p" }));
+    await until(() => phase() === "listening");
+    await wait(50);
+    expect(practiceStore.get().on).toBe(true);
+    expect(store.get().screen).toBe("stage");
+    // Another song loaded while away: practice is not turned on for it.
+    go("library");
+    await until(() => !practiceStore.get().on);
+    const other = await api.songLoad(FRERE);
+    store.set({ song: other, songSettings: other.settings });
+    go("stage");
+    await wait(50);
+    expect(practiceStore.get().on).toBe(false);
+    expect(q(".practice")).toBeNull();
+  });
+
+  it("watch only chosen by the singer comes back as watch only", async () => {
+    await open();
+    await startViaPlate();
+    await until(() => phase() === "listening");
+    button(/^Input…$/)!.click();
+    await until(() => !!button(/Watch only/));
+    button(/Watch only/)!.click();
+    await until(() => phase() === "watch_only" && practiceStore.get().state?.watch_only?.code === "chosen");
+    go("settings");
+    await until(() => !practiceStore.get().on);
+    go("stage");
+    await until(() => phase() === "watch_only" && !practiceStore.get().busy);
+    expect(practiceStore.get().state!.watch_only!.code).toBe("chosen");
+  });
+
   it("macOS: explains in the app's own words BEFORE the system asks; Continue asks, then listens", async () => {
     const api = await open({ platform: "macos" });
     let asked = 0;
@@ -122,9 +185,29 @@ describe("practice mode on the singing screen (mock core)", () => {
     await startViaPlate();
     await until(() => phase() === "watch_only" && !!q(".practice-note"));
     expect(practiceStore.get().state!.watch_only!.code).toBe("no_device");
-    expect(q(".practice-note")!.textContent).toContain("No microphone found");
-    expect(q(".practice-note")!.textContent).toContain("nothing is graded");
+    const note = q(".practice-note")!;
+    expect(note.textContent).toContain("No microphone found");
+    // The follow voice can celebrate perfect phrases in watch only: the note calls this the
+    // preview and says the singer's own voice is not graded (never "nothing is graded"
+    // next to a gold PERFECT!).
+    expect(note.textContent).toContain("Watch-only preview: a perfect voice follows the melody");
+    expect(note.textContent).toContain("Your own voice is not graded until you choose a microphone");
+    expect(note.textContent).not.toContain("nothing is graded");
+    expect(button(/^Choose input…$/)).toBeTruthy();
+    // A slim banner above the lane, never over the notes.
+    expect(note.classList.contains("practice-note--banner")).toBe(true);
+    expect(q(".practice__lane .practice-note")).toBeNull();
+    expect(note.nextElementSibling?.classList.contains("practice__lane")).toBe(true);
     expect(q(".practice-chip--watch")).not.toBeNull();
+    expect(q(".practice-chip--preview")!.textContent).toBe("Preview");
+    // Hide sticks for the rest of the session: practice off and on again, no note.
+    button(/^Hide$/)!.click();
+    await until(() => !q(".practice-note"));
+    q<HTMLButtonElement>(".stage__practice")!.click();
+    await until(() => !practiceStore.get().on);
+    await startViaPlate();
+    await until(() => phase() === "watch_only" && !!practiceStore.get().guide && !!q(".practice-chip--watch"));
+    expect(q(".practice-note")).toBeNull();
   });
 
   it("Windows: a microphone privacy switch that is off is named, with the steps and the settings button", async () => {
@@ -206,6 +289,22 @@ describe("practice mode on the singing screen (mock core)", () => {
     const box = document.createElement("div");
     render(<PracticeResultScreen result={{ ...r, trust: [...r.trust, "input_lost"] }} song={store.get().song!} />, box);
     expect(box.textContent).toContain("100 % of the song, but the input stopped part way");
+    render(null, box);
+    // The breakdown: "Guide wrong?" only on lines that were graded; the lean in words.
+    const st = r.lines.rows.map((x) => x[1]);
+    const crafted = { ...r, lines: { basis: r.lines.basis, rows: [[0, st[0], 65, 5, -30], [1, st[1], null, 0, null], [2, st[2], 45, 4, 22], [3, st[3], 80, 6, 8]] as typeof r.lines.rows } };
+    render(<PracticeResultScreen result={crafted} song={store.get().song!} />, box);
+    const rowEls = Array.from(box.querySelectorAll(".practice-result__row"));
+    expect(rowEls.map((x) => !!x.querySelector(".practice-result__exclude"))).toEqual([true, false, true, true]);
+    expect(rowEls[1].textContent).toContain("not graded");
+    const lean = rowEls.map((x) => x.querySelector(".practice-result__ltend")!);
+    expect(lean[0].textContent).toBe("♭ flat");
+    expect(lean[0].getAttribute("title")).toBe("Sung flat: about 30 cents low on average");
+    expect(lean[0].querySelector("[aria-hidden='true']")!.textContent).toBe("♭");
+    expect(lean[2].textContent).toBe("♯ sharp");
+    expect(lean[3].textContent).toBe("");
+    // Each button names its line for a screen reader (not twelve identical "Guide wrong?").
+    expect(rowEls[0].querySelector(".practice-result__exclude")!.getAttribute("aria-label")).toMatch(/^Guide wrong\? “.+”$/);
     render(null, box);
     // Weak lines are obvious: a class, the word "weak" (never colour alone).
     const weak = r.lines.rows.filter((x) => x[2] !== null && x[2] < WEAK_LINE).length;
