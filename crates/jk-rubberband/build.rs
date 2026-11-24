@@ -79,6 +79,10 @@ fn main() {
     if target_is_apple {
         // The owner's Mac runs macOS 13; never let the C++ pick up a newer minimum.
         build.flag("-mmacosx-version-min=13.0");
+        // Apple's libm has no sincos/sincosf (only the private __sincos), so Rubber Band's
+        // GNU branch does not compile with Apple clang (first macOS CI run, 2026-11-24);
+        // its own LACK_SINCOS switch uses separate sin and cos calls instead.
+        build.define("LACK_SINCOS", None);
     }
 
     // Windows GNU: link libstdc++ statically (no libstdc++-6.dll next to the exe).

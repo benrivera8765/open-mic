@@ -37,18 +37,22 @@ allows this fixture up to 3 MB: a 40 s song with four stems cannot be smaller wi
 losing what it is for).
 
 - Made by `jukeoke-cli make-demo-song` (code: `crates/jk-engine/src/demo.rs`).
-  Deterministic: the same bytes every run (2,425,489 bytes, sha256 `d350ad64...3aef9eb37`
-  on Windows x86-64 since the writer stamps `format_version` 1.1; `1ddb91d8...9f06e0786`
-  with 1.0 before Work Order 2; sines come from the pure-Rust `libm` crate, the noise from
-  an integer PRNG).
+  Deterministic: the same bytes every run (2,425,490 bytes, sha256 `069f0e8c...0b061b14d`
+  on Windows x86-64 since the app was renamed Open Mic, whose name the manifest records;
+  2,425,489 bytes, `d350ad64...3aef9eb37`, under the working name Jukeoke with the 1.1
+  writer; `1ddb91d8...9f06e0786` with 1.0 before Work Order 2; sines come from the
+  pure-Rust `libm` crate, the noise from an integer PRNG).
 - Since 2026-11-20 (Work Order 2) it also carries its melody guide, added by
   `jukeoke-cli guide add` (SONG_FORMAT 1.1 `guide` + `guide.curve`: 42 notes, builder
-  `jk-pitch pyin+notes 0.2.0`), so the self-check's "Practice guide" item reads a stored
+  `jk-pitch pyin+notes 0.3.0` since 2026-11-24), so the self-check's "Practice guide" item reads a stored
   guide from the bundled copy. Every other chunk and both settings slots are byte-identical
   to the generated song (the guide is added by the raw-copy rewrite of SONG_FORMAT 7.1);
   regenerate with `make-demo-song` and then `guide add` (crates/jk-engine/tests/demo.rs
   checks exactly that). Regenerated 2026-11-20 (Stage 3b) after the 1.1 writer: the earlier
   copy still had the 1.0 manifest; its guide's notes are identical.
+  Regenerated again 2026-11-24 (the first CI run on GitHub caught it): the manifest names
+  the app, renamed Open Mic on 2026-11-22, and the guide comes from builder 0.3.0
+  (2,483,031 bytes with the guide, sha256 `e0173c93...0197e67bc`).
 - "Twinkle, Twinkle, Little Star": words by Jane Taylor (1806), melody the traditional
   French tune; both public domain. All audio is synthesised: a sine-and-harmonics
   "voice" (`lead_vocal`), a quiet harmony a third below in lines 3-6 (`backing_vocals`),
