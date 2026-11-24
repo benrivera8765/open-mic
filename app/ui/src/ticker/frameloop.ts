@@ -8,8 +8,15 @@
 //     skin uses for its light drift and bubbles (`Api.onWindowMinimised`: the window's
 //     resize event plus `isMinimized()`).
 
+import { fxFpsCap } from "../lib/fxrate";
+
 export const FRAME_MS = 1000 / 60;
-const MIN_FRAME_MS = FRAME_MS - 2; // 60 fps cap with a little slack for timer jitter
+
+/** The frame period now: 60 fps, or the frame rate setting when raised (D-274). */
+function framePeriod(): number {
+  const cap = fxFpsCap();
+  return cap > 60 ? 1000 / cap : FRAME_MS;
+}
 
 /** `Api.onWindowMinimised`: calls back with true while minimised, false when restored. */
 export type MinimisedSource = (cb: (minimised: boolean) => void) => () => void;
@@ -83,14 +90,16 @@ export class FrameLoop {
     this.raf = 0;
     const draw = this.draw;
     if (!draw || this.hidden) return;
-    if (now - this.last < MIN_FRAME_MS) {
+    const period = framePeriod();
+    // A little slack for timer jitter.
+    if (now - this.last < period - (period > 8 ? 2 : 1)) {
       this.raf = this.env.requestFrame(this.frame);
       return;
     }
     // Advance the 60 fps schedule by whole frame periods instead of jumping to `now`:
     // with `last = now` a 75 Hz screen drew every second refresh (37.5 fps) and a
     // 144 Hz one 48 fps; this keeps 60 fps there too and never more on average.
-    this.last += FRAME_MS * Math.max(1, Math.floor((now - this.last) / FRAME_MS));
+    this.last += period * Math.max(1, Math.floor((now - this.last) / period));
     if (draw(now) && !this.raf) this.raf = this.env.requestFrame(this.frame);
   };
 }

@@ -633,3 +633,59 @@ $JK_BUILD/studio-venv/Scripts/python.exe -I studio/bench/practice_guide_stage2.p
 $JK_BUILD/practice-guide/venv/Scripts/python.exe -I studio/bench/practice_guide_octave.py
 (cd app/ui && npm run build && npm test)
 ```
+
+## Builder 0.3.0: choosing each note's octave (owner, 2026-11-23)
+
+**Why.** In "DragonForce - Seasons (Acoustic Version)" the lane drew "sunlight will shine" at
+F#2 / C#2 / B1 under an E4 line. The stored notes sat exactly 24 semitones under the sung
+ones (F#2 between F#4s, C#2 by C#4), many with confidence 0.8-0.93 and octave `ok`:
+60 notes, 10 % of the singing, 18+ semitones from the melody round them. In this acoustic
+mix the guitar leaking into the separated vocal makes the signal repeat at a lower
+note's period; the spectral check (section 4.4) looks from the claimed pitch down, finds
+that leak, and says "ok". The same kind of runs, an octave or two off, are in most of the
+20 library songs (stored: 105 notes 18+ semitones off, 306 leaps over an octave between
+notes under 0.6 s apart).
+
+**Change** (`guide::choose_octaves`, before the spectral and phrase checks):
+
+- `OctaveChecker::support`: for candidate pitches (the note's own, +-12, +-24), the mean
+  level of the candidate's harmonics minus the mean level half-way between them, both
+  only in the voice's band (150 Hz - 4 kHz; partials 30 dB under the strongest count as
+  absent), so a bass or guitar note under the singer cannot vote.
+- Two Viterbi passes over the pitched notes choose a shift per note: one from the
+  spectrum (16 per dB short of the best candidate, x note weight) with the melody, one
+  from the melody alone (leaps: 0.6 per semitone plus the square of the excess over a
+  fifth, fading out across 0.6-2.5 s rests; range: twice the squared excess over 13
+  semitones from the local centre). **A note moves only where both choose the same
+  shift**; the curve under it moves with it. Local centres use only notes within 15
+  semitones of the song's main register (the 15-semitone band holding the most singing),
+  so a run two octaves off cannot drag them.
+- The same melody-only alignment runs in every reader (jk-guide singable), so guides
+  from older builders are corrected in the lane without rebuilding.
+
+**Why both must agree.** The spectral weight was swept on the benchmark subset
+(`studio/bench/practice_guide_choose.py`): spectrum-led choices fixed the most vocadito
+errors (13 -> 2 at weight 8) but pulled a clean tenor's and bass's real high notes down
+an octave (synthetic 1 -> 3 errors), and in "Seasons" the guitar under the voice pulled a
+correct, confident Bb4 down to Bb3. Weight 28 got worse everywhere (vocadito 15). With
+agreement required no correct note moved on any set.
+
+| Set (`practice_guide_choose.py`) | Octave errors 0.2.0 -> 0.3.0 | Still graded | Correct notes | Note F |
+|---|---|---|---|---|
+| Synthetic singer alone (365 notes) | 1 -> 0 | 0 -> 0 | 364 -> 365 | 0.975 -> 0.978 |
+| Synthetic singer, separated | 3 -> 1 | 1 -> 1 | 333 -> 335 | 0.873 -> 0.876 |
+| vocadito (2237 notes) | 13 -> 6 | 2 -> 1 | 1693 -> 1699 | 0.578 -> 0.581 |
+
+Real songs, rebuilt copies (`examples/singable_stats`; "lane" = what the session draws and
+grades after jk-guide singable):
+
+| Song | Stored notes 18+ off, 0.2.0 -> 0.3.0 | Stored leaps > 12 | Graded (stored) | Graded (lane) | Notes moved (up / down) |
+|---|---|---|---|---|---|
+| DragonForce - Seasons (Acoustic) | 60 -> 39 | 63 -> 42 | 393 -> 395 | 328 -> 328 | 41 (39 / 2) |
+| Celine Dion - My Heart Will Go On | 3 -> 0 | 15 -> 8 | 347 -> 353 | 250 -> 254 | 11 (2 / 9; 7 flagged notes resolved) |
+| Tal Bachman - She's So High | 0 -> 0 | 8 -> 3 | 362 -> 362 | 282 -> 282 | 3 (3 / 0) |
+
+No confident note (>= 0.7) moved down in any of them. Build time unchanged (1.35-1.93 s).
+Version 0.3.0: existing guides read as "outdated" (still used for practice); Library >
+Add practice data, or `jukeoke-cli guide add --force`, rebuilds them (only the guide
+chunks are rewritten).

@@ -143,9 +143,137 @@ impl OctaveChecker {
     }
 }
 
+/// The voice's own band for [`OctaveChecker::support`]: partials below this are ignored, so
+/// a bass or guitar note leaking into the separated vocal under the singer cannot vote.
+const SUPPORT_LOW_HZ: f64 = 150.0;
+/// At most this many harmonics of a candidate are looked at.
+const SUPPORT_HARMONICS: usize = 16;
+/// Partials more than this far (dB) below the strongest one in the band count as absent
+/// (a faint leak must not fill a wrong candidate's harmonics).
+const SUPPORT_RANGE_DB: f64 = 30.0;
+
+impl OctaveChecker {
+    /// How well the note's spectrum supports each candidate pitch (MIDI), in dB: the mean
+    /// level of the candidate's harmonics minus the mean level half-way between them, both
+    /// measured only inside the voice's band (150 Hz .. 4 kHz). The voice's true pitch has
+    /// strong harmonics and quiet gaps; an octave too high has the true odd harmonics in
+    /// its "gaps"; an octave (or two) too low has empty "harmonics" between the true ones.
+    /// `None` when the note is too short to measure.
+    ///
+    /// Builder 0.3.0 (owner, 2026-11-23): the tracker sometimes reads the period of the
+    /// singer plus a bass note leaking under them ("Seasons": F#4 sung over F#2, tracked as
+    /// F#2 with confidence 0.93); [`OctaveChecker::check`] looks from the claimed pitch
+    /// down, sees that leak, and says "ok". This looks across candidates in the voice's band.
+    pub fn support(&self, x: &[f32], start_s: f64, end_s: f64, candidates: &[f64]) -> Option<Vec<f64>> {
+        let lowest = candidates.iter().copied().fold(f64::INFINITY, f64::min);
+        if !lowest.is_finite() {
+            return None;
+        }
+        let f_low = super::midi_to_hz(lowest).max(SUPPORT_LOW_HZ / 4.0);
+        let win_s = (8.0 / f_low).clamp(WIN_MIN, WIN_MAX);
+        let win = ((win_s * self.sr).round() as usize).min(N_FFT);
+        let a = (start_s * self.sr).max(0.0) as usize;
+        let b = ((end_s * self.sr) as usize).min(x.len());
+        if b <= a || b - a < win / 2 {
+            return None;
+        }
+        let mut input = self.fft.make_input_vec();
+        let mut spec = self.fft.make_output_vec();
+        let mut mag = vec![0.0f64; N_FFT / 2 + 1];
+        let hop = win / 2;
+        let mut starts = Vec::new();
+        if b - a <= win {
+            starts.push(((a + b) / 2).saturating_sub(win / 2));
+        } else {
+            let mut s = a;
+            while s + win <= b {
+                starts.push(s);
+                s += hop;
+            }
+        }
+        for &s in &starts {
+            input.iter_mut().for_each(|v| *v = 0.0);
+            for (j, v) in input.iter_mut().enumerate().take(win) {
+                if let Some(&xi) = x.get(s + j) {
+                    let w = 0.5 - 0.5 * (2.0 * std::f64::consts::PI * j as f64 / win as f64).cos();
+                    *v = xi as f64 * w;
+                }
+            }
+            self.fft.process(&mut input, &mut spec).ok()?;
+            for (m, c) in mag.iter_mut().zip(&spec) {
+                *m += c.norm();
+            }
+        }
+        let bin_hz = self.sr / N_FFT as f64;
+        let limit = (0.45 * self.sr).min(4000.0);
+        let lo_bin = (SUPPORT_LOW_HZ / bin_hz) as usize;
+        let hi_bin = ((limit / bin_hz) as usize).min(mag.len() - 1);
+        if hi_bin <= lo_bin + 8 {
+            return None;
+        }
+        let mut band: Vec<f64> = mag[lo_bin..hi_bin].to_vec();
+        band.sort_by(|p, q| p.total_cmp(q));
+        let strongest = band.last().copied().unwrap_or(0.0);
+        let floor = band[band.len() / 2].max(strongest * 10f64.powf(-SUPPORT_RANGE_DB / 20.0)).max(1e-12);
+        let amp = |f: f64| -> f64 {
+            let c = f / bin_hz;
+            let w = (0.02 * c).max(1.5);
+            let lo = (c - w).floor().max(0.0) as usize;
+            let hi = ((c + w).ceil() as usize).min(mag.len() - 1);
+            let peak = mag[lo..=hi].iter().copied().fold(0.0, f64::max);
+            (20.0 * (peak / floor).log10()).max(0.0)
+        };
+        let in_band = |f: f64| f >= SUPPORT_LOW_HZ && f <= limit;
+        Some(
+            candidates
+                .iter()
+                .map(|&m| {
+                    let f0 = super::midi_to_hz(m);
+                    let harm: Vec<f64> = (1..=SUPPORT_HARMONICS).map(|h| h as f64 * f0).filter(|&f| in_band(f)).map(amp).collect();
+                    let gaps: Vec<f64> = (1..=SUPPORT_HARMONICS).map(|h| (h as f64 - 0.5) * f0).filter(|&f| in_band(f)).map(amp).collect();
+                    if harm.len() < 2 || gaps.is_empty() {
+                        return f64::NEG_INFINITY;
+                    }
+                    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+                    mean(&harm) - mean(&gaps)
+                })
+                .collect(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The voice's octave wins in its own band even with a loud bass note an octave or two
+    /// under it (the bleed that made the tracker read F#2 for a sung F#4).
+    #[test]
+    fn support_picks_the_voice_over_a_bass_note_leaking_under_it() {
+        let sr = 16_000.0;
+        let c = OctaveChecker::new(sr);
+        // Two octaves under, louder than the voice ("Seasons"); one octave under, quieter.
+        for &(voice, bass, level) in &[(66.0, 42.0, 0.35), (61.0, 37.0, 0.35), (72.0, 48.0, 0.35), (57.0, 45.0, 0.1), (64.0, 52.0, 0.1)] {
+            let v = tone(super::super::midi_to_hz(voice), sr, 1.0);
+            let b = tone(super::super::midi_to_hz(bass), sr, 1.0);
+            // The bass louder than the voice, its harmonics fading fast (1/h^2).
+            let x: Vec<f32> = v
+                .iter()
+                .zip(&b)
+                .enumerate()
+                .map(|(i, (a, _))| {
+                    let t = i as f64 / sr;
+                    let f = super::super::midi_to_hz(bass);
+                    let bass_s: f64 = (1..=6).map(|h| (2.0 * std::f64::consts::PI * f * h as f64 * t).sin() / (h * h) as f64).sum();
+                    a + (level * bass_s) as f32
+                })
+                .collect();
+            let cands = [voice - 24.0, voice - 12.0, voice, voice + 12.0, voice + 24.0];
+            let s = c.support(&x, 0.1, 0.9, &cands).expect("long enough");
+            let best = (0..5).max_by(|&i, &j| s[i].total_cmp(&s[j])).unwrap();
+            assert_eq!(best, 2, "voice {voice} over bass {bass} at {level}: {s:?}");
+        }
+    }
 
     /// A harmonic tone at `f0` (12 harmonics, 1/h amplitudes, below 0.45 sr).
     fn tone(f0: f64, sr: f64, seconds: f64) -> Vec<f32> {

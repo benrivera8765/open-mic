@@ -8,12 +8,13 @@
 // Debug hooks for the screenshot script and the real-app checks: `window.__jkLane`
 // (stats, the layout's numbers, the last frame, verify(), probe()).
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import type { Lyrics, NoteSpelling, OctaveMode, PracticeGuide } from "../api/types";
+import type { CelebrateFreq, CelebrationKind, Lyrics, NoteSpelling, OctaveMode, PitchFx, PracticeGuide } from "../api/types";
 import { clock, getApiSync, onClockKick } from "../state/app";
 import { keys, live, liveMs, onPracticeKick } from "../state/practice";
 import { FrameLoop, type MinimisedSource } from "../ticker/frameloop";
 import type { TickerStats } from "../ticker/renderer";
-import { type LaneFrame, type LaneLayout, layoutLane, type Measure } from "./lane";
+import { barOf, firstNoteFrom, type LaneFrame, type LaneLayout, layoutLane, type Measure } from "./lane";
+import { CelebrationFx, CelebrationGate, NEAR_PERFECT_SHARE, PERFECT_SHARE, PHRASE_GAP_S } from "./celebration";
 import { LaneRenderer, type LaneStyle } from "./lanerenderer";
 import { rasterBench } from "./lanecost";
 import { type LaneScenario, verifyLane } from "./laneverify";
@@ -31,9 +32,20 @@ export interface PracticeLaneProps {
   simple: boolean;
   reduceMotion: boolean;
   watchOnly: boolean;
+  /** Watch only: a perfect voice follows the melody (settings ui.look.watch_follow). */
+  follow?: boolean;
+  /** Celebrate perfect phrases (ui.look.celebrate), and how. */
+  celebrate?: boolean;
+  celebration?: CelebrationKind;
+  /** How often (ui.look.celebrate_freq); every perfect phrase when absent. */
+  celebrateFreq?: CelebrateFreq;
+  /** The effect off the pitch cursor while on pitch (ui.look.pitch_fx). */
+  pitchFx?: PitchFx;
   octaveMode: OctaveMode;
   spelling: NoteSpelling;
   colors: { sung: string; upcoming: string; marker: string };
+  /** Note bar colour (ui.look.lane_bars); the stylesheet's --lane-bar when absent. */
+  barColor?: string;
 }
 
 declare global {
@@ -64,6 +76,18 @@ function windowMinimisedSource(): MinimisedSource | undefined {
 
 export function PracticeLane(props: PracticeLaneProps) {
   const { guide, lyrics, lyricsOffsetS = 0, duration, offsetS, pianoSide, words, simple, reduceMotion, watchOnly, octaveMode, spelling, colors } = props;
+  const follow = props.follow ?? false;
+  const celebrate = props.celebrate ?? false;
+  const celebration = props.celebration ?? "mix";
+  const pitchFx = props.pitchFx ?? "off";
+  const celebrateFreq = props.celebrateFreq ?? "every";
+  const gateRef = useRef(new CelebrationGate());
+  /** performance.now() of the last frame that could emit the on-pitch effect. */
+  const fxMsRef = useRef(0);
+  const fxCanvasRef = useRef<HTMLCanvasElement>(null);
+  const fxRef = useRef<CelebrationFx | null>(null);
+  /** Lane time of the previous frame, to find the phrase ends passed since. */
+  const lastTRef = useRef(Number.NaN);
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<LaneRenderer | null>(null);
@@ -72,8 +96,8 @@ export function PracticeLane(props: PracticeLaneProps) {
   const offsetRef = useRef(offsetS);
   offsetRef.current = offsetS;
   // Inputs the frame reads that change without a new layout.
-  const dyn = useRef({ watchOnly, octaveMode, spelling, reduceMotion, simple });
-  dyn.current = { watchOnly, octaveMode, spelling, reduceMotion, simple };
+  const dyn = useRef({ watchOnly, octaveMode, spelling, reduceMotion, simple, follow, celebrate, celebration, pitchFx, celebrateFreq });
+  dyn.current = { watchOnly, octaveMode, spelling, reduceMotion, simple, follow, celebrate, celebration, pitchFx, celebrateFreq };
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -105,12 +129,12 @@ export function PracticeLane(props: PracticeLaneProps) {
       sung: colors.sung,
       marker: colors.marker,
       upcoming: colors.upcoming,
-      bar: cs.getPropertyValue("--lane-bar").trim() || "#ff3d8b",
+      bar: props.barColor || cs.getPropertyValue("--lane-bar").trim() || "#ff3d8b",
       wordFont: cs.getPropertyValue("--ticker-font").trim() || "system-ui, sans-serif",
       wordWeight: cs.getPropertyValue("--lane-word-weight").trim() || "700",
       labelFont: cs.getPropertyValue("--lane-label-font").trim() || "system-ui, sans-serif",
     };
-  }, [colors.sung, colors.marker, colors.upcoming, size.w > 0, fontEpoch]);
+  }, [colors.sung, colors.marker, colors.upcoming, props.barColor, size.w > 0, fontEpoch]);
 
   const layout: LaneLayout | null = useMemo(() => {
     if (!style || size.w <= 0 || size.h <= 0) return null;
@@ -132,10 +156,26 @@ export function PracticeLane(props: PracticeLaneProps) {
     } catch {
       rendererRef.current = null;
     }
+    const fxCanvas = fxCanvasRef.current;
+    if (fxCanvas) {
+      try {
+        fxRef.current = new CelebrationFx(fxCanvas);
+        (window as unknown as { __jkCelebrate?: unknown }).__jkCelebrate = fxRef.current;
+      } catch {
+        fxRef.current = null;
+      }
+    }
     return () => {
       rendererRef.current = null;
+      fxRef.current?.stop();
+      fxRef.current = null;
     };
   }, []);
+
+  // Celebrations: off -> stop any burst still flying.
+  useEffect(() => {
+    if (!celebrate || reduceMotion) fxRef.current?.stop();
+  }, [celebrate, reduceMotion]);
 
   const loopRef = useRef<FrameLoop | null>(null);
   if (!loopRef.current) {
@@ -157,6 +197,62 @@ export function PracticeLane(props: PracticeLaneProps) {
     if (!r || !layout || !style) return;
     r.setSize(size.w, size.h, size.dpr);
     r.setLayout(layout, style, simple);
+    fxRef.current?.setSize(size.w, size.h, size.dpr, style.labelFont);
+    lastTRef.current = Number.NaN;
+    // Lyric line starts (song time): a phrase also ends where the next note starts a new line,
+    // since many songs run their lines together without a rest.
+    const lineStarts = (lyrics?.lines ?? []).map((ln) => ln.start + lyricsOffsetS).sort((a, b) => a - b);
+    const lineOf = (t: number) => {
+      let lo = 0;
+      let hi = lineStarts.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (lineStarts[mid] <= t + 0.08) lo = mid + 1;
+        else hi = mid;
+      }
+      return lo;
+    };
+    /** True when notes a and b (a before b) belong to different phrases. */
+    const breakBetween = (a: { start: number; end: number }, b: { start: number }) => b.start - a.end >= PHRASE_GAP_S || lineOf(b.start) > lineOf(a.start);
+    /** Fires a celebration when a phrase that was sung perfectly (or followed in watch only) ends. */
+    const celebrateAt = (t: number, f: LaneFrame | null) => {
+      const prev = lastTRef.current;
+      lastTRef.current = t;
+      const d = dyn.current;
+      const fx = fxRef.current;
+      if (!fx || !f || !d.celebrate || d.reduceMotion) return;
+      const followOn = d.watchOnly && d.follow;
+      if (d.watchOnly && !followOn) return;
+      // Only while playing forward at normal speed: never on a seek or a jump.
+      if (!(t > prev) || t - prev > 0.5) return;
+      const notes = layout.notes;
+      for (let k = firstNoteFrom(layout, prev); k < notes.length && notes[k].end <= t; k++) {
+        const n = notes[k];
+        if (n.end <= prev) continue;
+        const next = notes[k + 1];
+        if (next && !breakBetween(n, next)) continue;
+        // The phrase: back from this note to the previous rest.
+        let graded = 0;
+        let onPitch = 0;
+        for (let q = k; q >= 0; q--) {
+          const m = notes[q];
+          if (q < k && breakBetween(m, notes[q + 1])) break;
+          if (m.kind !== "pitched" || !m.graded || m.dim) continue;
+          graded += m.end - m.start;
+          if (followOn) continue;
+          const h = live?.hitsOf(m.i);
+          if (!h) continue;
+          for (let j = 0; j + 2 < h.length; j += 3) {
+            if (h[j + 2] !== 0) continue;
+            onPitch += Math.max(0, Math.min(h[j + 1], m.end) - Math.max(h[j], m.start));
+          }
+        }
+        if (graded < 0.5) continue;
+        if (!followOn && onPitch / graded < (d.celebrateFreq === "often" ? NEAR_PERFECT_SHARE : PERFECT_SHARE)) continue;
+        if (gateRef.current.allow(d.celebrateFreq, performance.now())) fx.burst(d.celebration, layout.nowX, barOf(layout, f, k).y);
+        break;
+      }
+    };
     const inputsAt = (now: number, t: number) => ({
       t,
       nowMs: now,
@@ -166,6 +262,7 @@ export function PracticeLane(props: PracticeLaneProps) {
       live,
       liveMs,
       watchOnly: dyn.current.watchOnly,
+      follow: dyn.current.follow,
       reduceMotion: dyn.current.reduceMotion,
       simple: dyn.current.simple,
     });
@@ -214,6 +311,16 @@ export function PracticeLane(props: PracticeLaneProps) {
     fl.draw = (now) => {
       const t = clock.position(now) - offsetRef.current;
       const f = r.draw(inputsAt(now, t));
+      celebrateAt(t, f);
+      // On pitch on a graded note: the effect comes off the cursor (owner, 2026-11-23).
+      const dtFx = (now - fxMsRef.current) / 1000;
+      fxMsRef.current = now;
+      const fx = fxRef.current;
+      const kind = dyn.current.pitchFx;
+      const sg = f?.singer;
+      if (fx && f && sg && kind !== "off" && !dyn.current.reduceMotion && sg.edge === 0 && sg.cue === 0 && f.target?.graded) {
+        fx.trail(kind, layout.nowX, sg.y, dtFx, layout.barH);
+      }
       // Keep drawing while the clock runs, a slide is under way, or the marker is live.
       return clock.isAnimating(now) || !!f?.animating || now - liveMs < 400;
     };
@@ -226,14 +333,15 @@ export function PracticeLane(props: PracticeLaneProps) {
       fl.draw = null;
       fl.stop();
     };
-  }, [layout, style, size.w, size.h, size.dpr, simple, guide, lyrics]);
+  }, [layout, style, size.w, size.h, size.dpr, simple, guide, lyrics, lyricsOffsetS]);
 
   // Settings that need only a new frame.
-  useEffect(() => loopRef.current?.kick(), [offsetS, watchOnly, octaveMode, spelling, reduceMotion]);
+  useEffect(() => loopRef.current?.kick(), [offsetS, watchOnly, follow, octaveMode, spelling, reduceMotion]);
 
   return (
     <div class={`practice-lane practice-lane--piano-${pianoSide}`} ref={wrapRef}>
       <canvas class="practice-lane__canvas" ref={canvasRef} aria-hidden="true" />
+      <canvas class="practice-lane__fx" ref={fxCanvasRef} aria-hidden="true" />
     </div>
   );
 }

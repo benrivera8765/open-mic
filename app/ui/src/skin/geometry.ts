@@ -306,9 +306,13 @@ export class TubePath {
  * The bubble track for one side: from `startY` (normally the column base) up the
  * column, round the shoulder and over the arch to the crest.
  */
-export function bubbleTrack(g: FrameGeometry, side: "left" | "right", startY = g.baseTop): TubePath {
+export function bubbleTrack(g: FrameGeometry, side: "left" | "right", startY = g.baseTop, offset = 0): TubePath {
+  // offset: as centreLinePath (positive = outwards, away from the screen); the pilaster
+  // frame style runs two small bubble tubes either side of the centre line.
   const segs: Segment[] = [];
-  const x = g.xL;
+  const x = g.xL - offset;
+  const cornerR = g.cornerR + offset;
+  const bigR = g.bigR > 0 ? g.bigR + offset : 0;
   const vLen = Math.max(0, startY - g.cornerCy);
   segs.push({ kind: "line", x0: x, y0: startY, x1: x, y1: g.cornerCy, len: vLen });
   const a1 = g.bigR > 0 ? g.junctionAngle : THREE_HALF_PI;
@@ -316,23 +320,23 @@ export function bubbleTrack(g: FrameGeometry, side: "left" | "right", startY = g
     kind: "arc",
     cx: g.cornerCx,
     cy: g.cornerCy,
-    r: g.cornerR,
+    r: cornerR,
     a0: Math.PI,
     a1,
-    len: g.cornerR * (a1 - Math.PI),
+    len: cornerR * (a1 - Math.PI),
   });
   if (g.bigR > 0) {
     segs.push({
       kind: "arc",
       cx: g.width / 2,
       cy: g.bigCy,
-      r: g.bigR,
+      r: bigR,
       a0: g.junctionAngle,
       a1: THREE_HALF_PI,
-      len: g.bigR * (THREE_HALF_PI - g.junctionAngle),
+      len: bigR * (THREE_HALF_PI - g.junctionAngle),
     });
   } else {
-    const y = g.cornerCy - g.cornerR;
+    const y = g.cornerCy - cornerR;
     const len = Math.max(0, g.width / 2 - g.cornerCx);
     segs.push({ kind: "line", x0: g.cornerCx, y0: y, x1: g.width / 2, y1: y, len });
   }

@@ -29,7 +29,7 @@ import type {
 } from "../api/types";
 import { clampKey } from "../lib/keys";
 import { exportGainNotice, formatBytes } from "../lib/format";
-import { DEFAULT_PRACTICE_SETTINGS } from "../api/defaults";
+import { DEFAULT_PRACTICE_SETTINGS, lookOf } from "../api/defaults";
 import { PlaybackClock } from "../lib/clock";
 import { Store, useSelector } from "./store";
 import { initPractice } from "./practice";
@@ -542,9 +542,15 @@ export async function setFullscreen(on: boolean): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function mergeSettings(base: AppSettings, ch: AppSettingsChanges): AppSettings {
+  const { look: chLook, ...chUi } = ch.ui ?? {};
   return {
     ...base,
-    ui: { ...base.ui, ...(ch.ui ?? {}), colors: { ...base.ui.colors, ...(ch.ui?.colors ?? {}) } },
+    ui: {
+      ...base.ui,
+      ...chUi,
+      colors: { ...base.ui.colors, ...(ch.ui?.colors ?? {}) },
+      ...(base.ui.look || chLook ? { look: { ...lookOf(base.ui), ...(chLook ?? {}) } } : {}),
+    },
     audio: { ...base.audio, ...(ch.audio ?? {}), device_offsets_ms: { ...base.audio.device_offsets_ms, ...(ch.audio?.device_offsets_ms ?? {}) } },
     // WO2 (APP_API 12.7): practice settings, one level deep (the maps are written by the core).
     ...(base.practice || ch.practice ? { practice: { ...DEFAULT_PRACTICE_SETTINGS, ...(base.practice ?? {}), ...(ch.practice ?? {}) } } : {}),
@@ -566,7 +572,15 @@ export function changeSettings(changes: AppSettingsChanges, debounceMs = 0): voi
 
 function mergeChanges(a: AppSettingsChanges, b: AppSettingsChanges): AppSettingsChanges {
   return {
-    ui: a.ui || b.ui ? { ...(a.ui ?? {}), ...(b.ui ?? {}), ...(a.ui?.colors || b.ui?.colors ? { colors: { ...(a.ui?.colors ?? {}), ...(b.ui?.colors ?? {}) } } : {}) } : undefined,
+    ui:
+      a.ui || b.ui
+        ? {
+            ...(a.ui ?? {}),
+            ...(b.ui ?? {}),
+            ...(a.ui?.colors || b.ui?.colors ? { colors: { ...(a.ui?.colors ?? {}), ...(b.ui?.colors ?? {}) } } : {}),
+            ...(a.ui?.look || b.ui?.look ? { look: { ...(a.ui?.look ?? {}), ...(b.ui?.look ?? {}) } } : {}),
+          }
+        : undefined,
     audio:
       a.audio || b.audio
         ? { ...(a.audio ?? {}), ...(b.audio ?? {}), ...(a.audio?.device_offsets_ms || b.audio?.device_offsets_ms ? { device_offsets_ms: { ...(a.audio?.device_offsets_ms ?? {}), ...(b.audio?.device_offsets_ms ?? {}) } } : {}) }

@@ -48,7 +48,7 @@ function SkinTransport() {
     <div class="skin-console__transport" role="group" aria-label="Playback">
       <div class="skin-transport__plates">
         <PlateButton class="skin-transport__restart" label={<TransportIcon name="restart" />} ariaLabel="Restart from the beginning" title="Restart" disabled={disabled} onClick={() => void restart()} />
-        <PlateButton class="skin-transport__back" label={<TransportIcon name="back" />} ariaLabel="Back 5 seconds" title="Back 5 s (←)" disabled={disabled} onClick={() => void seekBy(-5)} />
+        <PlateButton class="skin-transport__back" label={<TransportIcon name="back5" />} ariaLabel="Back 5 seconds" title="Back 5 s (←)" disabled={disabled} onClick={() => void seekBy(-5)} />
         <PlateButton
           class="skin-transport__play"
           size="lg"
@@ -59,7 +59,7 @@ function SkinTransport() {
           disabled={disabled || state === "loading"}
           onClick={() => void togglePlay()}
         />
-        <PlateButton class="skin-transport__forward" label={<TransportIcon name="forward" />} ariaLabel="Forward 5 seconds" title="Forward 5 s (→)" disabled={disabled} onClick={() => void seekBy(5)} />
+        <PlateButton class="skin-transport__forward" label={<TransportIcon name="forward5" />} ariaLabel="Forward 5 seconds" title="Forward 5 s (→)" disabled={disabled} onClick={() => void seekBy(5)} />
       </div>
       <div class="skin-transport__seek">
         <label for="seek" class="visually-hidden">

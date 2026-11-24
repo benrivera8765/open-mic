@@ -8,7 +8,7 @@
 import type { ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
 import type { AppSettings, PracticeState, SongDetail } from "../api/types";
-import { DEFAULT_PRACTICE_SETTINGS } from "../api/defaults";
+import { DEFAULT_PRACTICE_SETTINGS, LANE_BAR_COLORS, lookOf } from "../api/defaults";
 import { useApp } from "../state/app";
 import { useResolvedMotion } from "../skin/motion";
 import {
@@ -276,6 +276,7 @@ export function PracticeView({ song, lyricsOffsetS, deviceOffsetS }: { song: Son
   const keyHeard = player?.key_heard ?? player?.key_requested ?? 0;
   const spelling = player?.key_spelling ?? spellingFor(song.summary.key, keyHeard);
   const colors = ui.colors;
+  const look = lookOf(ui);
 
   let body: ComponentChildren;
   if (p.panel === "permission" && p.permission) body = <PermissionPanel explanation={p.permission.explanation} />;
@@ -299,6 +300,12 @@ export function PracticeView({ song, lyricsOffsetS, deviceOffsetS }: { song: Son
             simple={pr.simple_lane}
             reduceMotion={reduce}
             watchOnly={st!.phase === "watch_only"}
+            follow={look.watch_follow}
+            celebrate={look.celebrate}
+            celebration={look.celebration}
+            celebrateFreq={look.celebrate_freq}
+            pitchFx={look.pitch_fx}
+            barColor={LANE_BAR_COLORS[look.lane_bars]}
             octaveMode={st!.octave.mode}
             spelling={spelling}
             colors={colors}
