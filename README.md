@@ -31,6 +31,20 @@ perfect voice follows the melody.
 
 ![Practice mode in the Cyberpunk theme: the melody as neon bars on a note lane, piano keys down the side](docs/screenshots/practice-cyberpunk.jpg)
 
+## Download
+
+From the [latest release](https://github.com/benrivera8765/open-mic/releases/latest), for
+Windows 10 and 11:
+
+1. **Open-Mic-part1.zip** is the app, with a demo song. Unzip it (right-click > Extract
+   All) and double-click `Open Mic\Windows\Open Mic.exe`.
+2. **Open-Mic-part2.zip** adds what the Studio needs to make your own songs (an NVIDIA
+   graphics card with about 6 GB of memory or more). Unzip it into the same folder as part
+   1: in Extract All, change "part2" at the end of the folder to "part1". Then open
+   **Studio** in the app and press **Download models** once (about 3.8 GB).
+
+GitHub limits each file to 2 GB, so the Studio's graphics-card libraries come as part 2.
+
 ## Themes
 
 The whole cabinet is themable: Settings > Themes has ten looks, each a preset of the
