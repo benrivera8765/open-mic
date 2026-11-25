@@ -39,6 +39,9 @@ pub const SCREENSHOT_FILE: &str = "smoke-test.png";
 pub const TIMEOUT: Duration = Duration::from_secs(60);
 /// Overrides [`TIMEOUT`] in milliseconds; used to test the failure path.
 pub const TIMEOUT_ENV: &str = "JK_SMOKE_TIMEOUT_MS";
+/// UI progress notes kept (`smoke_progress`), and the longest kept (characters).
+const UI_NOTES_MAX: usize = 64;
+const UI_NOTE_CHARS: usize = 300;
 
 fn timeout() -> Duration {
     std::env::var(TIMEOUT_ENV)
@@ -76,6 +79,13 @@ struct Mark {
     ms: f64,
 }
 
+/// A step of the UI's start-up (or a script error) as the UI described it (D-279).
+#[derive(Debug, Clone, Serialize)]
+struct UiNote {
+    ms: f64,
+    note: String,
+}
+
 #[derive(Debug, Serialize)]
 struct Check {
     name: &'static str,
@@ -89,6 +99,8 @@ pub struct Smoke {
     enabled: bool,
     started: Instant,
     marks: Mutex<Vec<Mark>>,
+    /// The UI's own progress notes, in arrival order.
+    ui_notes: Mutex<Vec<UiNote>>,
     /// Someone (the UI report or the watchdog) has taken charge of finishing.
     finished: AtomicBool,
     /// The report file has been written.
@@ -101,6 +113,7 @@ impl Smoke {
             enabled,
             started,
             marks: Mutex::new(Vec::new()),
+            ui_notes: Mutex::new(Vec::new()),
             finished: AtomicBool::new(false),
             reported: AtomicBool::new(false),
         }
@@ -127,6 +140,24 @@ impl Smoke {
         {
             marks.push(Mark { name, ms });
         }
+    }
+
+    /// Keeps one UI progress note (`smoke_progress`): written into the report as
+    /// `ui_progress`, so a UI that never reports still says how far it got.
+    pub fn ui_note(&self, note: &str) {
+        if !self.enabled {
+            return;
+        }
+        let ms = self.elapsed_ms();
+        if let Ok(mut notes) = self.ui_notes.lock()
+            && notes.len() < UI_NOTES_MAX
+        {
+            notes.push(UiNote { ms, note: note.chars().take(UI_NOTE_CHARS).collect() });
+        }
+    }
+
+    fn last_ui_note(&self) -> Option<String> {
+        self.ui_notes.lock().ok().and_then(|n| n.last().map(|n| n.note.clone()))
     }
 
     /// True for exactly one caller: the one allowed to write the report and exit.
@@ -173,7 +204,8 @@ pub fn start_watchdog(app: AppHandle) {
             let state = app.state::<AppState>();
             let secs = limit.as_secs_f64();
             let reason = if state.smoke.claim_finish() {
-                Some(format!("the UI did not report within {secs} s"))
+                let last = state.smoke.last_ui_note().unwrap_or_else(|| "none received".into());
+                Some(format!("the UI did not report within {secs} s (its last progress note: {last})"))
             } else if !state.smoke.reported.load(Ordering::SeqCst) {
                 Some(format!("the UI reported, but the screenshot and report step did not finish within {secs} s"))
             } else {
@@ -298,6 +330,7 @@ fn write_report(
         .lock()
         .map(|m| m.clone())
         .unwrap_or_default();
+    let ui_notes = state.smoke.ui_notes.lock().map(|n| n.clone()).unwrap_or_default();
     let written_at_unix_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -339,6 +372,7 @@ fn write_report(
         "timings_ms_since_main": marks,
         "total_ms_since_main": state.smoke.elapsed_ms(),
         "ui": ui,
+        "ui_progress": ui_notes,
         "written_at_unix_ms": written_at_unix_ms,
     });
 

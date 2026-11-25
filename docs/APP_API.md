@@ -70,8 +70,10 @@ main folder (the one holding `Library`), remembers it in
 with `not_needed` when the app is not translocated.
 
 Internal commands, not for screens: `ping(text) -> { echo, uptimeMs }` (Stage 0 IPC
-check) and `smoke_report(report)` (only accepted under `--smoke-test`; camelCase
-payload kept from Stage 0).
+check), `smoke_report(report)` (only accepted under `--smoke-test`; camelCase
+payload kept from Stage 0) and `smoke_progress(step)` (only accepted under
+`--smoke-test`: one start-up step or script error, kept in `smoke-test.json` as
+`ui_progress`; D-279).
 
 ## 2. Library
 

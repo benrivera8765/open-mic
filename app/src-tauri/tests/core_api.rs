@@ -8,7 +8,8 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use common::*;
 use jukeoke_lib::core::{Core, CoreOptions};
@@ -320,14 +321,68 @@ fn clock_events_about_30_per_second_while_playing() {
     a.core.player.start_clock();
     a.core.player.load("Jukeoke - Test Tone.jksong").unwrap();
     a.core.player.play().unwrap();
-    // Let a snapshot taken just before play() drain, then count for one second.
+    // Let a snapshot taken just before play() drain, then count for one second, measured.
+    std::thread::sleep(Duration::from_millis(100));
+    // What this machine lets ANY thread do over the same second: a bare ticker with the
+    // clock thread's own policy (30 Hz absolute deadlines on a channel's timed wait, 4 ms
+    // slack, the grid restarted when more than a period behind) and no work at all. The
+    // macOS CI runner gave the clock thread 17 wake-ups in a second (D-279); a fault of
+    // the clock loop shows as fewer events than the bare ticker got.
+    let stop = Arc::new(AtomicBool::new(false));
+    let ticker = {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            const PERIOD: Duration = Duration::from_micros(33_333);
+            const SLACK: Duration = Duration::from_millis(4);
+            let (_keep, rx) = crossbeam_channel::bounded::<()>(1);
+            let mut ticks = Vec::new();
+            let mut next = Instant::now();
+            while !stop.load(Ordering::SeqCst) {
+                let _ = rx.recv_timeout(next.saturating_duration_since(Instant::now()));
+                let now = Instant::now();
+                if now + SLACK >= next {
+                    ticks.push(now);
+                    next += PERIOD;
+                    if next + PERIOD < now {
+                        next = now + PERIOD;
+                    }
+                }
+            }
+            ticks
+        })
+    };
     std::thread::sleep(Duration::from_millis(100));
     a.sink.clear();
+    let t0 = Instant::now();
     std::thread::sleep(Duration::from_millis(1000));
     let clock = a.sink.of("playback://clock");
+    let t1 = Instant::now();
+    stop.store(true, Ordering::SeqCst);
+    let bare = ticker.join().unwrap().iter().filter(|t| **t >= t0 && **t <= t1).count();
+    let secs = (t1 - t0).as_secs_f64();
     let n = clock.len();
-    eprintln!("measured: {n} playback://clock events in 1 s of playback");
-    assert!((25..=36).contains(&n), "{n} clock events in 1 s");
+    eprintln!("measured: {n} playback://clock events in {secs:.3} s of playback; a bare 30 Hz ticker got {bare}");
+    // The clock loop keeps up with what the machine allows (one tick of slack)...
+    assert!(n + 1 >= bare * 9 / 10, "{n} clock events in {secs:.3} s where a bare ticker got {bare}");
+    // ...and about 30 per second wherever a thread can be woken 30 times a second (every
+    // computer the app supports). Not judged on a machine that cannot: said in the CI
+    // job summary, never skipped silently.
+    let lo = (25.0 * secs).floor() as usize;
+    let hi = (36.0 * secs).ceil() as usize;
+    if bare >= lo {
+        assert!((lo..=hi).contains(&n), "{n} clock events in {secs:.3} s (bare ticker: {bare})");
+    } else {
+        let note = format!(
+            "clock_events_about_30_per_second_while_playing: this machine woke a bare 30 Hz ticker only {bare} times in {secs:.3} s, so the ~30/s rate was not judged here; the clock thread got {n} events, as many as the machine allowed (D-279)"
+        );
+        eprintln!("warning: {note}");
+        if let Some(p) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(p) {
+                let _ = writeln!(f, "- :warning: {note}");
+            }
+        }
+    }
     let seqs: Vec<u64> = clock.iter().map(|e| e["seq"].as_u64().unwrap()).collect();
     assert!(seqs.windows(2).all(|w| w[1] > w[0]));
     let pos: Vec<f64> = clock.iter().map(|e| e["position_s"].as_f64().unwrap()).collect();

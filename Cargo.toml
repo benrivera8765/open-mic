@@ -17,3 +17,16 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# The audio and analysis crates are optimised in test builds too (debug assertions and
+# overflow checks stay on): the real-time tests play songs at 1x on the null device and
+# the analysis must keep up with real time, as it does in the release build. Unoptimised,
+# it fell seconds behind on a 2-core machine and on the CI runners (D-279).
+[profile.dev.package.jk-pitch]
+opt-level = 2
+[profile.dev.package.jk-dsp]
+opt-level = 2
+[profile.dev.package.jk-engine]
+opt-level = 2
+[profile.dev.package.jk-recorder]
+opt-level = 2

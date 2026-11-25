@@ -261,21 +261,34 @@ fn pause_resume_and_position() {
     engine.load(&song, MixParams::default()).unwrap();
     engine.seek(10.0);
     assert!((engine.snapshot().position_s - 10.0).abs() < 1e-9, "position = seek target while paused");
+    // The position may never run ahead of the wall clock: at most the time really elapsed
+    // (measured, not the time asked of `sleep`, which a busy CI machine overshoots: the
+    // macOS runner slept 0.4 s for 0.3 s, D-279) plus one 10 ms null-device period.
+    const PERIOD_S: f64 = 0.01;
+    let t = Instant::now();
     engine.play();
     std::thread::sleep(Duration::from_millis(600));
     let s1 = engine.snapshot();
+    let el1 = t.elapsed().as_secs_f64();
     assert_eq!(s1.state, PlaybackState::Playing);
-    assert!(s1.position_s > 10.2 && s1.position_s < 10.7, "position after 0.6 s: {}", s1.position_s);
+    assert!(
+        s1.position_s > 10.2 && s1.position_s <= 10.0 + el1 + PERIOD_S,
+        "position after {el1:.3} s (0.6 s asked): {}",
+        s1.position_s
+    );
     engine.pause();
     std::thread::sleep(Duration::from_millis(200));
     let p1 = engine.snapshot().position_s;
     std::thread::sleep(Duration::from_millis(300));
     let p2 = engine.snapshot().position_s;
     assert_eq!(p1, p2, "position holds while paused");
+    let t = Instant::now();
     engine.play();
     std::thread::sleep(Duration::from_millis(300));
     let p3 = engine.snapshot().position_s;
-    assert!(p3 > p2 + 0.15 && p3 < p2 + 0.4, "resumes from the pause point: {p2} -> {p3}");
+    let el3 = t.elapsed().as_secs_f64();
+    println!("measured: {:.3} s played in {el1:.3} s; resumed {p2:.3} -> {p3:.3} ({:.3} s) in {el3:.3} s", s1.position_s - 10.0, p3 - p2);
+    assert!(p3 > p2 + 0.15 && p3 <= p2 + el3 + PERIOD_S, "resumes from the pause point: {p2} -> {p3} in {el3:.3} s (0.3 s asked)");
     assert_eq!(engine.diagnostics().underruns, 0);
 }
 
