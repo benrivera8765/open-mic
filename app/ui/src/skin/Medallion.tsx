@@ -11,12 +11,12 @@ export interface MedallionProps {
   title?: string;
   /** A thin silver chrome ring between the gold bezel and the red enamel (owner, 2026-11-22). */
   trim?: boolean;
-  /** The bezel and star: gold chrome (default), bronze (Molten), chrome, brass or gunmetal. */
-  metal?: "gold" | "bronze" | "chrome" | "brass" | "gunmetal";
+  /** The bezel and star: gold chrome (default), bronze (Molten), chrome or brass. */
+  metal?: "gold" | "bronze" | "chrome" | "brass";
   /** The thin ring's metal: silver chrome (default), iron or copper. */
   trimFinish?: "silver" | "iron" | "copper";
-  /** The enamel disc, following the theme's glow: red (pink glow, default), ember, aqua, violet, amber, lime. */
-  enamel?: "pink" | "ember" | "aqua" | "violet" | "amber" | "lime";
+  /** The enamel disc, following the theme's glow: red (pink glow, default), ember, aqua, violet, amber. */
+  enamel?: "pink" | "ember" | "aqua" | "violet" | "amber";
 }
 
 /** Bezel stops and the star's light and dark facets (long points, short points). */
@@ -25,7 +25,6 @@ const METALS = {
   bronze: { bezel: ["#ffe0c2", "#d08a52", "#6a3414", "#eab084", "#8a4a20"], line: "#4a2008", facets: ["#ffe2c4", "#f0b080", "#c0682c", "#94461a"] },
   chrome: { bezel: ["#ffffff", "#c4cbd3", "#56606a", "#e6eaee", "#727a84"], line: "#2a3038", facets: ["#ffffff", "#e2e7ec", "#9aa3ad", "#727b86"] },
   brass: { bezel: ["#fff2c4", "#d8b45a", "#6e5216", "#ecd48c", "#86661e"], line: "#4a360a", facets: ["#fff4cc", "#ecd488", "#c4962e", "#9a7418"] },
-  gunmetal: { bezel: ["#d8dfe6", "#7e8a96", "#262d34", "#aeb8c2", "#46505a"], line: "#14181c", facets: ["#e4eaf0", "#b8c2cc", "#5a6672", "#3a444e"] },
 } as const;
 
 /** Enamel disc: light, middle, dark. */
@@ -35,7 +34,6 @@ const ENAMELS = {
   aqua: ["#5ad0ff", "#0a6ab0", "#04284a"],
   violet: ["#b884ff", "#5a1ab0", "#200648"],
   amber: ["#ffc860", "#b8740a", "#4a2a02"],
-  lime: ["#9aff6a", "#2a9a10", "#0a3a04"],
 } as const;
 
 const TRIMS = {

@@ -59,7 +59,7 @@ export interface FrameLook {
   /** The warm metal of rims, rings, bezels and plates: gold chrome or bronze. */
   metal?: MetalName;
   /** Glow colour of lit plates, faders, focus rings and the speaker cloth. */
-  glow?: "pink" | "ember" | "aqua" | "violet" | "amber" | "lime";
+  glow?: "pink" | "ember" | "aqua" | "violet" | "amber";
 }
 
 export const DEFAULT_FRAME_LOOK: FrameLook = { cabinet: "walnut", frame: "neon", accents: "red", lattice: "gold", innerTrim: false, metal: "gold", glow: "pink" };
@@ -133,7 +133,7 @@ function lightTiming(g: FrameGeometry, style: FrameStyleName): { P: number; cycl
   // Fire: short, quick bands of flame light racing along the pipe; water and data race too.
   if (style === "fire") return { P: Math.round(g.lightPeriod * 0.4), cycle: 7_000 };
   if (style === "water" || style === "data") return { P: Math.round(g.lightPeriod * 0.5), cycle: 9_000 };
-  if (style === "steam" || style === "diesel" || style === "aero") return { P: Math.round(g.lightPeriod * 0.6), cycle: 14_000 };
+  if (style === "steam") return { P: Math.round(g.lightPeriod * 0.6), cycle: 14_000 };
   return { P: g.lightPeriod, cycle: LIGHT_CYCLE_MS };
 }
 
@@ -203,20 +203,6 @@ const GLASS_PALETTES: Partial<Record<FrameStyleName, Palette>> = {
     ["#1a6aff", 0.65],
     ["#2ae0ff", 0.85],
     ["#0a8ab0", 1],
-  ],
-  diesel: [
-    ["#ff8a1a", 0],
-    ["#a04010", 0.3],
-    ["#ffb040", 0.5],
-    ["#702a08", 0.8],
-    ["#ff8a1a", 1],
-  ],
-  aero: [
-    ["#3ad8ff", 0],
-    ["#7aff9a", 0.3],
-    ["#bff6ff", 0.55],
-    ["#4ab8ff", 0.8],
-    ["#3ad8ff", 1],
   ],
 };
 
@@ -494,8 +480,8 @@ export function JukeboxFrame({ children, console: consoleContent, crest, bubbles
   const glow = look.glow ?? "pink";
   const metal = look.metal ?? "gold";
   // Small bubbles: the pilaster's two tubes, or spread through the lightning tube's water.
-  // ... and, without the GPU, through the water and Aero pipes (their 2D look).
-  const lightning = look.frame === "light" || look.frame === "ocean" || (!(gpu && !fireFailed) && (look.frame === "water" || look.frame === "aero"));
+  // ... and, without the GPU, through the water pipe (its 2D look).
+  const lightning = look.frame === "light" || look.frame === "ocean" || (!(gpu && !fireFailed) && look.frame === "water");
   const channels = useMemo(
     () => (g && pilaster ? pilasterChannels(g) : g && lightning ? { offset: g.tube * 0.2, width: Math.max(4, g.tube * 0.12) } : null),
     [g, pilaster, lightning],

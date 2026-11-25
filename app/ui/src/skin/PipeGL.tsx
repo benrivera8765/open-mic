@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // A glass pipe whose contents are drawn on the GPU (D-272, D-275): Molten's fire, water
-// coursing through, steam, cyberpunk data, diesel exhaust, Frutiger Aero liquid
+// coursing through, steam, cyberpunk data
 // (shaders.ts PIPE_FS). FireTube.tsx is the fire's 2D fallback.
 //
 // The pipe is one triangle strip from the foot of the left column, over the arch, to the

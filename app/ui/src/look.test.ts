@@ -35,6 +35,13 @@ describe("look settings", () => {
     expect(look.celebrate).toBe(false);
     expect(look.celebration).toBe("fireworks");
   });
+
+  it("falls back to the defaults for the removed Dieselpunk and Frutiger Aero looks (D-278)", () => {
+    const saved = { theme: "dieselpunk", cabinet: "deco", frame: "diesel", metal: "gunmetal", glow: "lime", lane_bars: "lime", badge_field: "glass" };
+    const look = lookOf({ look: saved as never });
+    for (const k of Object.keys(saved) as (keyof typeof DEFAULT_LOOK)[]) expect(look[k]).toBe(DEFAULT_LOOK[k]);
+    expect(lookOf({ look: { theme: "aero", cabinet: "aero", frame: "aero" } as never })).toEqual(DEFAULT_LOOK);
+  });
 });
 
 describe("frame art options", () => {

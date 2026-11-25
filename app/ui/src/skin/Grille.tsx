@@ -14,7 +14,7 @@ export interface GrilleProps {
   /** The lattice bars and studs: warm gold chrome (default), silver chrome (owner, 2026-11-22) or iron. */
   bars?: "gold" | "silver" | "iron";
   /** The speaker cloth's colour, following the theme's glow: red (pink glow, default), ember, aqua, violet. */
-  cloth?: "pink" | "ember" | "aqua" | "violet" | "amber" | "lime";
+  cloth?: "pink" | "ember" | "aqua" | "violet" | "amber";
 }
 
 /** Cloth gradient (lit: centre, middle; unlit: centre, middle; edge) per glow colour. */
@@ -24,7 +24,6 @@ const CLOTH = {
   aqua: { lit: ["#1c9ad8", "#0a3e70"], dark: ["#0a3050", "#061a30"], edge: "#020c1a" },
   violet: { lit: ["#9a4ae8", "#401478"], dark: ["#3a1060", "#200838"], edge: "#0e0420" },
   amber: { lit: ["#e8a020", "#7a4a08"], dark: ["#5a3a08", "#3a2404"], edge: "#1e1202" },
-  lime: { lit: ["#5ac830", "#1e6a10"], dark: ["#1e4a10", "#10300a"], edge: "#061a04" },
 } as const;
 
 /** Bar colours: shadow edge, body, highlight; stud gradient light, mid, dark, outline. */

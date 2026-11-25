@@ -42,10 +42,10 @@ export const DEFAULT_LOOK: LookSettings = {
 };
 
 export const LOOK_CHOICES: { [K in keyof LookSettings]: readonly LookSettings[K][] } = {
-  cabinet: ["pearl", "walnut", "maple", "aquarium", "forge", "ocean", "brass", "cyber", "deco", "aero"],
-  frame: ["neon", "pilaster", "lava", "light", "ocean", "fire", "water", "steam", "data", "diesel", "aero"],
+  cabinet: ["pearl", "walnut", "maple", "aquarium", "forge", "ocean", "brass", "cyber"],
+  frame: ["neon", "pilaster", "lava", "light", "ocean", "fire", "water", "steam", "data"],
   accents: ["silver", "red", "iron", "copper"],
-  badge_field: ["lapis", "red", "silver", "magma", "copper", "carbon", "glass"],
+  badge_field: ["lapis", "red", "silver", "magma", "copper", "carbon"],
   badge_text: ["gold", "cream", "ember", "neon", "white"],
   badge_rim: ["lapis", "gold"],
   lattice: ["silver", "gold", "iron"],
@@ -57,10 +57,10 @@ export const LOOK_CHOICES: { [K in keyof LookSettings]: readonly LookSettings[K]
   celebration: ["mix", "starburst", "fireworks", "rings", "bloom", "inferno"],
   celebrate_freq: ["often", "every", "second", "third", "rare"],
   pitch_fx: ["off", "sparks", "rings", "stars", "flames", "notes"],
-  metal: ["gold", "bronze", "chrome", "brass", "gunmetal"],
-  glow: ["pink", "ember", "aqua", "violet", "amber", "lime"],
-  lane_bars: ["pink", "ember", "aqua", "violet", "amber", "lime"],
-  theme: ["deluxe", "classic", "ocean", "electric", "molten", "water", "steampunk", "cyberpunk", "dieselpunk", "aero", "custom"],
+  metal: ["gold", "bronze", "chrome", "brass"],
+  glow: ["pink", "ember", "aqua", "violet", "amber"],
+  lane_bars: ["pink", "ember", "aqua", "violet", "amber"],
+  theme: ["deluxe", "classic", "ocean", "electric", "molten", "water", "steampunk", "cyberpunk", "custom"],
 };
 
 /** Note bar colours of the practice lane (ui.look.lane_bars). */
@@ -70,7 +70,6 @@ export const LANE_BAR_COLORS: Record<LookSettings["lane_bars"], string> = {
   aqua: "#29c8ff",
   violet: "#b066ff",
   amber: "#ffb020",
-  lime: "#7aee3a",
 };
 
 /** The look options a theme sets (everything visual; not watch-only follow or celebrate on/off). */
@@ -155,22 +154,6 @@ export const THEMES: readonly Theme[] = [
     swatch: ["#2ae0ff", "#ffd23a", "#05080c"],
     look: { cabinet: "cyber", frame: "data", accents: "iron", badge_field: "carbon", badge_text: "neon", badge_rim: "gold", lattice: "iron", inner_trim: true, celebration: "rings", pitch_fx: "sparks", metal: "chrome", glow: "aqua", lane_bars: "amber" },
     colors: { sung: "#2af0ff", upcoming: "#eef6ff", marker: "#ffd23a" },
-  },
-  {
-    id: "dieselpunk",
-    name: "Dieselpunk",
-    blurb: "Gunmetal and art deco, searchlights and smoke, exhaust pulsing through the pipes",
-    swatch: ["#3a444c", "#c8102e", "#efe2c4"],
-    look: { cabinet: "deco", frame: "diesel", accents: "red", badge_field: "red", badge_text: "cream", badge_rim: "gold", lattice: "iron", inner_trim: true, celebration: "starburst", pitch_fx: "flames", metal: "gunmetal", glow: "ember", lane_bars: "amber" },
-    colors: { sung: "#ffb43a", upcoming: "#efe6d2", marker: "#ff4a2a" },
-  },
-  {
-    id: "aero",
-    name: "Frutiger Aero",
-    blurb: "Blue sky, clouds and glossy bubbles over green hills, glossy aqua glass and chrome",
-    swatch: ["#4ab8ff", "#7aee3a", "#ffffff"],
-    look: { cabinet: "aero", frame: "aero", accents: "silver", badge_field: "glass", badge_text: "white", badge_rim: "gold", lattice: "silver", inner_trim: true, celebration: "bloom", pitch_fx: "stars", metal: "chrome", glow: "aqua", lane_bars: "lime" },
-    colors: { sung: "#5ce1ff", upcoming: "#ffffff", marker: "#9dff5a" },
   },
 ];
 

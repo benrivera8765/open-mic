@@ -41,12 +41,11 @@ use again puts it back.
 | | |
 |---|---|
 | ![Deluxe: a pearlescent cabinet, neon bubble tubes and a lapis badge](docs/screenshots/theme-deluxe.jpg) | ![Water: ocean waves rolling over the cabinet, blue water coursing through the pipes](docs/screenshots/theme-water.jpg) |
-| ![Steampunk: riveted brass, turning gears and white steam in the pipes](docs/screenshots/theme-steampunk.jpg) | ![Frutiger Aero: sky, clouds and glossy bubbles over green hills](docs/screenshots/theme-aero.jpg) |
+| ![Steampunk: riveted brass, turning gears and white steam in the pipes](docs/screenshots/theme-steampunk.jpg) | ![Ocean: an aquarium cabinet with fish swimming round the screen](docs/screenshots/theme-ocean.jpg) |
 
 Deluxe, Classic, Ocean (an aquarium with fish), Electric (a lightning tube), Molten (fire
-and flowing lava), Water, Steampunk, Cyberpunk (a neon city in the rain), Dieselpunk and
-Frutiger Aero. On Windows the animated cabinets and pipes are drawn on the graphics card
-(WebGL; Settings > Customize the jukebox > "GPU lava and fire"), and Settings > Look >
+and flowing lava), Water, Steampunk and Cyberpunk (a neon city in the rain). On Windows
+the animated cabinets and pipes are drawn on the graphics card (WebGL; Settings > Customize the jukebox > "GPU lava and fire"), and Settings > Look >
 "Frame rate" lets them run up to 240 fps on a fast screen. Elsewhere, or with that switched
 off, lighter 2D versions are shown.
 

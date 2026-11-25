@@ -40,7 +40,7 @@
 //   &practice=1 (practice mode on the loaded song), &practice=watch, &practice=result
 //   (sing to the end at 8x and show the result screen), &picker=1 (the input picker)
 import type { Api, Unsubscribe } from "./client";
-import { coverDataUrl, DEFAULT_SONG_SETTINGS, demoLibrary, type DemoSong, fillerSongs } from "./demo";
+import { coverDataUrl, DEFAULT_SONG_SETTINGS, demoLibrary, type DemoSong, fillerSongs, promoSong, promoSongData } from "./demo";
 import type {
   ApiError,
   ApiEventName,
@@ -401,14 +401,17 @@ export class MockApi implements Api {
     this.settings.ui.lyrics_display = this.o.lyricsDisplay;
     this.settings.ui.show_next_line = this.o.showNextLine;
     this.settings.ui.show_marker = this.o.showMarker;
-    const lib = this.o.empty ? [] : [...demoLibrary().filter((d) => !this.o.demo || !d.summary.error), ...fillerSongs(this.o.many)];
+    // A real song injected by a recording script comes first (demo.ts promoSong).
+    const promo = this.o.empty ? null : promoSong();
+    const lib = this.o.empty ? [] : [...(promo ? [promo] : []), ...demoLibrary().filter((d) => !this.o.demo || !d.summary.error), ...fillerSongs(this.o.many)];
+    const shift = promo ? 1 : 0;
     this.songs = lib.map((demo, i) => ({
       demo,
       settings: { ...demo.settings, levels: { ...demo.settings.levels } },
       lyricsOverride: null,
       metadata: {},
       // The first and third demo songs have practice data; the others not yet.
-      guide: !this.o.noPractice && !demo.summary.error && (i === 0 || i === 2) ? readyGuide(100 + i * 20) : noGuide(),
+      guide: !this.o.noPractice && !demo.summary.error && (demo.storedGuide || i - shift === 0 || i - shift === 2) ? readyGuide(100 + i * 20) : noGuide(),
     }));
     if (this.o.platform === "windows") {
       this.mediaPlayers = MOCK_PLAYERS.slice(0, this.o.players).map((p) => ({ ...p }));
@@ -1621,7 +1624,8 @@ export class MockApi implements Api {
 
   pickFiles() {
     // No native dialog in a browser; the Studio panel also offers an <input type=file>.
-    return this.reply(["C:\\Music\\Jane Taylor - Twinkle Twinkle (piano demo).flac"]);
+    const promo = promoSongData();
+    return this.reply([promo ? `C:\\Music\\${promo.file}` : "C:\\Music\\Jane Taylor - Twinkle Twinkle (piano demo).flac"]);
   }
 
   acceptBrowserFiles(names: string[]): string[] {

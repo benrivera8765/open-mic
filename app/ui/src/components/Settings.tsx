@@ -172,8 +172,6 @@ function JukeboxCustomisation() {
           { value: "ocean", label: "Ocean (rolling waves)" },
           { value: "brass", label: "Steampunk brass (riveted plates, turning gears, steam)" },
           { value: "cyber", label: "Cyberpunk city (neon towers, billboards, rain, wet street)" },
-          { value: "deco", label: "Dieselpunk deco (gunmetal, sunburst, searchlights, smoke)" },
-          { value: "aero", label: "Frutiger Aero sky (clouds, bubbles, green hills)" },
         ]}
         onChange={(v) => setLook({ cabinet: v })}
       />
@@ -191,8 +189,6 @@ function JukeboxCustomisation() {
           { value: "water", label: "Water pipe (blue water coursing through)" },
           { value: "steam", label: "Steam pipe (white steam)" },
           { value: "data", label: "Data pipe (neon, data racing both ways)" },
-          { value: "diesel", label: "Diesel pipe (exhaust, pulses and smoke)" },
-          { value: "aero", label: "Aero pipe (glossy aqua with bubbles)" },
         ]}
         onChange={(v) => setLook({ frame: v })}
       />
@@ -217,7 +213,6 @@ function JukeboxCustomisation() {
           { value: "bronze", label: "Bronze" },
           { value: "chrome", label: "Chrome" },
           { value: "brass", label: "Brass" },
-          { value: "gunmetal", label: "Gunmetal" },
         ]}
         onChange={(v) => setLook({ metal: v })}
       />
@@ -230,7 +225,6 @@ function JukeboxCustomisation() {
           { value: "aqua", label: "Aqua" },
           { value: "violet", label: "Violet" },
           { value: "amber", label: "Amber" },
-          { value: "lime", label: "Lime green" },
         ]}
         onChange={(v) => setLook({ glow: v })}
       />
@@ -245,7 +239,6 @@ function JukeboxCustomisation() {
           { value: "magma", label: "Magma (glowing cracks)" },
           { value: "copper", label: "Riveted copper" },
           { value: "carbon", label: "Carbon fibre" },
-          { value: "glass", label: "Glossy aqua glass" },
         ]}
         onChange={(v) => setLook({ badge_field: v })}
       />
@@ -378,7 +371,6 @@ function PracticeSettings() {
           { value: "aqua", label: "Aqua" },
           { value: "violet", label: "Violet" },
           { value: "amber", label: "Amber" },
-          { value: "lime", label: "Lime green" },
         ]}
         onChange={(v) => setLook({ lane_bars: v })}
       />

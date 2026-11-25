@@ -164,6 +164,8 @@ function scaleWalkGuide(lyrics: Lyrics, key: SongKey | null): StoredGuide {
 export function mockGuideFor(song: DemoSong, excluded: { start: number; end: number }[] = []): PracticeGuide | null {
   const spec = SPECS[song.summary.song_id];
   const lyrics = song.lyrics;
+  // A real song (demo.ts promoSong) brings its own stored guide and curve.
+  if (song.storedGuide) return practiceGuideOf(song.summary.song_id, song.storedGuide.guide, lyrics, song.storedGuide.curve, { excluded });
   if (spec) {
     // The mock's lyrics are generated from the same score (demo.ts), so notes and words share the beat grid.
     const { guide, curve } = guideFromMelody(spec(), song.summary.duration_s);

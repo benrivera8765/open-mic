@@ -72,9 +72,6 @@
   --accent: #9a6a00;
 }
 
-:root[data-jk-glow="lime"] {
-  --accent: #2a7a10;
-}
 
 @media (prefers-color-scheme: dark) {
   :root[data-jk-glow] {

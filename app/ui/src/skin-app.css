@@ -118,11 +118,6 @@
   --jk-panel-line: #5e5034;
 }
 
-[data-jk-glow="lime"] {
-  --jk-panel-a: 24, 44, 34;
-  --jk-panel-b: 12, 24, 18;
-  --jk-panel-line: #36604a;
-}
 
 [data-jk-glow="violet"] {
   --jk-panel-a: 40, 30, 62;

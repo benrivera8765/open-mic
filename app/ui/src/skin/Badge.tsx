@@ -19,9 +19,9 @@
 
 import { useSvgId } from "./svg-id";
 
-export type BadgeFieldFinish = "lapis" | "red" | "silver" | "magma" | "copper" | "carbon" | "glass";
+export type BadgeFieldFinish = "lapis" | "red" | "silver" | "magma" | "copper" | "carbon";
 export type BadgeLetteringFinish = "gold" | "cream" | "ember" | "neon" | "white";
-type MetalKind = "gold" | "bronze" | "chrome" | "brass" | "gunmetal";
+type MetalKind = "gold" | "bronze" | "chrome" | "brass";
 export type BadgeRimFinish = "lapis" | "gold";
 
 export interface BadgeProps {
@@ -58,13 +58,6 @@ const METAL_STOPS: Record<MetalKind, { chrome: Stops; chrome2: Stops; text: Stop
     flat: [[0, "#fff0c0"], [0.5, "#d8b450"], [1, "#94701e"]],
     edge: "#3a2a06",
   },
-  gunmetal: {
-    chrome: [[0, "#e4eaf0"], [0.22, "#a4b0bc"], [0.48, "#5a6672"], [0.55, "#1c2228"], [0.64, "#7a8692"], [0.86, "#cdd5dd"], [1, "#4a5560"]],
-    chrome2: [[0, "#2a3238"], [0.5, "#c4ccd4"], [1, "#3a434c"]],
-    text: [[0, "#f0f4f8"], [0.26, "#b8c2cc"], [0.47, "#6a7682"], [0.55, "#262d34"], [0.64, "#8a96a2"], [0.84, "#dfe5eb"], [1, "#5a6672"]],
-    flat: [[0, "#dfe5eb"], [0.5, "#8a96a2"], [1, "#3a434c"]],
-    edge: "#0e1216",
-  },
   gold: {
     chrome: [[0, "#fff6d8"], [0.22, "#ecd38e"], [0.48, "#9a7228"], [0.55, "#563c0f"], [0.64, "#cca34a"], [0.86, "#f9e9b9"], [1, "#bc8e35"]],
     chrome2: [[0, "#825f21"], [0.5, "#fbecc0"], [1, "#946d26"]],
@@ -84,7 +77,7 @@ const METAL_STOPS: Record<MetalKind, { chrome: Stops; chrome2: Stops; text: Stop
 /** Ember lettering: white heat on top, through gold and orange to red at the foot. */
 const EMBER_TEXT: Stops = [[0, "#fffbe0"], [0.3, "#ffe27a"], [0.55, "#ffa024"], [0.78, "#ff5a0a"], [1, "#c02a04"]];
 const EMBER_FLAT: Stops = [[0, "#ffe27a"], [0.5, "#ff8a1a"], [1, "#c83a06"]];
-/** Glossy white lettering (Frutiger Aero, Water): white with a sky-blue band. */
+/** Glossy white lettering (Water): white with a sky-blue band. */
 const WHITE_TEXT: Stops = [[0, "#ffffff"], [0.45, "#f4fbff"], [0.55, "#c4e8ff"], [0.7, "#ffffff"], [1, "#e0f2ff"]];
 const WHITE_FLAT: Stops = [[0, "#ffffff"], [0.5, "#e8f6ff"], [1, "#bfe2ff"]];
 
@@ -239,7 +232,7 @@ export function Badge({ name, class: className, title, field = "lapis", letterin
   const white = lettering === "white";
   const shaded = gold || ember || neon || white;
   const under =
-    field === "lapis" ? "#040a24" : field === "silver" ? "#23272d" : field === "magma" ? "#0e0402" : field === "copper" ? "#2a1004" : field === "carbon" ? "#000000" : field === "glass" ? "#0a3a7a" : "#3d0410";
+    field === "lapis" ? "#040a24" : field === "silver" ? "#23272d" : field === "magma" ? "#0e0402" : field === "copper" ? "#2a1004" : field === "carbon" ? "#000000" : "#3d0410";
   const pin =
     field === "silver"
       ? "#3b4048"
@@ -247,14 +240,12 @@ export function Badge({ name, class: className, title, field = "lapis", letterin
         ? "#ff9a4a"
         : field === "carbon"
           ? "#2ae0ff"
-          : field === "glass"
-            ? "#ffffff"
-            : field === "copper"
+          : field === "copper"
               ? "#f0c070"
               : gold || field === "lapis"
                 ? metal === "bronze"
                   ? "#e8a878"
-                  : metal === "chrome" || metal === "gunmetal"
+                  : metal === "chrome"
                     ? "#dfe5eb"
                     : "#e8c66e"
                 : "#f6efd9";
@@ -305,7 +296,7 @@ export function Badge({ name, class: className, title, field = "lapis", letterin
         <linearGradient id={`${id}-whiteflat`} x1="0" y1="0" x2="0" y2="1">
           {gradStops(WHITE_FLAT)}
         </linearGradient>
-        {/* Copper with a warm sheen; rivets; carbon fibre weave; glossy aqua glass. */}
+        {/* Copper with a warm sheen; rivets; carbon fibre weave. */}
         <radialGradient id={`${id}-copper`} cx="0.42" cy="0.3" r="0.9">
           <stop offset="0" stop-color="#a85a2c" />
           <stop offset="0.45" stop-color="#6a2e10" />
@@ -329,12 +320,6 @@ export function Badge({ name, class: className, title, field = "lapis", letterin
           <stop offset="0" stop-color="#ffffff" stop-opacity="0" />
           <stop offset="0.45" stop-color="#ffffff" stop-opacity="0.16" />
           <stop offset="0.55" stop-color="#ffffff" stop-opacity="0" />
-        </linearGradient>
-        <linearGradient id={`${id}-aqua`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#c8f6ff" />
-          <stop offset="0.35" stop-color="#3ab8ff" />
-          <stop offset="0.75" stop-color="#0a6ad0" />
-          <stop offset="1" stop-color="#2ac87a" />
         </linearGradient>
         <filter id={`${id}-glow`} x="-20%" y="-40%" width="140%" height="180%">
           <feGaussianBlur stdDeviation="2.4" />
@@ -499,16 +484,6 @@ export function Badge({ name, class: className, title, field = "lapis", letterin
           <path d={FIELD} fill="#0c0d10" stroke="#000" stroke-width="1.2" stroke-linejoin="round" />
           <path d={FIELD} fill={`url(#${id}-weave)`} />
           <path d={FIELD} fill={`url(#${id}-carbonsheen)`} />
-        </>
-      ) : field === "glass" ? (
-        <>
-          <path d={FIELD} fill={`url(#${id}-aqua)`} stroke="#0a3a7a" stroke-width="1.2" stroke-linejoin="round" />
-          <g clip-path={`url(#${id}-clip)`}>
-            <ellipse cx="150" cy="36" rx="104" ry="17" fill="#ffffff" opacity="0.5" />
-            <ellipse cx="150" cy="98" rx="90" ry="14" fill="#9dffb0" opacity="0.35" />
-            <circle cx="214" cy="74" r="6" fill="#ffffff" opacity="0.25" />
-            <circle cx="88" cy="70" r="4" fill="#ffffff" opacity="0.22" />
-          </g>
         </>
       ) : field === "silver" ? (
         <path d={FIELD} fill={`url(#${id}-silver)`} stroke="#2a2e34" stroke-width="1.2" stroke-linejoin="round" />
