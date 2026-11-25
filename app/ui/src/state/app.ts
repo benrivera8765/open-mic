@@ -31,6 +31,7 @@ import { clampKey } from "../lib/keys";
 import { exportGainNotice, formatBytes } from "../lib/format";
 import { DEFAULT_PRACTICE_SETTINGS, lookOf } from "../api/defaults";
 import { PlaybackClock } from "../lib/clock";
+import { smokeProgress } from "../lib/smoke";
 import { Store, useSelector } from "./store";
 import { initPractice } from "./practice";
 
@@ -246,17 +247,30 @@ export async function init(theApi: Api): Promise<void> {
     return;
   }
   store.set({ ready: true });
+  smokeProgress("ui: app_info and settings_get answered; first screen ready");
   // Core addition: the user agent goes into `--selfcheck` reports.
   api.selfcheckUserAgent?.(navigator.userAgent).catch(() => undefined);
+  // `--smoke-test` progress (D-279): each step says when it is done, and a start-up still
+  // waiting after 15 s says on what.
+  const pending = new Set<string>();
+  const step = (name: string, p: Promise<unknown>): Promise<unknown> => {
+    pending.add(name);
+    return p.finally(() => {
+      pending.delete(name);
+      smokeProgress(`ui: ${name} done`);
+    });
+  };
+  const slow = setTimeout(() => smokeProgress(`ui: start-up still waiting after 15 s for: ${[...pending].join(", ")}`), 15000);
   await Promise.all([
-    refreshLibrary(),
-    attempt(api.devicesList()).then((r) => r && store.set({ devices: r.devices })),
-    attempt(api.playerState()).then((p) => p && store.set({ player: p })),
-    attempt(api.recorderStatus()).then((r) => r && store.set({ recorder: r })),
-    refreshRecordings(),
-    refreshRecordingSessions(),
-    refreshStudio(),
+    step("library_list", refreshLibrary()),
+    step("devices_list", attempt(api.devicesList()).then((r) => r && store.set({ devices: r.devices }))),
+    step("player_state", attempt(api.playerState()).then((p) => p && store.set({ player: p }))),
+    step("recorder_status", attempt(api.recorderStatus()).then((r) => r && store.set({ recorder: r }))),
+    step("recordings_list", refreshRecordings()),
+    step("recorder_sessions", refreshRecordingSessions()),
+    step("studio_status", refreshStudio()),
   ]);
+  clearTimeout(slow);
 }
 
 export async function refreshLibrary(): Promise<void> {

@@ -47,6 +47,7 @@ macro_rules! all_commands {
             $crate::commands::app_info,
             $crate::commands::ping,
             $crate::commands::smoke_report,
+            $crate::commands::smoke_progress,
             $crate::commands::settings_get,
             $crate::commands::settings_set,
             $crate::commands::selfcheck_run,

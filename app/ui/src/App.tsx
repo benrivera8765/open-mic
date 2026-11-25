@@ -36,7 +36,7 @@ import { Studio } from "./components/Studio";
 import { SyncEditor } from "./components/SyncEditor";
 import { Transport } from "./components/Transport";
 import { dismissToast, focusSearch, go, init, loadSong, play, type Screen, seek, seekBy, setFullscreen, setOverlay, shiftKey, store, togglePlay, useApp } from "./state/app";
-import { reportSmoke } from "./lib/smoke";
+import { reportSmoke, smokeProgress, startSmokeProgress } from "./lib/smoke";
 import { errorMessage } from "./api/client";
 import { Badge, bubbleStats, JukeboxFrame, PlateButton, useResolvedMotion } from "./skin";
 import { openPicker, startPractice, togglePractice, watchOnly as practiceWatchOnly } from "./state/practice";
@@ -364,7 +364,10 @@ export function App({ api, scriptStartMs }: { api: Api; scriptStartMs: number })
 
   useEffect(() => {
     const started = performance.now();
+    if (api.sendSmokeProgress) startSmokeProgress((step) => api.sendSmokeProgress!(step));
+    smokeProgress("ui: script running, start-up begins");
     void init(api).then(() => {
+      smokeProgress(`ui: start-up finished after ${Math.round(performance.now() - started)} ms`);
       if (api.kind === "mock") void mockStartup(window.location.search);
       if (api.sendSmokeReport) reportSmoke((r) => api.sendSmokeReport!(r), scriptStartMs, performance.now() - started);
     });
