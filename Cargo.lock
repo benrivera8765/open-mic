@@ -1827,7 +1827,7 @@ dependencies = [
 
 [[package]]
 name = "jk-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "hound",
@@ -1843,7 +1843,7 @@ dependencies = [
 
 [[package]]
 name = "jk-dsp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jk-rubberband",
  "libm",
@@ -1853,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "jk-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cpal",
  "crc32fast",
@@ -1878,7 +1878,7 @@ dependencies = [
 
 [[package]]
 name = "jk-format"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crc32fast",
  "flate2",
@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "jk-guide"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crc32fast",
  "jk-format",
@@ -1904,7 +1904,7 @@ dependencies = [
 
 [[package]]
 name = "jk-pitch"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libm",
  "realfft",
@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "jk-recorder"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "block2",
  "cpal",
@@ -1936,7 +1936,7 @@ dependencies = [
 
 [[package]]
 name = "jk-rubberband"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cc",
 ]
@@ -2020,7 +2020,7 @@ dependencies = [
 
 [[package]]
 name = "jukeoke"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "cc",
