@@ -24,6 +24,56 @@ use jk_recorder::input::{CaptureProducer, FailureKind, InputError, InputFormat, 
 
 use crate::engine::AudioEngine;
 
+/// Pieces of the tap whose stamps the generated return's sample clock is averaged over
+/// (10 ms pieces: about 2 s, as the practice aligner's line fit).
+const CLOCK_PIECES: usize = 200;
+
+/// The generated return's sample clock: like a capture device's, it counts frames from a
+/// start; that start is the mean of the host times the tap's pieces imply for it, never one
+/// piece's stamp. Each stamp carries the output thread's wake-up delay, so a clock started
+/// from a single one (the first, taken while the computer was busy) put the whole return
+/// several milliseconds late: the rig check measured 25.4 ms for a 17 ms return on a CI
+/// runner (DECISIONS D-279).
+struct SampleClock {
+    rate: u32,
+    /// Tap frame index the clock counts from.
+    k0: u64,
+    /// Host time of frame `k0` implied by each recent piece, and their sum.
+    implied: VecDeque<i64>,
+    sum: i128,
+}
+
+impl SampleClock {
+    fn new(rate: u32, k0: u64, stamp: i64) -> SampleClock {
+        let mut c = SampleClock { rate, k0, implied: VecDeque::with_capacity(CLOCK_PIECES + 1), sum: 0 };
+        c.push(k0, stamp);
+        c
+    }
+
+    /// Nanoseconds from frame `k0` to frame `k` (None before `k0`).
+    fn since(&self, k: u64) -> Option<i64> {
+        k.checked_sub(self.k0).map(|d| (d as f64 * 1e9 / f64::from(self.rate)) as i64)
+    }
+
+    /// The host time of frame `k` by this clock.
+    fn at(&self, k: u64) -> Option<i64> {
+        let t0 = (self.sum / self.implied.len().max(1) as i128) as i64;
+        self.since(k).map(|d| t0 + d)
+    }
+
+    /// One more piece: its first frame `k` left at host time `stamp`.
+    fn push(&mut self, k: u64, stamp: i64) {
+        let Some(d) = self.since(k) else { return };
+        self.implied.push_back(stamp - d);
+        self.sum += i128::from(stamp - d);
+        if self.implied.len() > CLOCK_PIECES
+            && let Some(old) = self.implied.pop_front()
+        {
+            self.sum -= i128::from(old);
+        }
+    }
+}
+
 /// The returned playback (and a singer) as an input.
 pub struct ReturnSource {
     engine: Arc<dyn AudioEngine>,
@@ -102,8 +152,7 @@ impl InputSource for ReturnSource {
                 let mut buf = vec![0.0f32; 2 * 4096];
                 // (capture host ns of the first frame, mono frames), waiting until "captured".
                 let mut queue: VecDeque<(i64, Vec<f32>)> = VecDeque::new();
-                // (host ns, tap frame index) the stamps are counted from.
-                let mut clock: Option<(i64, u64)> = None;
+                let mut clock: Option<SampleClock> = None;
                 while !stop.load(Ordering::Acquire) {
                     while let Some(p) = tap.read(&mut buf) {
                         if p.rate != rate {
@@ -126,22 +175,16 @@ impl InputSource for ReturnSource {
                             }
                         }
                         // Stamped like a real capture device: by its sample clock (the frames
-                        // counted from the first piece), not by each piece's wake-up time,
-                        // which carries the device thread's jitter; again from the piece's own
-                        // stamp after a gap.
+                        // counted from a start), not by each piece's wake-up time, which
+                        // carries the device thread's jitter; started again after a gap.
                         let stamp = p.dac_ns as i64 + off + delay;
-                        let t = match clock {
-                            Some((t0, k0)) => {
-                                let pred = t0 + ((p.first_frame - k0) as f64 * 1e9 / f64::from(rate)) as i64;
-                                if (pred - stamp).abs() > 20_000_000 || p.lost_before > 0 {
-                                    clock = Some((stamp, p.first_frame));
-                                    stamp
-                                } else {
-                                    pred
-                                }
+                        let t = match clock.as_mut().and_then(|c| c.at(p.first_frame).map(|pred| (c, pred))) {
+                            Some((c, pred)) if (pred - stamp).abs() <= 20_000_000 && p.lost_before == 0 => {
+                                c.push(p.first_frame, stamp);
+                                c.at(p.first_frame).unwrap_or(pred)
                             }
-                            None => {
-                                clock = Some((stamp, p.first_frame));
+                            _ => {
+                                clock = Some(SampleClock::new(rate, p.first_frame, stamp));
                                 stamp
                             }
                         };

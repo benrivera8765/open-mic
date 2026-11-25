@@ -192,3 +192,14 @@ pub async fn smoke_report(
     smoke::finish_with_ui_report(&app, report);
     Ok(())
 }
+
+/// `--smoke-test` only: one step of the UI's start-up or a script error, kept in the
+/// report (`ui_progress`) so a UI that never reports says how far it got (D-279).
+#[tauri::command]
+pub async fn smoke_progress(state: State<'_, AppState>, step: String) -> ApiResult<()> {
+    if !state.smoke.enabled() {
+        return Err(ApiError::bad_request("the app was not started with --smoke-test"));
+    }
+    state.smoke.ui_note(&step);
+    Ok(())
+}

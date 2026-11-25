@@ -170,6 +170,9 @@ export interface Api {
   selfcheckUserAgent?(userAgent: string): Promise<void>;
   /** Stage 0 `--smoke-test` report; the core rejects it when not in that mode. */
   sendSmokeReport?(report: unknown): Promise<void>;
+  /** `--smoke-test` only: one start-up step or script error, kept in the report so a UI that
+   *  never reports says how far it got (D-279); the core rejects it outside that mode. */
+  sendSmokeProgress?(step: string): Promise<void>;
   // 12.3 Practice data (the melody guide; added WO2). Optional so older fakes still type-check.
   guideStatus?(songId: string): Promise<GuideStatus>;
   /** Queues a build and returns at once; progress comes as `guide://status`. */
@@ -422,6 +425,7 @@ export class TauriApi implements Api {
 
   /** Stage 0 `--smoke-test` hook (app/src-tauri/src/smoke.rs); rejected outside that mode. */
   sendSmokeReport = (report: unknown) => call<void>("smoke_report", { report });
+  sendSmokeProgress = (step: string) => call<void>("smoke_progress", { step });
 }
 
 let chosen: Api | null = null;
