@@ -18,13 +18,24 @@
 // More hooks: .recorder__player, .recorder__modes, .recorder__mode-button,
 // .recorder__options, .recorder__live, .recorder__player-notes, .rec-sessions,
 // .rec-session, .rec-song, .rec-song__badge--partial, .rec-song__cover.
+//
+// Finished songs (owner, 2026-11-25: "there's currently no way to hide songs in the
+// recorder so now it's just a loooong list"; DECISIONS D-281): a song is finished once it
+// has been made into a karaoke song (a library song names this recording as its source:
+// the same file name and length) or when the singer hides it. Finished songs fold away
+// until "Show finished songs"; a session whose songs are all finished moves into
+// "Finished sessions" at the bottom. Made songs offer Sing instead of Make. Hidden songs
+// and the choice to show them are remembered on this computer.
+// More hooks: .rec-sessions__toolbar, .rec-sessions__finished, .rec-song--made,
+// .rec-song__badge--made, .rec-song__badge--queued, .rec-song__hide, .rec-song__sing.
 import { useEffect, useState } from "preact/hooks";
-import type { MediaPlayer, RecordedSong, RecorderStatus, RecordingSession } from "../api/types";
+import type { MediaPlayer, RecordedSong, RecorderStatus, RecordingSession, SongSummary, StudioJob } from "../api/types";
 import { errorMessage } from "../api/client";
 import { formatBytes, formatDb, formatRate, formatSampleFormat, formatTime } from "../lib/format";
 import {
   addToStudio,
   getApiSync,
+  loadSong,
   makeKaraokeSongs,
   refreshPlayers,
   refreshRecordings,
@@ -165,6 +176,48 @@ function cutHint(song: RecordedSong): string | null {
   return `Check the ${ends.join(" and ")}: there was no silence between the songs there, so it was cut where the player said the song changed.`;
 }
 
+// ---------------------------------------------------------------------------
+// Finished songs (D-281)
+// ---------------------------------------------------------------------------
+
+/** A recording and the library song made from it match when their lengths agree this closely (s). */
+const SAME_LENGTH_S = 1.0;
+
+/** One song of a session with what has become of it. */
+interface RowState {
+  song: RecordedSong;
+  /** The library song made from this recording. */
+  made: SongSummary | null;
+  /** Waiting or being made in the Studio now. */
+  queued: boolean;
+  /** Hidden by the singer. */
+  hidden: boolean;
+}
+
+function madeFrom(song: RecordedSong, library: SongSummary[]): SongSummary | null {
+  return (
+    library.find((x) => !x.error && x.source != null && x.source.file_name === song.name && Math.abs(x.source.seconds - song.duration_s) <= SAME_LENGTH_S) ?? null
+  );
+}
+
+function inStudio(song: RecordedSong, jobs: StudioJob[]): boolean {
+  return jobs.some((j) => (j.state === "queued" || j.state === "running") && j.input_name === song.name);
+}
+
+/** A hidden song is remembered by its session folder and file name (not the drive letter). */
+const hideKey = (s: RecordingSession, song: RecordedSong) => `${s.folder}/${song.name}`;
+
+function rememberedHidden(): Set<string> {
+  try {
+    const v: unknown = JSON.parse(remembered("hidden", "[]"));
+    return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+const isDone = (r: RowState) => r.made !== null || r.hidden;
+
 function PreviewButton({ path, label }: { path: string; label: string }) {
   const playing = useApp((s) => s.previewPath === path);
   return (
@@ -201,11 +254,23 @@ function MakeSongsDialog({ songs, skin, onClose }: { songs: RecordedSong[]; skin
   );
 }
 
-function SongRow({ song, studioOk, onMake }: { song: RecordedSong; studioOk: boolean; onMake: (songs: RecordedSong[]) => void }) {
+function SongRow({
+  row,
+  studioOk,
+  onMake,
+  onHide,
+}: {
+  row: RowState;
+  studioOk: boolean;
+  onMake: (songs: RecordedSong[]) => void;
+  onHide: (song: RecordedSong, hide: boolean) => void;
+}) {
+  const { song, made, queued, hidden } = row;
   const hint = cutHint(song);
   const label = [song.artist, song.title].filter((x) => x.trim()).join(" – ") || song.name;
+  const badge = made ? { text: "Made", kind: "made" } : queued ? { text: "In the Studio", kind: "queued" } : { text: STATUS_TEXT[song.status], kind: song.status };
   return (
-    <li class={`rec-song rec-song--${song.status}`}>
+    <li class={`rec-song rec-song--${song.status}${made ? " rec-song--made" : ""}${hidden ? " rec-song--hidden" : ""}`}>
       <CoverThumb path={song.cover_path} />
       <div class="rec-song__text">
         <span class="rec-song__title">
@@ -216,16 +281,32 @@ function SongRow({ song, studioOk, onMake }: { song: RecordedSong; studioOk: boo
           {song.album ? ` · ${song.album}` : ""} · {formatTime(song.duration_s)}
           {song.track_duration_s ? ` of ${formatTime(song.track_duration_s)}` : ""}
         </span>
-        {song.partial_reason && <span class="rec-song__reason">{song.partial_reason}</span>}
-        {hint && <span class="rec-song__reason">{hint}</span>}
-        {song.paused_s >= 1 && <span class="rec-song__reason">Includes {formatTime(song.paused_s)} while the player was paused.</span>}
+        {!made && song.partial_reason && <span class="rec-song__reason">{song.partial_reason}</span>}
+        {!made && hint && <span class="rec-song__reason">{hint}</span>}
+        {!made && song.paused_s >= 1 && <span class="rec-song__reason">Includes {formatTime(song.paused_s)} while the player was paused.</span>}
       </div>
-      <span class={`title-strip__badge rec-song__badge rec-song__badge--${song.status}${song.status === "partial" ? " title-strip__badge--warn" : ""}`}>{STATUS_TEXT[song.status]}</span>
+      <span
+        class={`title-strip__badge rec-song__badge rec-song__badge--${badge.kind}${badge.kind === "partial" ? " title-strip__badge--warn" : ""}`}
+        title={made ? `Made into the karaoke song “${made.title || made.song_id}”` : undefined}
+      >
+        {badge.text}
+      </span>
       <PreviewButton path={song.path} label={label} />
-      {studioOk && (
-        <button type="button" class="button button--small" onClick={() => onMake([song])}>
-          Make a karaoke song
+      {made ? (
+        <button type="button" class="button button--small rec-song__sing" aria-label={`Sing ${label}`} onClick={() => void loadSong(made.song_id, { screen: "stage" })}>
+          Sing
         </button>
+      ) : (
+        <>
+          {studioOk && !queued && (
+            <button type="button" class="button button--small" onClick={() => onMake([song])}>
+              Make a karaoke song
+            </button>
+          )}
+          <button type="button" class="button button--small rec-song__hide" aria-label={`${hidden ? "Unhide" : "Hide"} ${label}`} onClick={() => onHide(song, !hidden)}>
+            {hidden ? "Unhide" : "Hide"}
+          </button>
+        </>
       )}
     </li>
   );
@@ -250,7 +331,23 @@ const STOP_TEXT: Record<string, string> = {
   app_closed: "the app was closed while recording",
 };
 
-function SessionItem({ s, studioOk, skin, onMake }: { s: RecordingSession; studioOk: boolean; skin: boolean; onMake: (songs: RecordedSong[]) => void }) {
+function SessionItem({
+  s,
+  rows,
+  showDone,
+  studioOk,
+  skin,
+  onMake,
+  onHide,
+}: {
+  s: RecordingSession;
+  rows: RowState[];
+  showDone: boolean;
+  studioOk: boolean;
+  skin: boolean;
+  onMake: (songs: RecordedSong[]) => void;
+  onHide: (song: RecordedSong, hide: boolean) => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [asking, setAsking] = useState(false);
   const canDelete = s.state !== "recording" && s.state !== "splitting";
@@ -264,7 +361,11 @@ function SessionItem({ s, studioOk, skin, onMake }: { s: RecordingSession; studi
       toast(errorMessage(err), "error");
     }
   };
-  const complete = s.songs.filter((x) => x.status === "complete");
+  // "All complete songs" means the ones still to make: not made, not in the Studio, not hidden.
+  const complete = rows.filter((r) => r.song.status === "complete" && !r.made && !r.queued && !r.hidden).map((r) => r.song);
+  const made = rows.filter((r) => r.made).length;
+  const hidden = rows.filter((r) => r.hidden && !r.made).length;
+  const shown = showDone ? rows : rows.filter((r) => !isDone(r));
   const canSplit = s.master_present && (s.state === "kept_master" || s.state === "failed" || s.state === "stopped");
   const makeAll = () => onMake(complete);
   const splitAgain = async () => {
@@ -286,6 +387,11 @@ function SessionItem({ s, studioOk, skin, onMake }: { s: RecordingSession; studi
           {s.state === "split" || s.state === "kept_master" ? ` · ${s.songs.length} song${s.songs.length === 1 ? "" : "s"}` : ""}
           {s.stop_reason && STOP_TEXT[s.stop_reason] ? ` · ${STOP_TEXT[s.stop_reason]}` : ""}
         </span>
+        {(made > 0 || hidden > 0) && (
+          <span class="rec-session__done">
+            {[made > 0 ? `${made} made into karaoke song${made === 1 ? "" : "s"}` : "", hidden > 0 ? `${hidden} hidden` : ""].filter(Boolean).join(" · ")}
+          </span>
+        )}
       </div>
       {s.state === "splitting" && <Progress value={s.progress ?? 0} label={`Splitting ${s.created}`} class="rec-session__progress" />}
       {s.message && <Note kind={s.state === "failed" ? "error" : "warn"}>{s.message}</Note>}
@@ -315,10 +421,10 @@ function SessionItem({ s, studioOk, skin, onMake }: { s: RecordingSession; studi
           <p>Karaoke songs you already made from it stay in your Library.</p>
         </ConfirmDialog>
       )}
-      {s.songs.length > 0 && (
+      {shown.length > 0 && (
         <ul class="rec-session__songs">
-          {s.songs.map((song) => (
-            <SongRow key={song.path} song={song} studioOk={studioOk} onMake={onMake} />
+          {shown.map((r) => (
+            <SongRow key={r.song.path} row={r} studioOk={studioOk} onMake={onMake} onHide={onHide} />
           ))}
         </ul>
       )}
@@ -354,6 +460,10 @@ export function Recorder({ skin = false }: { skin?: boolean }) {
   const recordings = useApp((s) => s.recordings);
   const players = useApp((s) => s.players);
   const sessions = useApp((s) => s.recordingSessions);
+  const library = useApp((s) => s.library?.songs) ?? [];
+  const jobs = useApp((s) => s.studio?.queue) ?? [];
+  const [hidden, setHidden] = useState<Set<string>>(rememberedHidden);
+  const [showDone, setShowDone] = useState(() => remembered("showFinished", "0") === "1");
   const studioOk = useApp((s) => s.info?.capabilities.studio.available ?? false);
   const [busy, setBusy] = useState(false);
   const [playerId, setPlayerId] = useState("");
@@ -439,6 +549,23 @@ export function Recorder({ skin = false }: { skin?: boolean }) {
     });
 
   const live = status?.session ?? null;
+  // Finished songs (D-281).
+  const hide = (s: RecordingSession, song: RecordedSong, on: boolean) =>
+    setHidden((h) => {
+      const next = new Set(h);
+      if (on) next.add(hideKey(s, song));
+      else next.delete(hideKey(s, song));
+      remember("hidden", JSON.stringify([...next]));
+      return next;
+    });
+  const views = sessions.map((s) => {
+    const rows: RowState[] = s.songs.map((song) => ({ song, made: madeFrom(song, library), queued: inStudio(song, jobs), hidden: hidden.has(hideKey(s, song)) }));
+    const settled = s.state === "split" || s.state === "kept_master";
+    return { s, rows, finished: settled && rows.length > 0 && rows.every(isDone) };
+  });
+  const doneSongs = views.reduce((n, v) => n + v.rows.filter(isDone).length, 0);
+  const active = showDone ? views : views.filter((v) => !v.finished);
+  const finished = showDone ? [] : views.filter((v) => v.finished);
 
   return (
     <div class="recorder">
@@ -633,11 +760,39 @@ export function Recorder({ skin = false }: { skin?: boolean }) {
       {playerLink && (
         <Section title="Songs recorded separately" class="rec-sessions">
           {sessions.length === 0 && <p>None yet. Press “Record songs separately”, play an album or a playlist, and the songs appear here, one file each.</p>}
+          {doneSongs > 0 && (
+            <div class="row rec-sessions__toolbar">
+              <span class="rec-sessions__done">
+                {doneSongs} song{doneSongs === 1 ? "" : "s"} made into karaoke songs or hidden
+              </span>
+              <button
+                type="button"
+                class="button button--small rec-sessions__show-done"
+                aria-pressed={showDone}
+                onClick={() => {
+                  setShowDone(!showDone);
+                  remember("showFinished", showDone ? "0" : "1");
+                }}
+              >
+                {showDone ? "Hide finished songs" : `Show finished songs (${doneSongs})`}
+              </button>
+            </div>
+          )}
           <ul class="rec-sessions__list">
-            {sessions.map((s) => (
-              <SessionItem key={s.folder} s={s} studioOk={studioOk} skin={skin} onMake={setMaking} />
+            {active.map((v) => (
+              <SessionItem key={v.s.folder} s={v.s} rows={v.rows} showDone={showDone} studioOk={studioOk} skin={skin} onMake={setMaking} onHide={(song, on) => hide(v.s, song, on)} />
             ))}
           </ul>
+          {finished.length > 0 && (
+            <details class="rec-sessions__finished">
+              <summary>Finished sessions ({finished.length}): every song made into a karaoke song or hidden</summary>
+              <ul class="rec-sessions__list">
+                {finished.map((v) => (
+                  <SessionItem key={v.s.folder} s={v.s} rows={v.rows} showDone studioOk={studioOk} skin={skin} onMake={setMaking} onHide={(song, on) => hide(v.s, song, on)} />
+                ))}
+              </ul>
+            </details>
+          )}
         </Section>
       )}
 

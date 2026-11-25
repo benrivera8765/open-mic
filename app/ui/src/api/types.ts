@@ -86,6 +86,11 @@ export interface SongSummary {
   guide?: GuideStatus;
   /** (added WO2) The best practice result kept in the song's slot. */
   practice_best?: { overall: number | null; grade: string | null; date: string } | null;
+  /**
+   * (added 2026-11-25, D-281) The file the Studio made the song from: its name and
+   * length. The Recorder marks a recording with the same name and length as made.
+   */
+  source?: { file_name: string; seconds: number } | null;
 }
 
 /**

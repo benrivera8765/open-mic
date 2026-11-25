@@ -46,6 +46,30 @@ pub struct SongSummary {
     pub guide: crate::guide::GuideStatus,
     /// (added WO2) The best practice result, from the song's slot (SONG_FORMAT 11).
     pub practice_best: Option<PracticeBest>,
+    /// (added 2026-11-25, D-281) The file the Studio made the song from
+    /// (`provenance.source` in the manifest): the Recorder marks a recording whose file
+    /// name and length match as already made into a karaoke song.
+    pub source: Option<SongSource>,
+}
+
+/// `SongSummary.source` (docs/APP_API.md section 2).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SongSource {
+    /// The input's file name, as the Studio received it ("05 Artist - Title.wav").
+    pub file_name: String,
+    /// The input's length in seconds.
+    pub seconds: f64,
+}
+
+/// The source of a song as its manifest records it, when it names a file and a length.
+fn source_of(provenance: &serde_json::Value) -> Option<SongSource> {
+    let s = provenance.get("source")?;
+    let file_name = s.get("filename")?.as_str()?.trim();
+    let seconds = s.get("duration_seconds")?.as_f64()?;
+    (!file_name.is_empty() && seconds.is_finite() && seconds > 0.0).then(|| SongSource {
+        file_name: file_name.to_string(),
+        seconds,
+    })
 }
 
 /// `SongSummary.practice_best` (docs/APP_API.md section 2).
@@ -221,6 +245,7 @@ impl Library {
                     error: Some(e.user_message()),
                     guide: crate::guide::GuideStatus::none(),
                     practice_best: None,
+                    source: None,
                 }
             }
         }
@@ -326,6 +351,7 @@ pub fn summary_of(song: &jk_format::SongFile, song_id: String, st: (u64, u64)) -
             grade: b.grade,
             date: b.date,
         }),
+        source: source_of(&m.provenance),
     }
 }
 
@@ -444,6 +470,21 @@ impl Watcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_source_a_song_was_made_from_is_read_from_its_provenance() {
+        let p = serde_json::json!({"source": {"filename": "05 David Hasselhoff - True Survivor.wav", "duration_seconds": 220.108, "sha256": "3a0e"}});
+        assert_eq!(
+            source_of(&p),
+            Some(SongSource {
+                file_name: "05 David Hasselhoff - True Survivor.wav".into(),
+                seconds: 220.108
+            })
+        );
+        assert_eq!(source_of(&serde_json::json!({})), None);
+        assert_eq!(source_of(&serde_json::json!({"source": {"filename": " ", "duration_seconds": 3.0}})), None);
+        assert_eq!(source_of(&serde_json::json!({"source": {"filename": "a.wav"}})), None);
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!(

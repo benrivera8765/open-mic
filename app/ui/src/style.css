@@ -1633,6 +1633,47 @@ button.title-strip:hover {
   padding: 0.25rem 0;
 }
 
+/* Finished songs (D-281): made into karaoke songs, or hidden by the singer. */
+.rec-sessions__toolbar {
+  justify-content: space-between;
+  align-items: center;
+  margin: 0 0 0.8rem;
+}
+
+.rec-sessions__done,
+.rec-session__done {
+  color: var(--muted);
+}
+
+.rec-session__done {
+  font-size: 0.9em;
+}
+
+.rec-song__badge--made {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.rec-song__badge--queued {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.rec-song--hidden .rec-song__text,
+.rec-song--hidden .rec-song__cover {
+  opacity: 0.55;
+}
+
+.rec-sessions__finished > summary {
+  cursor: pointer;
+  color: var(--muted);
+  padding: 0.4rem 0;
+}
+
+.rec-sessions__finished > .rec-sessions__list {
+  margin-top: 0.6rem;
+}
+
 .recordings__list,
 .studio__inbox,
 .studio__jobs {

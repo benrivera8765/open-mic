@@ -170,6 +170,8 @@ export interface MockOptions {
   exportPeak: number;
   /** WO2: songs start with no practice data at all (default: two demo songs have it). */
   noPractice: boolean;
+  /** D-281: the library holds a song made from the demo session's first recording. */
+  madeFromRecording: boolean;
   /** WO2: song ids whose practice data fails to save (the stick is full), for tests. */
   guideFailIds: string[];
   /** WO2: song ids whose practice data cannot be made at all (the lead vocal cannot be read). */
@@ -207,6 +209,7 @@ const DEFAULT_OPTIONS: MockOptions = {
   latencyMs: 3,
   exportPeak: 0.89,
   noPractice: false,
+  madeFromRecording: false,
   guideFailIds: [],
   guideHardFailIds: [],
   mic: "granted",
@@ -277,6 +280,25 @@ function mockSong(folder: string, n: number, t: MockTrack, status: RecordedSong[
     start_confidence: n === 1 ? "edge" : "certain",
     end_confidence: status === "partial" ? "edge" : n === 2 ? "uncertain" : "certain",
     paused_s: 0,
+  };
+}
+
+/** A library song the Studio made from the demo session's first recording (D-281). */
+function madeFromRecording(): DemoSong {
+  const t = MOCK_PLAYLIST[0];
+  const d = demoLibrary()[0];
+  const rec = mockSong("2026-11-17 20-15-03", 1, t, "complete", null);
+  return {
+    ...d,
+    summary: {
+      ...d.summary,
+      song_id: `${t.artist} - ${t.title}.jksong`,
+      title: t.title,
+      artist: t.artist,
+      album: t.album,
+      duration_s: rec.duration_s,
+      source: { file_name: rec.name, seconds: rec.duration_s },
+    },
   };
 }
 
@@ -403,8 +425,10 @@ export class MockApi implements Api {
     this.settings.ui.show_marker = this.o.showMarker;
     // A real song injected by a recording script comes first (demo.ts promoSong).
     const promo = this.o.empty ? null : promoSong();
-    const lib = this.o.empty ? [] : [...(promo ? [promo] : []), ...demoLibrary().filter((d) => !this.o.demo || !d.summary.error), ...fillerSongs(this.o.many)];
-    const shift = promo ? 1 : 0;
+    // D-281: a song made from the demo session's first recording (its source matches).
+    const made = this.o.empty || !this.o.madeFromRecording ? null : madeFromRecording();
+    const lib = this.o.empty ? [] : [...(promo ? [promo] : []), ...(made ? [made] : []), ...demoLibrary().filter((d) => !this.o.demo || !d.summary.error), ...fillerSongs(this.o.many)];
+    const shift = (promo ? 1 : 0) + (made ? 1 : 0);
     this.songs = lib.map((demo, i) => ({
       demo,
       settings: { ...demo.settings, levels: { ...demo.settings.levels } },
@@ -460,6 +484,7 @@ export class MockApi implements Api {
     if (r === "denied" || r === "not_determined" || r === "granted" || r === "unavailable") o.recorder = r;
     if (q.get("empty") === "1") o.empty = true;
     if (q.get("demo") === "1") o.demo = true;
+    if (q.get("made") === "1") o.madeFromRecording = true;
     const players = Number(q.get("players"));
     if (q.has("players") && players >= 0) o.players = Math.min(3, Math.floor(players));
     if (q.get("skin") === "0") o.skin = false;

@@ -92,6 +92,7 @@ interface SongSummary {
   // (added WO2, practice mode)
   guide: GuideStatus;                              // the melody guide: none / queued / building / ready / ... (section 12.3)
   practice_best: { overall: number | null; grade: string | null; date: string } | null;  // from the slot (section 12.6)
+  source: { file_name: string; seconds: number } | null;  // (added 2026-11-25, D-281) the file the Studio made the song from (manifest provenance.source: its name and length); the Recorder marks a recording with the same name and length as made
 }
 ```
 

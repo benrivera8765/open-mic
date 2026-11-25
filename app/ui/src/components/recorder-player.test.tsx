@@ -214,6 +214,77 @@ describe("Recorder: songs recorded separately", () => {
     await until(() => !/Lyrics: your own/.test(text()));
   });
 
+  it("a song already made into a karaoke song folds away, says Made and offers Sing (D-281)", async () => {
+    localStorage.removeItem("jk.recorder.hidden");
+    localStorage.removeItem("jk.recorder.showFinished");
+    await open({ madeFromRecording: true });
+    // "Morning Light" was made into a karaoke song: only the other two are listed.
+    await until(() => /1 song made into karaoke songs or hidden/.test(text()));
+    expect(qa(".rec-song").map((r) => r.querySelector(".rec-song__title")!.textContent)).toEqual(["02 Paper Boats", "03 Slow River"]);
+    expect(q(".rec-session__done")!.textContent).toBe("1 made into karaoke song");
+    // "All complete songs" means the ones still to make.
+    expect(button("Make karaoke songs from all complete songs (1)")).toBeTruthy();
+    button("Show finished songs (1)")!.click();
+    await until(() => qa(".rec-song").length === 3);
+    expect(qa(".rec-song__badge").map((b) => b.textContent)).toEqual(["Made", "Complete", "Partial"]);
+    const made = qa(".rec-song")[0];
+    expect(made.querySelector(".rec-song__hide")).toBeNull();
+    expect(Array.from(made.querySelectorAll("button")).map((b) => b.textContent)).toEqual(["▶ Play", "Sing"]);
+    expect(localStorage.getItem("jk.recorder.showFinished")).toBe("1");
+    made.querySelector<HTMLButtonElement>(".rec-song__sing")!.click();
+    await until(() => store.get().screen === "stage" && store.get().song?.summary.song_id === "The Demo Band - Morning Light.jksong");
+    localStorage.removeItem("jk.recorder.showFinished");
+  });
+
+  it("Hide folds a song away (remembered); a session with nothing left moves to Finished sessions (D-281)", async () => {
+    localStorage.removeItem("jk.recorder.hidden");
+    localStorage.removeItem("jk.recorder.showFinished");
+    try {
+      await open();
+      await until(() => qa(".rec-song").length === 3);
+      const hideRow = (title: RegExp) => qa(".rec-song").find((r) => title.test(r.textContent ?? ""))!.querySelector<HTMLButtonElement>(".rec-song__hide")!.click();
+      hideRow(/Paper Boats/);
+      await until(() => qa(".rec-song").length === 2);
+      expect(JSON.parse(localStorage.getItem("jk.recorder.hidden")!)).toEqual(["2026-11-17 20-15-03/02 The Demo Band - Paper Boats.wav"]);
+      expect(q(".rec-session__done")!.textContent).toBe("1 hidden");
+      expect(button("Make karaoke songs from all complete songs (1)")).toBeTruthy();
+      hideRow(/Morning Light/);
+      hideRow(/Slow River/);
+      // Nothing left to do in the session: it waits, folded, under Finished sessions.
+      await until(() => !!q(".rec-sessions__finished"));
+      expect(q(".rec-sessions__finished summary")!.textContent).toBe("Finished sessions (1): every song made into a karaoke song or hidden");
+      expect(q(".rec-sessions__finished")!.hasAttribute("open")).toBe(false);
+      expect(q(".rec-sessions > ul.rec-sessions__list")!.children.length).toBe(0);
+      // Remembered: the screen opened again still has them hidden.
+      await open();
+      await until(() => !!q(".rec-sessions__finished") && /3 songs made into karaoke songs or hidden/.test(text()));
+      button("Show finished songs (3)")!.click();
+      await until(() => qa(".rec-song__hide").length === 3);
+      expect(qa(".rec-song__hide").map((b) => b.textContent)).toEqual(["Unhide", "Unhide", "Unhide"]);
+      qa(".rec-song__hide")[1].click();
+      await until(() => JSON.parse(localStorage.getItem("jk.recorder.hidden")!).length === 2);
+      button("Hide finished songs")!.click();
+      await until(() => qa(".rec-song").length === 1 && /Paper Boats/.test(q(".rec-song")!.textContent!));
+      expect(q(".rec-sessions__finished")).toBeNull();
+    } finally {
+      localStorage.removeItem("jk.recorder.hidden");
+      localStorage.removeItem("jk.recorder.showFinished");
+    }
+  });
+
+  it("a song waiting in the Studio says so and cannot be sent twice (D-281)", async () => {
+    localStorage.removeItem("jk.recorder.hidden");
+    await open();
+    await until(() => qa(".rec-song").length === 3);
+    const row = () => qa(".rec-song").find((r) => /Paper Boats/.test(r.textContent ?? ""))!;
+    Array.from(row().querySelectorAll<HTMLButtonElement>("button")).find((b) => b.textContent === "Make a karaoke song")!.click();
+    await until(() => !!button("Add to the Studio queue"));
+    button("Add to the Studio queue")!.click();
+    await until(() => row().querySelector(".rec-song__badge")?.textContent === "In the Studio");
+    expect(Array.from(row().querySelectorAll("button")).map((b) => b.textContent)).toEqual(["▶ Play", "Hide"]);
+    expect(button("Make karaoke songs from all complete songs (1)")).toBeTruthy();
+  });
+
   it("without the Studio there is nothing to hand off, but the songs are listed", async () => {
     await open({ studio: "off" });
     await until(() => qa(".rec-song").length === 3);
