@@ -6,7 +6,7 @@ grade") and the section 9 rows "Scoring", "Key change", "Key change during a son
 `docs/benchmarks/practice.md`.
 
 **Scorer 0.2.0 (quality round, 2026-11-19 evening to 2026-11-20).** This file was first
-written for scorer 0.1.0 (Stage 3a, commit 8abc0b4). Its independent verifier found four
+written for scorer 0.1.0 (Stage 3a, commit e10d5d2). Its independent verifier found four
 faults in the grade: per-note timing cost pitch points, the "excusal" rule had been tuned
 on the proof songs and excused any sound, the original singer of the low male songs was
 not in the top band at key 0, and takes with nothing fed back were flagged "music in the
@@ -20,7 +20,7 @@ the echo stream's latest code), every table in section 4 was re-run on **one
 snapshot of the tree taken at Fri Nov 20 05:36:17 EST 2026** (the tracker and echo code exactly as their
 own workstreams had them then; `../jukeoke-build/q-score-s3/SNAPSHOT_TIME.txt` holds the
 time and the SHA-256 of every tracker, echo, scorer and harness source), with two builds
-that differ only in the scorer: **before** = scorer 0.1.0 (the sources of commit 8abc0b4:
+that differ only in the scorer: **before** = scorer 0.1.0 (the sources of commit e10d5d2:
 `score.rs`, `practice.rs`, their tests and the harness) and **after** = scorer 0.2.0.
 Section 0.1 sets the final numbers beside the first measurement's.
 Measured on the build PC (Ryzen 7 9700X, 16 threads, Windows 11), GNU toolchain, release
