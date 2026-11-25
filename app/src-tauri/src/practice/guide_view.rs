@@ -106,6 +106,8 @@ impl SessionGuide {
         // The melody as the singer reads it: notes on piano keys, slivers folded in (D-251).
         // Lane and grade both read this, so what is drawn is what is graded.
         jk_guide::singable::singable(&mut doc);
+        // Bars follow the words: none where nothing is sung, none held into the echo (D-280).
+        jk_guide::singable::fit_to_words(&mut doc, lyrics.as_ref(), offset_ms);
         let offset_s = offset_ms as f64 / 1000.0;
         let notes: Vec<ScoreNote> = doc
             .notes

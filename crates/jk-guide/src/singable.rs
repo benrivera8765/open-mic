@@ -37,7 +37,65 @@
 //! The result keeps time order and never overlaps. Word references are kept (a merged
 //! note keeps its first part's).
 
+use jk_format::Lyrics;
 use jk_format::guide::{GuideDoc, GuideNote, Span};
+
+/// How long a bar may run on after the end of its last word (s): the voice's own release.
+pub const WORD_TAIL_S: f64 = 0.15;
+/// A note this close to a word (s) is still on it.
+const WORD_PAD_S: f64 = 0.1;
+/// A bar trimmed shorter than this is dropped.
+const TRIMMED_MIN_S: f64 = 0.06;
+
+/// Bars follow the words (owner, 2026-11-25: words "shown as being held for longer than
+/// they actually are" and "a weird one off bar where there is no word said"; DECISIONS
+/// D-280). The separated lead vocal keeps the singer's reverb and echo, and the analysis
+/// follows its pitch for seconds after the voice has stopped ("Hearts Like Ours": "inside"
+/// sung to 38.1 s, its echo 15-43 dB down until 40.5 s, drawn as bars to 40.0 s); it also
+/// keeps ad-libs and backing vocals that are not in the lyrics. Measured over the owner's
+/// 36 songs, 89% of the bar time past a word's end (+0.15 s) was echo more than 12 dB below
+/// that word's loudest moment. So, when the song has timed lyrics: a note that touches no
+/// word (within 0.1 s) is not drawn or graded, and a note runs at most `WORD_TAIL_S` past
+/// the end of the last word it touches. The stored guide is unchanged (the pitch analysis
+/// stays independent of the lyrics, WO2 trap 9); every reader applies this after
+/// [`singable`], so songs made before it are fixed too. Without lyrics nothing changes.
+pub fn fit_to_words(doc: &mut GuideDoc, lyrics: Option<&Lyrics>, offset_ms: i64) {
+    let Some(l) = lyrics else { return };
+    let off = offset_ms as f64 / 1000.0;
+    let mut words: Vec<(f64, f64)> = l
+        .lines
+        .iter()
+        .flat_map(|line| line.words.iter().map(move |w| (w.start + off, w.end + off)))
+        .filter(|(s, e)| s.is_finite() && e.is_finite() && e > s)
+        .collect();
+    if words.is_empty() {
+        return;
+    }
+    words.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // The longest word bounds how far back a word that still touches a note can start.
+    let longest = words.iter().map(|w| w.1 - w.0).fold(0.0, f64::max);
+    doc.notes.retain_mut(|n| {
+        let upto = words.partition_point(|w| w.0 < n.end + WORD_PAD_S);
+        let mut last_end: Option<f64> = None;
+        for w in words[..upto].iter().rev() {
+            if w.0 + longest + WORD_PAD_S < n.start {
+                break;
+            }
+            if w.1 + WORD_PAD_S > n.start {
+                last_end = Some(last_end.map_or(w.1, |e: f64| e.max(w.1)));
+            }
+        }
+        let Some(last_end) = last_end else { return false };
+        if n.end > last_end + WORD_TAIL_S {
+            n.end = last_end + WORD_TAIL_S;
+            if n.end - n.start < TRIMMED_MIN_S {
+                return false;
+            }
+            n.glide_in = n.glide_in.min(0.5 * dur(n)).max(0.0);
+        }
+        true
+    });
+}
 
 /// Slivers shorter than this join a touching note of the same word.
 const SLIVER_S: f64 = 0.12;
@@ -479,6 +537,58 @@ mod tests {
         .expect("doc");
         d.notes = notes;
         d
+    }
+
+    /// Lyrics with one line of words at these times (no characters needed here).
+    fn lyrics(words: &[(f64, f64)]) -> Lyrics {
+        let ws: Vec<serde_json::Value> = words.iter().map(|&(s, e)| serde_json::json!({"start": s, "end": e, "chars": []})).collect();
+        let (s, e) = (words.first().map_or(0.0, |w| w.0), words.last().map_or(0.0, |w| w.1));
+        serde_json::from_value(serde_json::json!({"lines": [{"start": s, "end": e, "words": ws}]})).expect("lyrics")
+    }
+
+    #[test]
+    fn an_echo_after_the_last_word_is_not_drawn_as_singing() {
+        // "Hearts Like Ours": "inside" 36.98-38.14 s; the analysis held it to 38.925 and then
+        // found 38.925-39.995 in the echo, under no word.
+        let mut d = doc(
+            vec![
+                n(37.255, 38.925, 69.9, "pitched", 0.82, Some((0, 0))),
+                n(38.925, 39.995, 69.9, "pitched", 0.49, None),
+                n(40.615, 40.955, 68.1, "pitched", 0.66, Some((0, 1))),
+            ],
+            0.0,
+        );
+        fit_to_words(&mut d, Some(&lyrics(&[(36.98, 38.14), (40.6, 41.0)])), 0);
+        assert_eq!(d.notes.len(), 2, "{:?}", d.notes);
+        assert!((d.notes[0].end - (38.14 + WORD_TAIL_S)).abs() < 1e-9, "{}", d.notes[0].end);
+        assert!((d.notes[1].start - 40.615).abs() < 1e-9 && (d.notes[1].end - 40.955).abs() < 1e-9);
+    }
+
+    #[test]
+    fn notes_inside_their_words_and_songs_without_lyrics_are_left_alone() {
+        let notes = vec![
+            n(1.0, 1.4, 60.0, "pitched", 0.9, Some((0, 0))),
+            n(1.4, 2.1, 62.0, "pitched", 0.9, Some((0, 1))),
+            // A legato note across two words ends with the later one.
+            n(2.1, 3.05, 64.0, "pitched", 0.9, Some((0, 2))),
+        ];
+        let words = [(0.95, 1.4), (1.4, 2.0), (2.05, 2.5), (2.5, 3.0)];
+        let mut d = doc(notes.clone(), 0.0);
+        fit_to_words(&mut d, Some(&lyrics(&words)), 0);
+        let ends: Vec<f64> = d.notes.iter().map(|x| x.end).collect();
+        assert_eq!(ends, vec![1.4, 2.1, 3.05]);
+        let mut d = doc(notes, 0.0);
+        fit_to_words(&mut d, None, 0);
+        assert_eq!(d.notes.len(), 3);
+    }
+
+    #[test]
+    fn the_lyrics_offset_moves_the_words_the_bars_follow() {
+        // The song's lyrics offset (+500 ms) puts the word at 1.5-2.0 s.
+        let mut d = doc(vec![n(1.5, 3.0, 60.0, "pitched", 0.9, Some((0, 0))), n(0.2, 0.6, 60.0, "pitched", 0.9, None)], 0.0);
+        fit_to_words(&mut d, Some(&lyrics(&[(1.0, 1.5)])), 500);
+        assert_eq!(d.notes.len(), 1, "{:?}", d.notes);
+        assert!((d.notes[0].end - (2.0 + WORD_TAIL_S)).abs() < 1e-9);
     }
 
     #[test]
