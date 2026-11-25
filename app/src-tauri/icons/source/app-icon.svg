@@ -1,30 +1,49 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Jukeoke placeholder app icon. Original artwork drawn for this project
-     (GPL-3.0-or-later): a glowing arch over a dark screen with a music note.
+<!-- Open Mic app icon. Original artwork drawn for this project (GPL-3.0-or-later):
+     a handheld singing microphone drawn as a blue neon tube on a dark rounded square.
      Regenerate the platform icons with `npm run icons` in app/ui. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ff3d8b"/>
-      <stop offset="0.5" stop-color="#ff2a2a"/>
-      <stop offset="1" stop-color="#ff8a1f"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0f1a38"/>
+      <stop offset="1" stop-color="#060a16"/>
     </linearGradient>
-    <linearGradient id="column" gradientUnits="userSpaceOnUse" x1="0" y1="500" x2="0" y2="880">
-      <stop offset="0" stop-color="#4dff6a"/>
-      <stop offset="0.5" stop-color="#ffd23f"/>
-      <stop offset="1" stop-color="#ff8a1f"/>
-    </linearGradient>
+    <radialGradient id="haze" cx="0.5" cy="0.47" r="0.5">
+      <stop offset="0" stop-color="#1e9bff" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#1e9bff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="26"/>
+    </filter>
+    <clipPath id="ball">
+      <circle cx="512" cy="318" r="146"/>
+    </clipPath>
+    <!-- a handheld vocal microphone, tilted like it is being sung into -->
+    <g id="mic" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <!-- ball grille -->
+      <circle cx="512" cy="318" r="146"/>
+      <!-- collar -->
+      <rect x="424" y="474" width="176" height="50" rx="22"/>
+      <!-- tapered handle -->
+      <path d="M440 534 L478 840 Q512 872 546 840 L584 534"/>
+    </g>
+    <g id="mesh" fill="none" stroke-linecap="round" clip-path="url(#ball)">
+      <path d="M366 318 A146 52 0 0 0 658 318"/>
+      <path d="M512 172 A52 146 0 0 0 512 464"/>
+      <path d="M512 172 A52 146 0 0 1 512 464"/>
+    </g>
   </defs>
-  <rect x="32" y="32" width="960" height="960" rx="200" fill="#14101c"/>
-  <!-- arch: outer glowing tube -->
-  <path d="M192 880 V470 A320 320 0 0 1 832 470 V880" fill="none" stroke="url(#glow)" stroke-width="72" stroke-linecap="round"/>
-  <!-- columns: inner light strips -->
-  <path d="M300 880 V500" stroke="url(#column)" stroke-width="28" stroke-linecap="round"/>
-  <path d="M724 880 V500" stroke="url(#column)" stroke-width="28" stroke-linecap="round"/>
-  <!-- music note -->
-  <g fill="#7dffd8">
-    <ellipse cx="452" cy="742" rx="78" ry="58" transform="rotate(-20 452 742)"/>
-    <rect x="508" y="430" width="34" height="320"/>
-    <path d="M508 430 C600 450 640 500 640 580 C610 530 570 515 542 512 Z"/>
+  <rect x="32" y="32" width="960" height="960" rx="200" fill="url(#bg)"/>
+  <rect x="32" y="32" width="960" height="960" rx="200" fill="url(#haze)"/>
+  <g transform="rotate(28 512 520)">
+    <!-- glow -->
+    <use href="#mic" stroke="#1683ff" stroke-width="96" filter="url(#glow)" opacity="0.95"/>
+    <use href="#mesh" stroke="#1683ff" stroke-width="50" filter="url(#glow)" opacity="0.7"/>
+    <!-- tube -->
+    <use href="#mic" stroke="#36c4ff" stroke-width="58"/>
+    <use href="#mesh" stroke="#36c4ff" stroke-width="28"/>
+    <!-- hot core -->
+    <use href="#mic" stroke="#dcf6ff" stroke-width="20"/>
+    <use href="#mesh" stroke="#dcf6ff" stroke-width="9"/>
   </g>
 </svg>
