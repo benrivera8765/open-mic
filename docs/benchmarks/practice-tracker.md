@@ -477,7 +477,7 @@ frame at its described `time`):
 
 ### 13.2 Results: Stage 0 against the hardened tracker
 
-Both trackers on the same clips (Stage 0 = the tracker of git HEAD a211234, built from a
+Both trackers on the same clips (Stage 0 = the tracker of git HEAD cb5d359, built from a
 private copy, `../jukeoke-build/practice-tracker/devcrate-stage0/`). Raw tables:
 `runs/final/{new,stage0}-{dev,heldout}.{txt,tsv}`; these tables by `runs/final/report.py`.
 
@@ -777,7 +777,7 @@ JK_SET="flat_power=0" cargo run --release -p jk-pitch --example tracker_bench no
 `../jukeoke-build/practice-tracker/runs/final/run-eval.sh` runs both trackers on both splits
 and every condition (17 minutes on this PC); `report.py` there writes the tables of sections
 13 and 15. The Stage 0 tracker for the comparison builds from
-`../jukeoke-build/practice-tracker/devcrate-stage0/` (git HEAD a211234's `tracker.rs` with the
+`../jukeoke-build/practice-tracker/devcrate-stage0/` (git HEAD cb5d359's `tracker.rs` with the
 same evaluation examples).
 
 ## 19. Independent verification of the hardening (2026-11-19)
@@ -1243,7 +1243,7 @@ room reverb (RT60 0.3 / 0.8 / 1.5 s) costing 4-17 points of raw pitch accuracy (
 23-24 % of onsets later than 100 ms at RT60 0.8 s; (3) 12.8-13.8 % of real onsets shown
 more than 100 ms late; (4) the whisper fix holding only for the probe's own seeds; (5) the
 reverb-tail rule cutting dry fast fades. This section is the work on them. "Stage 3a" below
-is the tracker of git HEAD before the round (`8abc0b4`), built from a private copy and run
+is the tracker of git HEAD before the round (`e10d5d2`), built from a private copy and run
 on exactly the same material with the same evaluation binary.
 
 The round ran in two passes on 19-20 November (the first was cut off by the usage limit;

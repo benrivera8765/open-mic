@@ -369,7 +369,7 @@ PC has no microphone. Every Mac row is BUILT-NOT-VERIFIED (no Mac has run it). N
 | 4.1 | Notes from the audio, not lyric timings; uncertain notes dim and ungraded; octave check | VERIFIED | practice-guide 1.1, 4.4, 4.5, S2.4 (independent spectral octave check) |
 | 4.1 | "The guide is wrong here" per line, saved with the song | VERIFIED | `practice_session` test (exclusions in the slot, undo); practice-screen |
 | 4.2 | Guide in the file as optional 1.1 data; spec, Rust, Python, conformance, verify | VERIFIED | SONG_FORMAT 7.1, 10; conformance steps 8-10 PASS; `jk-format` guide tests |
-| 4.2 | An older Jukeoke opens and plays a file with a guide | VERIFIED | previous release 938742f: verify, renders byte-identical, the real app plays (practice-guide S2.2) |
+| 4.2 | An older Jukeoke opens and plays a file with a guide | VERIFIED | previous release ef62188: verify, renders byte-identical, the real app plays (practice-guide S2.2) |
 | 4.2 | Practice settings and results travel in the slot (256 KiB); nothing in web storage | VERIFIED | SONG_FORMAT 11; results survive a restart in the real app (practice-app 4) |
 | 4.3 | New songs: guide made automatically after a Studio job; a failure leaves the song playable with Try again | VERIFIED (fake Studio) | D-242; `guide_queue` tests; vitest `library-practice`; not run with a real Studio job in WO2 |
 | 4.3 | Existing songs: "Add practice data to all songs"; Practice on a song without a guide adds it with progress | VERIFIED | `guide_queue` tests; real app: "preparing", then listening after 1.2 s (practice-app 4) |

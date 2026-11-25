@@ -755,7 +755,7 @@ lyrics were read or printed; nothing touched a microphone.
 
 **Frozen tracker and scorer.** The tracker and the scorer were being changed by their own
 workstreams at the same time, so every figure here comes from a copy of the committed
-workspace (8abc0b4) with only this round's echo files copied in
+workspace (e10d5d2) with only this round's echo files copied in
 (`../jukeoke-build/practice-echo/q/ws-after`, `sync-after.sh`), against the same copy with the
 committed echo code (`ws-base`, "before"). The echo unit tests, `echo_alloc`, the chain's tests
 and `practice_alloc` were also run in the working tree with the other workstreams' current
@@ -1005,7 +1005,7 @@ more of that music than came in, still 29 dB under the singer, every frame right
 ### 13.10 Independent check of the quality round (verifier, 2026-11-20)
 
 Built from two copies of the **current** workspace (the tracker and scorer now in the working
-tree, not 8abc0b4): "after" with this round's echo files, "before" with the committed (HEAD)
+tree, not e10d5d2): "after" with this round's echo files, "before" with the committed (HEAD)
 echo files plus the two hidden diagnostics as stubs. Results and scripts:
 `../jukeoke-build/practice-echo/qv/` (`r/base`, `r/after`, `scripts/`).
 

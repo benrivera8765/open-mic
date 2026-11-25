@@ -15,7 +15,7 @@ vitest 16 files, 179 passed; `dist/` rebuilt and proved again with them.
 evidence pass after the gap-closing work (key cache, cover correction, minimised ticker,
 recorder honesty, Mac CI hardening, licence texts). The previous sweep (17-18 November,
 23:25-00:35) is superseded; its fixes are kept in section 5.1.
-**Code:** commit `1703c7a` plus uncommitted work (about 80 files changed or new, `git
+**Code:** commit `4249b52` plus uncommitted work (about 80 files changed or new, `git
 status --short`). Nothing is committed.
 **PC:** Windows 11 26200, Ryzen 7 9700X, 32 GB, RTX 5070 Ti 16 GB (driver 621.24), NVMe SSD.
 **Tools:** rustc 1.100.0 (x86_64-pc-windows-gnu, WinLibs GCC 16.2), Node 25.6.1 / npm 11.9.0,
@@ -603,7 +603,7 @@ moved to `$JK_BUILD/verify-recsessions-live/old-run-appdata/`; `%LOCALAPPDATA%` 
 
 ## 10. Work Order 2: practice mode (20 November 2026)
 
-The lean finish of WO2 (DECISIONS D-249) on the committed practice code (029bc1f) plus this
+The lean finish of WO2 (DECISIONS D-249) on the committed practice code (403b32c) plus this
 pass's small fixes. Nobody sang: every singer is generated or a recorded vocal; this PC has
 no microphone; nothing was played above -60 dBFS (null output device, master 0 in the real
 app). The numbers of practice mode itself: `docs/benchmarks/practice.md`.

@@ -460,8 +460,8 @@ Evidence in `$JK_BUILD/practice-stage2/` (outside the repository): `measure/resu
   verify finds stale guides (also `--deep`), overlapping notes, a damaged curve, a newer
   `guide_version`; a 1.0-style rewrite keeps the guide; practice data shrinks by the size
   rule and never rewrites the file. Python twin: `studio/tests/test_jksong_guide.py` (21).
-- **The previous release** (commit 938742f, built from a `git worktree` under
-  `$JK_BUILD/practice-stage2/old-938742f`): on the demo song with a guide added by the new
+- **The previous release** (commit ef62188, built from a `git worktree` under
+  `$JK_BUILD/practice-stage2/old-ef62188`): on the demo song with a guide added by the new
   CLI and a `practice` value saved in its slot (header minor 1, manifest unchanged):
   - old `jukeoke-cli verify --strict`: PASS, 0 errors, 0 warnings; old `info` lists the two
     guide chunks among the chunks and nothing else changes;
@@ -469,7 +469,7 @@ Evidence in `$JK_BUILD/practice-stage2/` (outside the repository): `measure/resu
     of the same song without a guide;
   - the old Python slot save (key +2) keeps the `practice` value and both guide chunks; the
     new `verify --strict --deep` then still passes;
-  - **the old app** (`jukeoke.exe` built from 938742f, driven by `real-app-check.mjs` on
+  - **the old app** (`jukeoke.exe` built from ef62188, driven by `real-app-check.mjs` on
     the null device, master 0): lists the song, opens it, plays (clock 30.7 events/s, UI
     clock within 8.5 ms of the engine), the key change reaches the core; afterwards its slot
     save had kept the `practice` value and the guide (new `verify --strict --deep` PASS).
