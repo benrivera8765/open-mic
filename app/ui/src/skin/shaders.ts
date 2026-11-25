@@ -11,10 +11,6 @@
 //           of dark towers with lit windows, floor bands and neon bars, holographic
 //           billboards, stacked vertical signs and shop signs at street level, rain, a
 //           wet street mirroring it all, and now and then a glitch
-//   deco    dieselpunk: riveted brushed gunmetal, an art deco sunburst in brass lines,
-//           sweeping searchlights, drifting smoke, red and cream deco stripes
-//   aero    Frutiger Aero: a bright sky with clouds and aurora swooshes, a sun, glossy
-//           green hills and glossy bubbles rising
 //
 // Pipes (D-272, D-275), drawn in the pipe's own coordinates (v_flow.x: distance from the
 // nearer burner, v_u: distance from the left foot, both px; v_flow.y: -1..1 across):
@@ -24,16 +20,14 @@
 //   steam   white steam billowing from both ends through clear glass, condensation
 //   data    cyberpunk: cyan and yellow neon walls, data packets racing both ways, a
 //           light pulse, glitches
-//   diesel  exhaust: combustion pulses on the engine's beat, black smoke, sparks
-//   aero    glossy blue-green liquid with big glossy bubbles
 
 import { NOISE_GLSL } from "./gl";
 
-export type GpuCabinet = "forge" | "ocean" | "brass" | "cyber" | "deco" | "aero";
-export type GpuPipe = "fire" | "water" | "steam" | "data" | "diesel" | "aero";
+export type GpuCabinet = "forge" | "ocean" | "brass" | "cyber";
+export type GpuPipe = "fire" | "water" | "steam" | "data";
 
-export const GPU_CABINETS: readonly GpuCabinet[] = ["forge", "ocean", "brass", "cyber", "deco", "aero"];
-export const GPU_PIPES: readonly GpuPipe[] = ["fire", "water", "steam", "data", "diesel", "aero"];
+export const GPU_CABINETS: readonly GpuCabinet[] = ["forge", "ocean", "brass", "cyber"];
+export const GPU_PIPES: readonly GpuPipe[] = ["fire", "water", "steam", "data"];
 
 const CAB = NOISE_GLSL + `
 uniform vec2 u_res;
@@ -410,97 +404,6 @@ void main() {
 }
 `,
 
-  deco: CAB + `
-float beam(vec2 p, vec2 o, float a) {
-  vec2 v = p - o;
-  float c = dot(normalize(v), vec2(sin(a), cos(a)));
-  return smoothstep(0.982, 0.998, c) * exp(-length(v) * 0.7) + smoothstep(0.9, 1.0, c) * 0.25 * exp(-length(v) * 1.2);
-}
-void main() {
-  float A = u_res.x / u_res.y;
-  vec2 p = gl_FragCoord.xy / u_res.y;
-  float t = u_time;
-  float px = 1.2 / u_res.y;
-  // Brushed gunmetal.
-  vec3 col = vec3(0.16, 0.18, 0.2) * (0.78 + 0.42 * fbm(vec2(p.x * 2.0, p.y * 160.0)));
-  // An art deco sunburst rising from behind the key dial, in brass lines.
-  vec2 q = p - vec2(0.5 * A, -0.08);
-  float ang = atan(q.x, q.y);
-  float rad = length(q);
-  float rays = 26.0;
-  float k = ang / 6.2832 * rays;
-  col *= 0.88 + 0.2 * step(0.5, fract(k));
-  float rayD = abs(fract(k + 0.5) - 0.5) * 6.2832 / rays * rad;
-  float ringD = abs(fract(rad * 7.0 + 0.5) - 0.5) / 7.0;
-  vec3 brass = vec3(0.85, 0.68, 0.32);
-  float lines = max(1.0 - smoothstep(0.0012, 0.0012 + px, rayD), 1.0 - smoothstep(0.0015, 0.0015 + px, ringD)) * (1.0 - smoothstep(0.35, 0.75, rad));
-  col = mix(col, brass, lines * 0.75);
-  // Riveted panel seams.
-  vec2 gp = vec2(p.x / 0.33 + 0.5 * mod(floor(p.y / 0.115), 2.0), p.y / 0.115);
-  vec2 gf = fract(gp);
-  float seam = 1.0 - smoothstep(0.0, px * 2.5, min(min(gf.x, 1.0 - gf.x) * 0.33, min(gf.y, 1.0 - gf.y) * 0.115));
-  col *= 1.0 - 0.5 * seam;
-  float rv = length(vec2((fract(p.x / 0.022) - 0.5) * 0.022, (min(gf.y, 1.0 - gf.y) - 0.09) * 0.115));
-  col += vec3(0.25, 0.28, 0.3) * (1.0 - smoothstep(0.0022, 0.0022 + px, rv));
-  // Red and cream deco stripes along the foot.
-  float foot = step(p.y, 0.022) * step(0.006, p.y);
-  vec3 stripe = mix(vec3(0.62, 0.08, 0.06), vec3(0.92, 0.86, 0.72), step(0.5, fract((p.x + p.y) * 22.0)));
-  col = mix(col, stripe, foot);
-  // Searchlights sweeping the sky.
-  col += vec3(1.0, 0.86, 0.58) * beam(p, vec2(0.06 * A, -0.05), 0.4 + 0.28 * sin(t * 0.33)) * 0.55;
-  col += vec3(1.0, 0.86, 0.58) * beam(p, vec2(0.94 * A, -0.05), -0.4 - 0.28 * sin(t * 0.29 + 1.3)) * 0.55;
-  // Smoke drifting through.
-  col = mix(col, vec3(0.05, 0.05, 0.055), smoothstep(0.5, 0.85, fbm(p * 1.8 + vec2(-t * 0.04, t * 0.015))) * 0.45);
-  gl_FragColor = vec4(col, 1.0);
-}
-`,
-
-  aero: CAB + `
-void main() {
-  float A = u_res.x / u_res.y;
-  vec2 uv = gl_FragCoord.xy / u_res;
-  vec2 p = vec2(uv.x * A, uv.y);
-  float t = u_time;
-  float px = 1.5 / u_res.y;
-  // Sky, sun and clouds.
-  vec3 col = mix(vec3(0.62, 0.88, 1.0), vec3(0.12, 0.5, 0.92), smoothstep(0.1, 1.0, uv.y));
-  float sd = length(p - vec2(0.86 * A, 0.97));
-  col += vec3(1.0, 0.98, 0.85) * (exp(-sd * 9.0) * 0.8 + exp(-sd * 2.5) * 0.25);
-  float cl = fbm(vec2(p.x * 1.1 + t * 0.015, p.y * 2.4)) + 0.12 * fbm(p * 6.0 + t * 0.02);
-  col = mix(col, vec3(1.0), smoothstep(0.55, 0.78, cl) * 0.85);
-  // Aurora swooshes.
-  for (int i = 0; i < 2; i++) {
-    float fi = float(i);
-    float yc = 0.5 + 0.3 * fi + 0.06 * sin(p.x * 2.2 + t * 0.25 + fi * 2.0);
-    col += mix(vec3(0.6, 1.0, 0.75), vec3(0.75, 0.95, 1.0), fi) * exp(-pow((uv.y - yc) * (14.0 + fi * 6.0), 2.0)) * 0.35;
-  }
-  // Glossy green hills.
-  float h1 = 0.115 + 0.035 * sin(p.x * 2.3 + 0.6) + 0.02 * sin(p.x * 5.1 + 1.7);
-  float h2 = 0.075 + 0.03 * sin(p.x * 3.1 + 2.2) + 0.015 * sin(p.x * 7.3);
-  vec3 g1 = mix(vec3(0.38, 0.8, 0.32), vec3(0.66, 0.94, 0.42), smoothstep(h1 - 0.07, h1, uv.y));
-  g1 += vec3(1.0) * 0.3 * exp(-pow((uv.y - (h1 - 0.01)) * 140.0, 2.0));
-  col = mix(col, g1, 1.0 - smoothstep(h1 - px, h1 + px, uv.y));
-  vec3 g2 = mix(vec3(0.16, 0.6, 0.14), vec3(0.45, 0.86, 0.26), smoothstep(h2 - 0.06, h2, uv.y));
-  g2 += vec3(1.0) * 0.38 * exp(-pow((uv.y - (h2 - 0.01)) * 150.0, 2.0));
-  col = mix(col, g2, 1.0 - smoothstep(h2 - px, h2 + px, uv.y));
-  // Glossy bubbles rising.
-  for (int i = 0; i < 2; i++) {
-    float fl = float(i);
-    vec2 q = p * (7.0 - 3.0 * fl) + vec2(fl * 5.0, -t * (0.22 + 0.1 * fl));
-    vec2 id = floor(q);
-    vec2 f = fract(q) - 0.5 - (hash22(id + fl * 17.0) - 0.5) * 0.35;
-    float r = 0.16 + 0.18 * hash12(id + 9.0 + fl);
-    vec2 d = f / r;
-    float dl = length(d);
-    float has = step(0.6, hash12(id + fl * 17.0)) * (1.0 - smoothstep(0.96, 1.0, dl));
-    float rim = smoothstep(0.65, 1.0, dl);
-    float spec = exp(-dot(d - vec2(-0.35, 0.4), d - vec2(-0.35, 0.4)) * 25.0);
-    col = mix(col, vec3(0.88, 0.98, 1.0), has * (0.1 + 0.55 * rim));
-    col += vec3(1.0) * has * spec * 0.85;
-  }
-  gl_FragColor = vec4(min(col, vec3(1.0)), 1.0);
-}
-`,
 };
 
 export const PIPE_FS: Record<GpuPipe, string> = {
@@ -655,59 +558,4 @@ void main() {
 }
 `,
 
-  diesel: PIPE + `
-void main() {
-  float x = v_flow.y;
-  float y = v_u / u_T;
-  float t = u_time;
-  float rnd = 1.0 - x * x;
-  vec3 col = vec3(0.06, 0.055, 0.05) * (0.6 + 0.6 * rnd);
-  // Combustion pulses on the engine's beat.
-  float beat = fract(y * 0.07 - t * 1.1);
-  float pulse = smoothstep(0.0, 0.06, beat) * (1.0 - smoothstep(0.06, 0.5, beat));
-  float turb = fbm(vec2(x * 2.0, y * 0.5 - t * 2.4));
-  vec3 fire = mix(vec3(0.85, 0.25, 0.02), vec3(1.0, 0.72, 0.28), turb);
-  col += fire * pulse * (0.35 + 0.9 * turb) * rnd * 1.2;
-  col += vec3(0.5, 0.12, 0.0) * smoothstep(0.6, 0.85, turb) * 0.35 * rnd;
-  // Black smoke.
-  float smoke = smoothstep(0.42, 0.82, fbm(vec2(x * 1.5 + 2.0, y * 0.45 - t * 1.6)));
-  col = mix(col, vec3(0.015), smoke * 0.65 * (1.0 - pulse * 0.6));
-  // Sparks thrown by each pulse.
-  vec2 eg = vec2(x * 1.6 + 7.0, y * 0.9 - t * 5.0);
-  vec2 ci = floor(eg);
-  vec2 d = (fract(eg) - (hash22(ci + 3.1) * 0.7 + 0.15)) * vec2(1.0, 0.55);
-  float spark = step(0.8, hash12(ci)) * exp(-dot(d, d) * 160.0) * (0.3 + pulse);
-  col += vec3(1.0, 0.8, 0.45) * clamp(spark, 0.0, 1.0);
-  float alpha = 0.93 * (1.0 - smoothstep(0.86, 1.0, abs(x)));
-  gl_FragColor = vec4(min(col, vec3(1.0)) * alpha, alpha);
-}
-`,
-
-  aero: PIPE + `
-void main() {
-  float x = v_flow.y;
-  float y = v_u / u_T;
-  float t = u_time;
-  float rnd = 1.0 - x * x;
-  vec3 col = mix(vec3(0.15, 0.62, 0.95), vec3(0.4, 0.92, 0.55), 0.5 + 0.5 * sin(y * 0.12 - t * 0.5));
-  col *= 0.7 + 0.4 * rnd;
-  col += vec3(0.3, 0.4, 0.3) * smoothstep(0.55, 0.85, fbm(vec2(x * 1.5, y * 0.35 - t * 0.9))) * 0.5;
-  // Big glossy bubbles.
-  vec2 bq = vec2(x * 0.8 + 3.0, y * 1.0 - t * 1.3);
-  vec2 bi = floor(bq);
-  vec2 bf = fract(bq) - 0.5 - (hash22(bi) - 0.5) * 0.3;
-  float br = 0.16 + 0.14 * hash12(bi + 2.0);
-  vec2 bd = vec2(bf.x, bf.y * 1.67) / br;
-  float bl = length(bd);
-  float has = step(0.5, hash12(bi + 7.0)) * (1.0 - smoothstep(0.95, 1.0, bl));
-  float ring = smoothstep(0.6, 0.95, bl);
-  float spot = 1.0 - smoothstep(0.0, 0.35, length(bd - vec2(-0.35, 0.35)));
-  col = mix(col, vec3(0.92, 1.0, 1.0), has * clamp(0.12 + 0.5 * ring + 0.85 * spot, 0.0, 1.0));
-  // Glossy highlights down the glass.
-  col += vec3(1.0) * exp(-pow((x + 0.48) * 6.0, 2.0)) * 0.5;
-  col += vec3(1.0) * exp(-pow((x - 0.66) * 16.0, 2.0)) * 0.22;
-  float alpha = 0.9 * (1.0 - smoothstep(0.86, 1.0, abs(x)));
-  gl_FragColor = vec4(min(col, vec3(1.0)) * alpha, alpha);
-}
-`,
 };

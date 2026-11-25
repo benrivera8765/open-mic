@@ -376,21 +376,21 @@ export type LyricsDisplay = "page" | "scroll";
 export type LibrarySort = "title" | "artist" | "recent" | "key";
 
 /** Jukebox customisation (owner, 2026-11-22). Stored by the core as unknown `ui.look` keys (UiSettings.extra), so an older core keeps them as they are. */
-export type CabinetFinish = "pearl" | "walnut" | "maple" | "aquarium" | "forge" | "ocean" | "brass" | "cyber" | "deco" | "aero";
-export type FrameStyle = "neon" | "pilaster" | "lava" | "light" | "ocean" | "fire" | "water" | "steam" | "data" | "diesel" | "aero";
+export type CabinetFinish = "pearl" | "walnut" | "maple" | "aquarium" | "forge" | "ocean" | "brass" | "cyber";
+export type FrameStyle = "neon" | "pilaster" | "lava" | "light" | "ocean" | "fire" | "water" | "steam" | "data";
 export type AccentFinish = "silver" | "red" | "iron" | "copper";
-export type BadgeField = "lapis" | "red" | "silver" | "magma" | "copper" | "carbon" | "glass";
+export type BadgeField = "lapis" | "red" | "silver" | "magma" | "copper" | "carbon";
 export type BadgeLettering = "gold" | "cream" | "ember" | "neon" | "white";
 export type BadgeRim = "lapis" | "gold";
 export type LatticeFinish = "silver" | "gold" | "iron";
 /** The warm metal of rims, rings, bezels and plates: gold chrome or bronze. */
-export type MetalFinish = "gold" | "bronze" | "chrome" | "brass" | "gunmetal";
+export type MetalFinish = "gold" | "bronze" | "chrome" | "brass";
 /** The colour lit plates, faders, focus rings and the screen's top glow take. */
-export type GlowColor = "pink" | "ember" | "aqua" | "violet" | "amber" | "lime";
+export type GlowColor = "pink" | "ember" | "aqua" | "violet" | "amber";
 /** The colour of the practice lane's note bars. */
-export type LaneBars = "pink" | "ember" | "aqua" | "violet" | "amber" | "lime";
+export type LaneBars = "pink" | "ember" | "aqua" | "violet" | "amber";
 /** A theme: a preset of every look option (and the lyric colours); "custom" = none. */
-export type ThemeId = "deluxe" | "classic" | "ocean" | "electric" | "molten" | "water" | "steampunk" | "cyberpunk" | "dieselpunk" | "aero" | "custom";
+export type ThemeId = "deluxe" | "classic" | "ocean" | "electric" | "molten" | "water" | "steampunk" | "cyberpunk" | "custom";
 export type CelebrationKind = "mix" | "starburst" | "fireworks" | "rings" | "bloom" | "inferno";
 /** How often perfect phrases are celebrated: nearly perfect ones too, every one, every 2nd / 3rd, at most every 30 s. */
 export type CelebrateFreq = "often" | "every" | "second" | "third" | "rare";

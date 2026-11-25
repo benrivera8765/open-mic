@@ -12,8 +12,8 @@ graphics card they look the same.
 |---|---|
 | `sing-molten.jpg` | singing "Twinkle, Twinkle, Little Star" at +2 in the Molten theme: fire in the pipes, a lava cabinet, the gold wipe |
 | `practice-cyberpunk.jpg` | practice mode in watch only (a perfect voice follows the melody, marked PREVIEW) in the Cyberpunk theme, with a perfect-phrase celebration |
-| `theme-deluxe.jpg`, `theme-water.jpg`, `theme-steampunk.jpg`, `theme-aero.jpg` | the library in four themes |
-| `themes.jpg` | Settings > Themes |
+| `theme-deluxe.jpg`, `theme-water.jpg`, `theme-steampunk.jpg`, `theme-ocean.jpg` | the library in four themes |
+| `themes.jpg` | Settings > Themes (the eight themes) |
 
 Content: "Twinkle, Twinkle, Little Star" (Jane Taylor, 1806), "Frère Jacques", "Row, Row,
 Row Your Boat" (1852) and "Mary Had a Little Lamb" (Sarah Josepha Hale, 1830) are public

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // A cabinet drawn on the GPU (D-272, D-275): one WebGL fragment shader over the whole
 // cabinet (shaders.ts CABINET_FS: Molten's flowing lava, the ocean, steampunk brass and
-// gears, the cyberpunk city, the dieselpunk deco panels, the Frutiger Aero sky).
+// gears, the cyberpunk city).
 //
 // Cost: rendered at half the window's resolution (device pixel ratio capped at 1.5) and
 // stretched by the compositor, 24 frames a second by default (the frame rate setting,

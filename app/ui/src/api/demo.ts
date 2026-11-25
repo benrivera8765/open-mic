@@ -12,7 +12,8 @@
 // instrumental breaks. When the engine stream's tests/fixtures/generated/
 // demo-song.jksong exists, scripts/extract-jksong-lyrics.mjs can copy its lyrics into
 // src/api/demo-song.lyrics.json, which then replaces the generated Twinkle lyrics.
-import type { LyricChar, LyricLine, LyricWord, Lyrics, SongSettings, SongSummary, StemInfo } from "./types";
+import type { LyricChar, LyricLine, LyricWord, Lyrics, PracticeGuide, SongKey, SongSettings, SongSummary, StemInfo } from "./types";
+import type { StoredGuide } from "../practice/guide";
 import { roundTime, segmentGraphemes } from "../lib/lyrics";
 
 /** A word of the score: its text and how many beats it lasts. */
@@ -209,6 +210,41 @@ export interface DemoSong {
   channels: number;
   /** Two colours for the generated cover. */
   cover: [string, string] | null;
+  /** A real song's stored melody guide and pitch curve (promoSong), served as its practice data. */
+  storedGuide?: { guide: StoredGuide; curve: PracticeGuide["curve"] };
+}
+
+/**
+ * A real song handed to the browser mock by a recording script, for promo videos and
+ * screenshots: set `window.__jkPromoSong` before the page loads (Playwright addInitScript)
+ * and the mock puts it first in the library with its own lyrics, melody guide and pitch
+ * curve. Nothing of it is in the repository or the app.
+ */
+export interface PromoSongData {
+  id: string;
+  title: string;
+  artist: string;
+  album: string | null;
+  duration_s: number;
+  key: SongKey | null;
+  tempo_bpm: number | null;
+  lyrics: Lyrics;
+  guide: StoredGuide;
+  curve: { hop_s: number; t0_s: number; midi: number[] };
+  cover: [string, string] | null;
+  /** File name the Studio's "Choose files" offers in the mock. */
+  file: string;
+}
+
+export function promoSongData(): PromoSongData | null {
+  return (globalThis as { __jkPromoSong?: PromoSongData }).__jkPromoSong ?? null;
+}
+
+export function promoSong(): DemoSong | null {
+  const d = promoSongData();
+  if (!d) return null;
+  const s = song(d.id, { title: d.title, artist: d.artist, album: d.album, duration_s: d.duration_s, key: d.key, tempo_bpm: d.tempo_bpm, file_bytes: 111_000_000, lyrics_checked: true }, d.lyrics, d.cover);
+  return { ...s, storedGuide: { guide: d.guide, curve: d.curve } };
 }
 
 const STEMS: StemInfo[] = [

@@ -1427,9 +1427,7 @@
 .jk-frame[data-jk-cabinet="forge"] .jk-console .jk-plate:disabled,
 .jk-frame[data-jk-cabinet="ocean"] .jk-console .jk-plate:disabled,
 .jk-frame[data-jk-cabinet="brass"] .jk-console .jk-plate:disabled,
-.jk-frame[data-jk-cabinet="cyber"] .jk-console .jk-plate:disabled,
-.jk-frame[data-jk-cabinet="deco"] .jk-console .jk-plate:disabled,
-.jk-frame[data-jk-cabinet="aero"] .jk-console .jk-plate:disabled {
+.jk-frame[data-jk-cabinet="cyber"] .jk-console .jk-plate:disabled {
   opacity: 1;
   filter: brightness(0.6) saturate(0.75);
 }
@@ -1440,9 +1438,7 @@
 .jk-frame[data-jk-cabinet="forge"] .jk-console,
 .jk-frame[data-jk-cabinet="ocean"] .jk-console,
 .jk-frame[data-jk-cabinet="brass"] .jk-console,
-.jk-frame[data-jk-cabinet="cyber"] .jk-console,
-.jk-frame[data-jk-cabinet="deco"] .jk-console,
-.jk-frame[data-jk-cabinet="aero"] .jk-console {
+.jk-frame[data-jk-cabinet="cyber"] .jk-console {
   text-shadow:
     0 1px 2px rgba(30, 6, 12, 0.85),
     0 0 6px rgba(30, 6, 12, 0.55);
@@ -1512,17 +1508,13 @@
 .jk-frame[data-jk-cabinet="ocean"] .jk-keydial--disabled .jk-dial,
 .jk-frame[data-jk-cabinet="brass"] .jk-keydial--disabled .jk-dial,
 .jk-frame[data-jk-cabinet="cyber"] .jk-keydial--disabled .jk-dial,
-.jk-frame[data-jk-cabinet="deco"] .jk-keydial--disabled .jk-dial,
-.jk-frame[data-jk-cabinet="aero"] .jk-keydial--disabled .jk-dial,
 .jk-frame[data-jk-cabinet="pearl"] .jk-fader--disabled,
 .jk-frame[data-jk-cabinet="maple"] .jk-fader--disabled,
 .jk-frame[data-jk-cabinet="aquarium"] .jk-fader--disabled,
 .jk-frame[data-jk-cabinet="forge"] .jk-fader--disabled,
 .jk-frame[data-jk-cabinet="ocean"] .jk-fader--disabled,
 .jk-frame[data-jk-cabinet="brass"] .jk-fader--disabled,
-.jk-frame[data-jk-cabinet="cyber"] .jk-fader--disabled,
-.jk-frame[data-jk-cabinet="deco"] .jk-fader--disabled,
-.jk-frame[data-jk-cabinet="aero"] .jk-fader--disabled {
+.jk-frame[data-jk-cabinet="cyber"] .jk-fader--disabled {
   opacity: 1;
   filter: brightness(0.6) saturate(0.7);
 }
@@ -1609,8 +1601,7 @@
 [data-jk-glow="ember"] .jk-plate--active .jk-plate-glass,
 [data-jk-glow="aqua"] .jk-plate--active .jk-plate-glass,
 [data-jk-glow="violet"] .jk-plate--active .jk-plate-glass,
-[data-jk-glow="amber"] .jk-plate--active .jk-plate-glass,
-[data-jk-glow="lime"] .jk-plate--active .jk-plate-glass {
+[data-jk-glow="amber"] .jk-plate--active .jk-plate-glass {
   background:
     radial-gradient(ellipse 90% 80% at 50% 115%, rgba(var(--jk-glow-rgb), 0.6), rgba(var(--jk-glow-rgb), 0) 70%),
     linear-gradient(180deg, #2a1c1a 0%, #140c0c 50%, #0a0606 100%);
@@ -1619,8 +1610,7 @@
 [data-jk-glow="ember"] .jk-plate--active .jk-plate-label,
 [data-jk-glow="aqua"] .jk-plate--active .jk-plate-label,
 [data-jk-glow="violet"] .jk-plate--active .jk-plate-label,
-[data-jk-glow="amber"] .jk-plate--active .jk-plate-label,
-[data-jk-glow="lime"] .jk-plate--active .jk-plate-label {
+[data-jk-glow="amber"] .jk-plate--active .jk-plate-label {
   color: #ffffff;
 }
 
@@ -1662,8 +1652,7 @@
 }
 
 /* ---------------------------------------------------------------- five more themes (owner, 2026-11-23, D-275)
-   Water, Steampunk, Cyberpunk, Dieselpunk, Frutiger Aero: new metals, copper bands, amber
-   and lime glows, and the 2D looks of the GPU cabinets and pipes (what shows without WebGL,
+   Water, Steampunk, Cyberpunk: new metals, copper bands, an amber glow, and the 2D looks of the GPU cabinets and pipes (what shows without WebGL,
    on a Mac, or with "GPU lava and fire" off). */
 
 [data-jk-metal="chrome"] {
@@ -1684,14 +1673,7 @@
   background: conic-gradient(from 200deg, #fff2c4, #d4b45c 14%, #5e4610 30%, #dcbe6c 44%, #fff4cc 56%, #a88430 70%, #4e3a0c 84%, #f0dc98 94%, #fff2c4);
 }
 
-[data-jk-metal="gunmetal"] {
-  --jk-chrome: linear-gradient(180deg, #dde3e9 0%, #9aa6b2 20%, #5a6672 44%, #1c2228 50%, #6e7a86 60%, #c4ccd4 84%, #48525c 100%);
-  --jk-chrome-h: linear-gradient(90deg, #48525c 0%, #c4ccd4 18%, #6e7a86 40%, #1c2228 50%, #5a6672 56%, #9aa6b2 80%, #dde3e9 100%);
-}
 
-[data-jk-metal="gunmetal"] .jk-dial-chrome {
-  background: conic-gradient(from 200deg, #dde3e9, #8a96a2 14%, #262d34 30%, #9aa6b2 44%, #e4eaf0 56%, #5a6672 70%, #1c2228 84%, #c4ccd4 94%, #dde3e9);
-}
 
 [data-jk-accents="copper"] {
   --jk-silver-chrome: linear-gradient(180deg, #ffd8b8 0%, #e8a070 20%, #b0602c 44%, #4a1c06 50%, #c87040 60%, #f6c4a0 84%, #9a4a20 100%);
@@ -1713,17 +1695,6 @@
   --jk-screen-bg: #14110a;
 }
 
-[data-jk-glow="lime"] {
-  --jk-pink: #7aee3a;
-  --jk-glow-rgb: 122, 238, 58;
-  --jk-glow-hi: #a8ff78;
-  --jk-glow-pale: #e0ffd0;
-  --jk-glow-deep: #2a7a10;
-  --jk-glow-base: #3ac020;
-  --jk-glow-soft: #b8ff96;
-  --jk-glass-tint: 30, 100, 50;
-  --jk-screen-bg: #0c1410;
-}
 
 /* The GPU cabinets' 2D looks. */
 .jk-frame[data-jk-cabinet="ocean"] .jk-frame-wood {
@@ -1738,20 +1709,12 @@
   background: linear-gradient(180deg, #02060c 0%, #061420 60%, #0a2030 100%);
 }
 
-.jk-frame[data-jk-cabinet="deco"] .jk-frame-wood {
-  background: linear-gradient(180deg, #2a3238 0%, #1a2026 60%, #303a42 100%);
-}
 
-.jk-frame[data-jk-cabinet="aero"] .jk-frame-wood {
-  background: linear-gradient(180deg, #1a6ad8 0%, #6ac8ff 60%, #5ad050 88%, #3aa83a 100%);
-}
 
 /* The glass pipes: their light at half strength, and screen strips to match. */
 .jk-frame[data-jk-frame-style="water"] .jk-light,
 .jk-frame[data-jk-frame-style="steam"] .jk-light,
-.jk-frame[data-jk-frame-style="data"] .jk-light,
-.jk-frame[data-jk-frame-style="diesel"] .jk-light,
-.jk-frame[data-jk-frame-style="aero"] .jk-light {
+.jk-frame[data-jk-frame-style="data"] .jk-light {
   opacity: 0.5;
 }
 
@@ -1767,13 +1730,7 @@
   background: linear-gradient(180deg, #d8fbff 0%, #2ae0ff 30%, #1a6aff 65%, #ffd23a 100%);
 }
 
-.jk-frame[data-jk-frame-style="diesel"] .jk-screen-strip {
-  background: linear-gradient(180deg, #ffe0a0 0%, #ffa030 30%, #8a3a10 70%, #2a1408 100%);
-}
 
-.jk-frame[data-jk-frame-style="aero"] .jk-screen-strip {
-  background: linear-gradient(180deg, #ffffff 0%, #bff6ff 30%, #4ab8ff 65%, #7aee3a 100%);
-}
 
 /* The console's bare readouts (time, CLIP) sit on the cabinet, which can be bright lava,
    a neon city or a sunny sky: a small dark pill like the fader labels keeps them legible

@@ -83,11 +83,11 @@ export function roomSvg(g: FrameGeometry, waterBacking: boolean | "fire" = false
  * The border round the screen: neon bubble tubes, pearl pilasters (owner's photo 7), a
  * lava lamp, or a lightning tube of blue water ("light", the name it was saved under first).
  */
-export type FrameStyleName = "neon" | "pilaster" | "lava" | "light" | "ocean" | "fire" | "water" | "steam" | "data" | "diesel" | "aero";
+export type FrameStyleName = "neon" | "pilaster" | "lava" | "light" | "ocean" | "fire" | "water" | "steam" | "data";
 
 /**
  * Glass pipes whose contents are drawn on the GPU (PipeGL.tsx; D-272, D-275): fire, water
- * coursing through, steam, cyberpunk data, diesel exhaust, Frutiger Aero liquid. This art
+ * coursing through, steam, cyberpunk data. This art
  * draws only the clear glass, tinted by what is inside.
  */
 export const GLASS_PIPES: Readonly<Partial<Record<FrameStyleName, string>>> = {
@@ -95,16 +95,14 @@ export const GLASS_PIPES: Readonly<Partial<Record<FrameStyleName, string>>> = {
   water: "#9fe0ff",
   steam: "#f2f5f8",
   data: "#7ae8ff",
-  diesel: "#ffb060",
-  aero: "#e0fbff",
 };
 /** The bands between the chrome rings: silver chrome (owner, 2026-11-22) or the original red enamel. */
 export type AccentName = "silver" | "red" | "iron" | "copper";
 /** The warm metal of the rings, domes and bands: gold chrome or bronze (Molten). */
-export type MetalName = "gold" | "bronze" | "chrome" | "brass" | "gunmetal";
+export type MetalName = "gold" | "bronze" | "chrome" | "brass";
 
 /** The cabinet finish (the column bases match it). */
-export type CabinetName = "walnut" | "maple" | "pearl" | "aquarium" | "forge" | "ocean" | "brass" | "cyber" | "deco" | "aero";
+export type CabinetName = "walnut" | "maple" | "pearl" | "aquarium" | "forge" | "ocean" | "brass" | "cyber";
 
 export interface FrameArtOptions {
   style?: FrameStyleName;
@@ -136,11 +134,6 @@ const METALS: Record<MetalName, { ring: Stops; dome: Stops; ringH: Stops }> = {
     ring: [[0, "#fff2c4"], [0.25, "#dcc070"], [0.5, "#6e5216"], [0.62, "#b4943c"], [0.85, "#f0dc98"], [1, "#806020"]],
     dome: [[0, "#fff2c4"], [0.5, "#c8a44a"], [1, "#5a4210"]],
     ringH: [[0, "#fff2c4"], [0.3, "#d4b660"], [0.55, "#6a4e14"], [0.8, "#ecd690"], [1, "#8c6a24"]],
-  },
-  gunmetal: {
-    ring: [[0, "#d8dfe6"], [0.25, "#8a96a2"], [0.5, "#262d34"], [0.62, "#58636e"], [0.85, "#b4bec8"], [1, "#3a434c"]],
-    dome: [[0, "#e4eaf0"], [0.5, "#6a7680"], [1, "#1c2228"]],
-    ringH: [[0, "#d8dfe6"], [0.3, "#7a8692"], [0.55, "#262d34"], [0.8, "#aeb8c2"], [1, "#46505a"]],
   },
 };
 
@@ -208,22 +201,6 @@ const BASE_FINISH: Record<CabinetName, [number, string][]> = {
     [0.5, "#05080c"],
     [0.92, "#0a141c"],
     [1, "#ffd23a"],
-  ],
-  // Dieselpunk: gunmetal.
-  deco: [
-    [0, "#101418"],
-    [0.32, "#5a6670"],
-    [0.52, "#3a444c"],
-    [0.8, "#6a7680"],
-    [1, "#0c1014"],
-  ],
-  // Frutiger Aero: glossy white and sky blue.
-  aero: [
-    [0, "#5aa8e0"],
-    [0.3, "#e8f8ff"],
-    [0.5, "#ffffff"],
-    [0.75, "#bfe8ff"],
-    [1, "#4a98d0"],
   ],
   // Aquarium: dark slate stone, like the base of a fish tank stand.
   aquarium: [
