@@ -165,3 +165,58 @@ describe("lane renderer: the blits put every bar where the pitch rule says", () 
 function e2eTileWidth(bars: BlitEntry[]): number {
   return Math.max(0, ...bars.map((b) => b.dw));
 }
+
+describe("lane renderer: backing vocals (D-282)", () => {
+  /** A canvas whose 2D context records each word drawn with its colour and alpha. */
+  function recordingCanvas(log: { text: string; fill: string; alpha: number }[]) {
+    const state = { fillStyle: "#000", globalAlpha: 1 };
+    const stack: (typeof state)[] = [];
+    const target: Record<string, unknown> = {
+      createLinearGradient: () => ({ addColorStop: () => undefined }),
+      measureText: (t: string) => ({ width: t.length * 7 }),
+      save: () => stack.push({ ...state }),
+      restore: () => Object.assign(state, stack.pop() ?? state),
+      fillText: (t: string) => log.push({ text: t, fill: String(state.fillStyle), alpha: state.globalAlpha }),
+    };
+    const ctx = new Proxy(target, {
+      get(t, k: string) {
+        if (k in state) return state[k as keyof typeof state];
+        if (k in t) return t[k];
+        return () => undefined;
+      },
+      set(t, k: string, v) {
+        if (k in state) (state as Record<string, unknown>)[k] = v;
+        else t[k] = v;
+        return true;
+      },
+    });
+    return { width: 0, height: 0, getContext: () => ctx };
+  }
+
+  it("draws words in parentheses dimmed in the upcoming colour on both sides of the playhead", () => {
+    const lyr = JSON.parse(JSON.stringify(demo.lyrics)) as typeof demo.lyrics;
+    const ws = lyr!.lines[0].words;
+    ws[0].chars[0][0] = "(" + ws[0].chars[0][0];
+    const last = ws[1].chars[ws[1].chars.length - 1];
+    last[0] = last[0] + ")";
+    const text = (i: number) => ws[i].chars.map((c) => c[0]).join("").trim();
+    const L = layoutLane(guide, lyr, demo.duration_s, { width: 1200, height: 270, pianoSide: "left", words: true, scale: 1, dpr: 1 }, (t, px) => t.length * px * 0.55);
+    const log: { text: string; fill: string; alpha: number }[] = [];
+    const r = new LaneRenderer(recordingCanvas(log) as unknown as HTMLCanvasElement, () => recordingCanvas(log) as unknown as HTMLCanvasElement);
+    r.setSize(1200, 270, 1);
+    const SUNG = "#ffc21a";
+    const UP = "#f4f4f4";
+    r.setLayout(L, { sung: SUNG, marker: "#7dffd8", upcoming: UP, bar: "#ff3d8b", wordFont: "sans-serif", wordWeight: "700", labelFont: "sans-serif" }, false);
+    for (let t = 0; t < lyr!.lines[0].end + 2; t += 0.25) r.draw(inputs(t, steady(0, 0)));
+    for (const i of [0, 1]) {
+      const drawn = log.filter((e) => e.text === text(i));
+      expect(drawn.length, text(i)).toBeGreaterThanOrEqual(2);
+      expect(drawn.every((e) => e.fill === UP && e.alpha === 0.5), JSON.stringify(drawn)).toBe(true);
+    }
+    // The singer's words are unchanged: full strength, sung colour once sung.
+    const sungWord = log.filter((e) => e.text === text(2));
+    expect(sungWord.some((e) => e.fill === SUNG && e.alpha === 1)).toBe(true);
+    expect(sungWord.some((e) => e.fill === UP && e.alpha === 1)).toBe(true);
+    expect(sungWord.every((e) => e.alpha === 1)).toBe(true);
+  });
+});

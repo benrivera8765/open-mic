@@ -232,6 +232,11 @@ original audio itself is never resampled by the Studio.
 - `confidence` (0..1) is optional.
 - Lines may carry an optional `"kind": "backing"` in later versions; readers ignore
   unknown keys everywhere.
+- Backing vocals (DECISIONS D-282): words written in parentheses, `(` `)` or `（` `）`
+  ("(Can't help myself) I get so lonely"), and the words of a line with
+  `"kind": "backing"`, are the backing singers', not the lead's. Readers show them as
+  secondary and give them no practice bars or grade. The exact rule is
+  `jk_format::Lyrics::backing_words`; nothing is stored for it.
 
 ## 6. Settings slots
 

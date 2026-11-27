@@ -39,6 +39,7 @@ import type { NoteSpelling, OctaveMode, PracticeGuide } from "../api/types";
 import type { LiveStore } from "./live";
 import { foldCents, isBlackKey, type KeyView, keyAt, laneOf, noteName } from "./pitch";
 import type { Lyrics } from "../api/types";
+import { backingWords } from "../lib/lyrics";
 
 export type Measure = (text: string, fontPx: number) => number;
 
@@ -114,6 +115,8 @@ export interface LaneWord {
   w: number;
   /** Drawn this far right of its start (px) because the rows were full there (0 almost always). */
   shift: number;
+  /** Backing vocals (in parentheses, D-282): drawn dimmed, never in the sung colour. */
+  backing: boolean;
 }
 
 export interface LaneLayout {
@@ -234,6 +237,7 @@ export function layoutLane(guide: PracticeGuide, lyrics: Lyrics | null, duration
       const t = firstBar.get(n.word);
       if (t === undefined || n.start < t) firstBar.set(n.word, n.start);
     }
+    const backing = backingWords(lyrics);
     for (const [li, line] of lyrics.lines.entries()) {
       for (const [wi, wd] of line.words.entries()) {
         const text = wd.chars.map((c) => c[0]).join("").trim();
@@ -248,7 +252,7 @@ export function layoutLane(guide: PracticeGuide, lyrics: Lyrics | null, duration
           shift = rowEnd[row] + gap - x;
         }
         rowEnd[row] = x + shift + w;
-        words.push({ start, text, row, w, shift });
+        words.push({ start, text, row, w, shift, backing: backing[li]?.[wi] === true });
         wordRows = Math.max(wordRows, row + 1);
       }
     }

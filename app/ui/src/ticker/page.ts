@@ -58,6 +58,7 @@
 // Pure TypeScript with an injected `measure`, like layout.ts: the tests use fixed widths
 // and the lyrics face's width table, the renderer measures with Canvas 2D.
 import type { Lyrics, LyricsMotion } from "../api/types";
+import { backingWords } from "../lib/lyrics";
 import { COUNTDOWN_MIN_GAP_S, LEAD_S, LOOKAHEAD_S, type Measure, type PlacedGlyph, type PlacedWord, placeWords, shareSeparator, withoutEmptyLines, wordKnots } from "./layout";
 import { type Knot, MonotoneSpline } from "./motion";
 import { type Motion, RampMotion, straightenKnots } from "./wordmotion";
@@ -228,18 +229,21 @@ interface Src {
   start: number;
   end: number;
   word: number;
+  /** Its word is backing vocals (in parentheses, D-282). */
+  backing: boolean;
 }
 
 /** Graphemes per line with sanitised times (monotone across the song, start <= end), as layout.ts does. */
 function sanitized(lyrics: Lyrics): Src[][] {
   let prevEnd = -Infinity;
-  return lyrics.lines.map((line) => {
+  const backing = backingWords(lyrics);
+  return lyrics.lines.map((line, li) => {
     const out: Src[] = [];
     line.words.forEach((w, wi) => {
       for (const c of w.chars) {
         const start = Math.max(c[1], prevEnd);
         const end = Math.max(c[2], start);
-        out.push({ g: c[0], start, end, word: wi });
+        out.push({ g: c[0], start, end, word: wi, backing: backing[li]?.[wi] === true });
         prevEnd = end;
       }
     });
@@ -300,7 +304,7 @@ function placeRun(src: Src[], line: number, px: number, widthOf: WidthOf): Run {
       spans.push({ first: glyphs.length, last: glyphs.length, u0: u, u1: u });
     }
     const w = widthOf(s.g, px);
-    glyphs.push({ g: s.g, x: u, w, px, start: s.start, end: s.end, line, word: s.word, L: u, R: u + w, timed: s.end - s.start > EPS_T });
+    glyphs.push({ g: s.g, x: u, w, px, start: s.start, end: s.end, line, word: s.word, L: u, R: u + w, timed: s.end - s.start > EPS_T, backing: s.backing });
     u += w;
     const sp = spans[spans.length - 1];
     sp.last = glyphs.length - 1;

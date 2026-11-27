@@ -49,6 +49,7 @@
 // Pure TypeScript with an injected `measure` function: the tests use fixed per-character
 // widths, the renderer uses CanvasRenderingContext2D.measureText.
 import type { LyricsMotion, Lyrics } from "../api/types";
+import { backingWords } from "../lib/lyrics";
 import { MonotoneSpline, type Knot } from "./motion";
 import { type FloatingKnot, LINGER_S, type Motion, RampMotion, straightenKnots, WORD_TOLERANCE_S } from "./wordmotion";
 
@@ -106,6 +107,9 @@ export interface PlacedGlyph {
   R: number;
   /** False for zero-length graphemes, which are never "being sung". */
   timed: boolean;
+  /** Backing vocals (its word is in parentheses; owner 2026-11-27, D-282): drawn dimmed, in
+   * the upcoming colour even once sung. */
+  backing?: boolean;
 }
 
 export interface PlacedLine {
@@ -246,6 +250,7 @@ type Placed = Omit<TickerLayout, "worstLookahead" | "fontScale" | "minLineScale"
  */
 function placeOnce(lyrics: Lyrics, p: Required<TickerParams>, fontPx: number, measure: Measure, factor: ArrayLike<number> | null = null): Placed {
   const flat = flatten(lyrics);
+  const backing = backingWords(lyrics);
   const caches = new Map<number, Map<string, number>>();
   const widthOf = (g: string, px: number) => {
     let cache = caches.get(px);
@@ -305,7 +310,7 @@ function placeOnce(lyrics: Lyrics, p: Required<TickerParams>, fontPx: number, me
       wi = f.word;
     }
     const w = widthOf(f.g, px);
-    glyphs.push({ g: f.g, x, w, px, start: f.start, end: f.end, line: f.line, word: f.word, L: x, R: x + w, timed: f.end - f.start > EPS_T });
+    glyphs.push({ g: f.g, x, w, px, start: f.start, end: f.end, line: f.line, word: f.word, L: x, R: x + w, timed: f.end - f.start > EPS_T, backing: backing[f.line]?.[f.word] === true });
     x += w;
     const line = lines[lines.length - 1];
     line.end = f.end;

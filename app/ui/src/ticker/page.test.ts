@@ -48,6 +48,7 @@ import {
   sidePad,
   TRANSITION_S,
 } from "./page";
+import { PageRenderer } from "./pagerenderer";
 import { lineAsTicker, NEEDLE_TOLERANCE_PX, type PageVerifyReport, SWITCH_MAX_S, verifyPage } from "./pageverify";
 import { frameSmoothness } from "./verify";
 import { WORD_TOLERANCE_S } from "./wordmotion";
@@ -479,5 +480,51 @@ describe("page display: random songs (zero-length and held letters, overlaps, on
       if (fail && bad.length < 5) bad.push(`seed ${seed}: unseen ${unseen}, ${r.firstProblems.slice(0, 2).join(" | ")}`);
     }
     expect(bad).toEqual([]);
+  });
+});
+
+describe("page display: backing vocals (words in parentheses, D-282)", () => {
+  // Owner 2026-11-27: "words in parentheses show as words that you're supposed to sing".
+  const lyrics = song(said("(Zap Kix) we go", 2, 0.4), said("then (Vuz) home", 5, 0.4));
+
+  it("flags the glyphs of words in parentheses, in every line, and nothing else", () => {
+    const l = layoutPage(lyrics, AREA, measure);
+    const flagged = l.lines.map((ln) => ln.glyphs.filter((g) => g.backing).map((g) => g.g).join(""));
+    expect(flagged).toEqual(["(ZapKix)", "(Vuz)"]);
+    const plain = layoutPage(song(said("Zap Kix we go", 2, 0.4), said("then Vuz home", 5, 0.4)), AREA, measure);
+    expect(plain.lines.every((ln) => ln.glyphs.every((g) => !g.backing))).toBe(true);
+  });
+
+  it("draws them dimmed in the upcoming colour, outline too, in the sung bitmap as well", () => {
+    const log: { op: string; text: string; fill: string; alpha: number }[] = [];
+    const recording = () => {
+      const state: Record<string, unknown> = { fillStyle: "#000", globalAlpha: 1 };
+      const target: Record<string, unknown> = {
+        measureText: () => ({ width: 10, fontBoundingBoxAscent: 40, fontBoundingBoxDescent: 10, actualBoundingBoxAscent: 40, actualBoundingBoxDescent: 10 }),
+        fillText: (t: string) => log.push({ op: "fill", text: t, fill: String(state.fillStyle), alpha: Number(state.globalAlpha) }),
+        strokeText: (t: string) => log.push({ op: "stroke", text: t, fill: "", alpha: Number(state.globalAlpha) }),
+        createLinearGradient: () => ({ addColorStop: () => undefined }),
+      };
+      const ctx = new Proxy(target, {
+        get: (t, k: string) => (k in state ? state[k] : k in t ? t[k] : () => undefined),
+        set: (t, k: string, v) => {
+          if (k in state) state[k] = v;
+          else t[k] = v;
+          return true;
+        },
+      });
+      return { width: 0, height: 0, getContext: () => ctx } as unknown as HTMLCanvasElement;
+    };
+    const r = new PageRenderer(recording(), recording);
+    r.setSize(AREA.width, AREA.height, 1);
+    r.setLayout(layoutPage(lyrics, AREA, measure), { fontFamily: "sans-serif", fontWeight: "800", sung: "#ffc21a", upcoming: "#f4f4f4", outline: "#000", shadow: "rgba(0,0,0,0.5)" });
+    for (let t = 0; t <= 8; t += 0.1) r.draw(t);
+    const of = (chars: string, op: string) => log.filter((e) => e.op === op && chars.includes(e.text));
+    expect(of("(ZapKix)Vuz", "fill").length).toBeGreaterThan(0);
+    expect(of("(ZapKix)Vuz", "fill").filter((e) => !(e.fill === "#f4f4f4" && e.alpha === 0.5))).toEqual([]);
+    expect(of("(ZapKix)Vuz", "stroke").every((e) => e.alpha === 0.5)).toBe(true);
+    expect(of("wgt", "fill").some((e) => e.fill === "#ffc21a" && e.alpha === 1)).toBe(true);
+    expect(of("wgt", "fill").every((e) => e.alpha === 1)).toBe(true);
+    expect(of("wgt", "stroke").every((e) => e.alpha === 1)).toBe(true);
   });
 });

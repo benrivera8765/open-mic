@@ -257,3 +257,99 @@ export function realignRequest(lyrics: Lyrics, anchoredLines: Iterable<number>):
     .map((i) => ({ line: i, start: lyrics.lines[i].start }));
   return { text: lyricsText(lyrics), anchors };
 }
+
+// ---------------------------------------------------------------------------
+// Backing vocals (owner, 2026-11-27: "words in parentheses show as words that you're
+// supposed to sing"; DECISIONS D-282)
+// ---------------------------------------------------------------------------
+
+const OPENS = new Set(["(", "\uFF08"]);
+const CLOSES = new Set([")", "\uFF09"]);
+/** A letter or digit: Rust's `char::is_alphanumeric` (Alphabetic or a number). */
+const COUNTS = /[\p{Alphabetic}\p{N}]/u;
+
+/** Code points of a word's text. */
+const codePoints = (w: LyricWord): string[] => Array.from(wordText(w));
+
+function closesUnopened(line: LyricLine): boolean {
+  let depth = 0;
+  for (const w of line.words)
+    for (const c of codePoints(w)) {
+      if (OPENS.has(c)) depth++;
+      else if (CLOSES.has(c)) {
+        if (depth === 0) return true;
+        depth--;
+      }
+    }
+  return false;
+}
+
+/**
+ * Which words are backing vocals, not the singer's to sing: one flag per word, per line.
+ * Lyrics put what the backing singers sing in parentheses: "(Can't help myself) I get so
+ * lonely". A word is backing when every letter or digit of it lies inside parentheses
+ * (`(` `)` or the full-width `（` `）`), or when its line carries `"kind": "backing"`. A word
+ * with no letter or digit is backing when it starts inside parentheses or holds one.
+ * Parentheses opened on one line and closed on the next carry over to it (a line with no text
+ * in between is passed over, so views that drop such lines get the same flags, whatever kind
+ * they carry); one never closed ends with its line. When every word with a letter or digit
+ * would be backing, none is.
+ *
+ * The same rule decides which words get practice bars in the core
+ * (crates/jk-format/src/lyrics.rs `Lyrics::backing_words`); change both together.
+ * Backing words are drawn dimmed and never take the sung colour (ticker, page, practice lane).
+ */
+export function backingWords(lyrics: Lyrics | null | undefined): boolean[][] {
+  if (!lyrics) return [];
+  const out: boolean[][] = [];
+  let carry = false;
+  // Some word with a letter or digit, and some such word that is the singer's.
+  let anyLetters = false;
+  let leadLetters = false;
+  const hasLetters = (w: LyricWord) => codePoints(w).some((c) => COUNTS.test(c));
+  for (const line of lyrics.lines) {
+    if (line.words.every((w) => w.chars.length === 0)) {
+      out.push(line.words.map(() => false));
+      continue;
+    }
+    if (line.kind === "backing") {
+      out.push(line.words.map(() => true));
+      if (line.words.some(hasLetters)) anyLetters = true;
+      carry = false;
+      continue;
+    }
+    let depth: number = carry && closesUnopened(line) ? 1 : 0;
+    const flags: boolean[] = [];
+    for (const w of line.words) {
+      const startDepth = depth;
+      let letters = 0;
+      let inside = 0;
+      let paren = false;
+      for (const c of codePoints(w)) {
+        if (OPENS.has(c)) {
+          depth++;
+          paren = true;
+        } else if (CLOSES.has(c)) {
+          depth = Math.max(0, depth - 1);
+          paren = true;
+        } else if (COUNTS.test(c)) {
+          letters++;
+          if (depth > 0) inside++;
+        }
+      }
+      const backing = letters > 0 ? inside === letters : startDepth > 0 || paren;
+      if (letters > 0) {
+        anyLetters = true;
+        if (!backing) leadLetters = true;
+      }
+      flags.push(backing);
+    }
+    carry = depth > 0;
+    out.push(flags);
+  }
+  if (anyLetters && !leadLetters) return out.map((f) => f.map(() => false));
+  return out;
+}
+
+/** How bright backing words are drawn, against the singer's words (alpha). */
+export const BACKING_ALPHA = 0.5;

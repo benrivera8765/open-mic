@@ -280,3 +280,23 @@ describe("practice lane: names, range, key heard", () => {
     expect(FUTURE_S).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe("practice lane: backing vocals (D-282)", () => {
+  // Owner 2026-11-27: "words in parentheses show as words that you're supposed to sing".
+  it("flags the words in parentheses as backing, and only those", () => {
+    const plain = layoutLane(demoGuide, demo.lyrics, demo.duration_s, SIZES[0], measure);
+    expect(plain.words.length).toBeGreaterThan(4);
+    expect(plain.words.every((w) => !w.backing)).toBe(true);
+    const lyr = JSON.parse(JSON.stringify(demo.lyrics)) as typeof demo.lyrics;
+    const ws = lyr!.lines[0].words;
+    ws[0].chars[0][0] = "(" + ws[0].chars[0][0];
+    const last = ws[1].chars[ws[1].chars.length - 1];
+    last[0] = last[0] + ")";
+    const text = (i: number) => ws[i].chars.map((c) => c[0]).join("").trim();
+    const L = layoutLane(demoGuide, lyr, demo.duration_s, SIZES[0], measure);
+    expect(L.words.length).toBe(plain.words.length);
+    expect(L.words.filter((w) => w.backing).map((w) => w.text)).toEqual([text(0), text(1)]);
+    // Nothing else about the strip moves.
+    expect(L.words.map((w) => [w.start, w.row])).toEqual(plain.words.map((w) => [w.start, w.row]));
+  });
+});

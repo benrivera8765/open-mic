@@ -1019,7 +1019,8 @@ interface PracticeGuide {
            glide_in: number; word: [number, number] | null }[];   // [line, word] of the effective lyrics
   spans: { start: number; end: number; kind: string }[];          // spoken / breath: "speak" bars, never graded
   curve: { hop_s: number; t0_s: number; midi: number[] } | null;  // 0 = unvoiced; two decimals (~150 kB per 4 min)
-  lines: { line: number; start: number; end: number }[];          // rows of the breakdown (lyric lines, else phrases)
+  lines: { line: number; start: number; end: number }[];          // rows of the breakdown (lyric lines, else phrases);
+                                                                   // a line of backing vocals only (SONG_FORMAT 5, D-282) has none
 }
 ```
 

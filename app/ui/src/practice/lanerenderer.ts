@@ -29,6 +29,7 @@
 // lanerenderer.test.ts); the marker and the tail are drawn exactly, the lit parts with the
 // same dx / dy as the bars under them.
 import { formatCountdown } from "../lib/format";
+import { BACKING_ALPHA } from "../lib/lyrics";
 import type { TickerStats } from "../ticker/renderer";
 import { firstNoteFrom, firstWordFrom, type LaneFrame, type LaneInputs, type LaneLayout, laneFrame, xOf, yOf } from "./lane";
 import { displayName, isBlackKey, noteName } from "./pitch";
@@ -402,6 +403,17 @@ export class LaneRenderer {
       const wx = x(wd.start) + wd.shift;
       if (wx + wd.w < 0) continue;
       const by = wd.row * line + L.wordPx * 1.02;
+      if (wd.backing) {
+        // Backing vocals (words in parentheses; owner 2026-11-27, D-282): dimmed, in the
+        // upcoming colour on both sides of the playhead, so they never read as the singer's.
+        g.save();
+        g.globalAlpha = BACKING_ALPHA;
+        g.fillStyle = st.upcoming;
+        g.strokeText(wd.text, wx, by);
+        g.fillText(wd.text, wx, by);
+        g.restore();
+        continue;
+      }
       g.strokeText(wd.text, wx, by);
       g.fillText(wd.text, wx, by);
     }

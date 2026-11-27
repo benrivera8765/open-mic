@@ -16,6 +16,7 @@
 import { formatCountdown } from "../lib/format";
 import type { TickerLayout } from "./layout";
 import { restAt } from "./layout";
+import { BACKING_ALPHA } from "../lib/lyrics";
 
 export const TILE_CSS = 1024;
 
@@ -174,6 +175,16 @@ export class TickerRenderer {
       if (g.px !== px) {
         px = g.px;
         ctx.font = this.font(px);
+      }
+      if (g.backing) {
+        // Backing vocals (words in parentheses, D-282): dimmed, in the upcoming colour in
+        // the sung tile too, so the marker never lights them as the singer's.
+        ctx.globalAlpha = BACKING_ALPHA;
+        ctx.fillStyle = this.style!.upcoming;
+        ctx.fillText(g.g, g.x - x0, this.baseline);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = color;
+        continue;
       }
       ctx.fillText(g.g, g.x - x0, this.baseline);
     }

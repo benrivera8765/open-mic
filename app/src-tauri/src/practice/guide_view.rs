@@ -106,7 +106,8 @@ impl SessionGuide {
         // The melody as the singer reads it: notes on piano keys, slivers folded in (D-251).
         // Lane and grade both read this, so what is drawn is what is graded.
         jk_guide::singable::singable(&mut doc);
-        // Bars follow the words: none where nothing is sung, none held into the echo (D-280).
+        // Bars follow the words: none where nothing is sung, none held into the echo (D-280),
+        // none under backing vocals (words in parentheses, D-282).
         jk_guide::singable::fit_to_words(&mut doc, lyrics.as_ref(), offset_ms);
         let offset_s = offset_ms as f64 / 1000.0;
         let notes: Vec<ScoreNote> = doc
@@ -124,11 +125,14 @@ impl SessionGuide {
             })
             .collect();
         let (lines, basis) = match &lyrics {
+            // A line of backing vocals only is not the singer's line: no result row (D-282).
             Some(l) if !l.lines.is_empty() => (
                 l.lines
                     .iter()
                     .enumerate()
-                    .map(|(i, line)| LineSpan { line: i as i64, start: line.start + offset_s, end: line.end + offset_s })
+                    .zip(l.backing_words())
+                    .filter(|(_, b)| !(!b.is_empty() && b.iter().all(|&x| x)))
+                    .map(|((i, line), _)| LineSpan { line: i as i64, start: line.start + offset_s, end: line.end + offset_s })
                     .collect(),
                 LineBasis::Lyrics,
             ),

@@ -45,6 +45,7 @@ import { MonotoneSpline } from "./motion";
 import { RampMotion, straightenKnots, WORD_TOLERANCE_S } from "./wordmotion";
 import { readJksong } from "./jksong-node";
 import { lyricsFaceMeasure } from "./lyrics-face-widths";
+import { TickerRenderer } from "./renderer";
 
 // ---------------------------------------------------------------------------
 // Deterministic text measurement: fixed advance per character (em).
@@ -771,5 +772,52 @@ describe("word pace details", () => {
       expect(out[j].t).toBeLessThanOrEqual(knots[j].hi + 1e-12);
     }
     expect(out[3].t - out[2].t).toBeGreaterThan(0.05);
+  });
+});
+
+describe("backing vocals (words in parentheses, D-282)", () => {
+  // Owner 2026-11-27: "words in parentheses show as words that you're supposed to sing".
+  const words = [
+    { text: "(Oh", start: 1, end: 1.4 },
+    { text: "my)", start: 1.5, end: 1.9 },
+    { text: "we", start: 2.2, end: 2.5 },
+    { text: "go", start: 2.6, end: 3.2 },
+  ];
+
+  it("flags the glyphs of words in parentheses and leaves the layout as it was", () => {
+    const withParens = layoutTicker(oneLine(words), { width: 1000, marker: 0.3, fontPx: 40 }, shimMeasure);
+    expect(withParens.glyphs.filter((g) => g.backing).map((g) => g.g).join("")).toBe("(Ohmy)");
+    expect(withParens.glyphs.filter((g) => !g.backing).map((g) => g.g).join("")).toBe("wego");
+    const plain = layoutTicker(oneLine(words.map((w) => ({ ...w, text: w.text.replace(/[()]/g, "") }))), { width: 1000, marker: 0.3, fontPx: 40 }, shimMeasure);
+    expect(plain.glyphs.every((g) => !g.backing)).toBe(true);
+  });
+
+  it("draws them dimmed in the upcoming colour in the sung tiles too", () => {
+    const log: { text: string; fill: string; alpha: number }[] = [];
+    const recording = () => {
+      const state: Record<string, unknown> = { fillStyle: "#000", globalAlpha: 1 };
+      const target: Record<string, unknown> = {
+        measureText: () => ({ width: 10, fontBoundingBoxAscent: 30, fontBoundingBoxDescent: 8 }),
+        fillText: (t: string) => log.push({ text: t, fill: String(state.fillStyle), alpha: Number(state.globalAlpha) }),
+      };
+      const ctx = new Proxy(target, {
+        get: (t, k: string) => (k in state ? state[k] : k in t ? t[k] : () => undefined),
+        set: (t, k: string, v) => {
+          if (k in state) state[k] = v;
+          else t[k] = v;
+          return true;
+        },
+      });
+      return { width: 0, height: 0, getContext: () => ctx } as unknown as HTMLCanvasElement;
+    };
+    const r = new TickerRenderer(recording(), recording);
+    r.setSize(1000, 80, 1);
+    r.setLayout(layoutTicker(oneLine(words), { width: 1000, marker: 0.3, fontPx: 40 }, shimMeasure), { fontFamily: "sans-serif", fontWeight: "700", sung: "#ffc21a", upcoming: "#f4f4f4", marker: "#7dffd8" });
+    for (let t = 0; t <= 4; t += 0.1) r.draw(t);
+    const of = (chars: string) => log.filter((e) => chars.includes(e.text));
+    expect(of("(Ohmy)").length).toBeGreaterThan(0);
+    expect(of("(Ohmy)").every((e) => e.fill === "#f4f4f4" && e.alpha === 0.5)).toBe(true);
+    expect(of("wego").some((e) => e.fill === "#ffc21a" && e.alpha === 1)).toBe(true);
+    expect(of("wego").every((e) => e.alpha === 1)).toBe(true);
   });
 });

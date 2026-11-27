@@ -14,6 +14,7 @@
 // was split, so it sits exactly on the gold/white boundary. A few bitmaps are kept (LRU)
 // and the line after the preview is rendered ahead, so a line change never costs a frame.
 import { formatCountdown } from "../lib/format";
+import { BACKING_ALPHA } from "../lib/lyrics";
 import {
   CAP_EM,
   INK_PAD_EM,
@@ -171,12 +172,28 @@ export class PageRenderer {
     // Shadow sizes are in device pixels (not transformed).
     ctx.shadowBlur = SHADOW_BLUR_EM * px * this.dpr;
     ctx.shadowOffsetY = SHADOW_DROP_EM * px * this.dpr;
-    for (let i = row.first; i <= row.last; i++) ctx.strokeText(line.glyphs[i].g, xOf(i), y);
+    // Backing vocals (words in parentheses; owner 2026-11-27, D-282) are drawn dimmed, outline
+    // and all, and in the upcoming colour in the sung bitmap too: the wipe never lights them.
+    for (let i = row.first; i <= row.last; i++) {
+      const g = line.glyphs[i];
+      ctx.globalAlpha = g.backing ? BACKING_ALPHA : 1;
+      ctx.strokeText(g.g, xOf(i), y);
+    }
+    ctx.globalAlpha = 1;
     ctx.shadowColor = "rgba(0, 0, 0, 0)";
     ctx.shadowBlur = 0;
     ctx.shadowOffsetY = 0;
     ctx.fillStyle = color;
-    for (let i = row.first; i <= row.last; i++) ctx.fillText(line.glyphs[i].g, xOf(i), y);
+    for (let i = row.first; i <= row.last; i++) {
+      const g = line.glyphs[i];
+      if (g.backing) {
+        ctx.globalAlpha = BACKING_ALPHA;
+        ctx.fillStyle = s.upcoming;
+        ctx.fillText(g.g, xOf(i), y);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = color;
+      } else ctx.fillText(g.g, xOf(i), y);
+    }
     this.stats.tilesRendered++;
     return c;
   }

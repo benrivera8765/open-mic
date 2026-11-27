@@ -59,19 +59,35 @@ const TRIMMED_MIN_S: f64 = 0.06;
 /// the end of the last word it touches. The stored guide is unchanged (the pitch analysis
 /// stays independent of the lyrics, WO2 trap 9); every reader applies this after
 /// [`singable`], so songs made before it are fixed too. Without lyrics nothing changes.
+///
+/// Backing vocals are not the lead's words (owner, 2026-11-27: "words in parentheses show
+/// as words that you're supposed to sing"; DECISIONS D-282): words in parentheses (and
+/// lines marked `"kind": "backing"`, [`Lyrics::backing_words`]) do not count here, so a
+/// note under backing words only is not drawn or graded either. A note that overlaps a
+/// backing word must overlap one of the singer's words itself (being within 0.1 s of one is
+/// not enough: "myself) I", the backing "myself)" sung up to the lead's "I"), and it starts
+/// no earlier than 0.1 s before the first of the singer's words it overlaps. Notes that touch
+/// no backing word are treated exactly as before.
 pub fn fit_to_words(doc: &mut GuideDoc, lyrics: Option<&Lyrics>, offset_ms: i64) {
     let Some(l) = lyrics else { return };
     let off = offset_ms as f64 / 1000.0;
-    let mut words: Vec<(f64, f64)> = l
-        .lines
-        .iter()
-        .flat_map(|line| line.words.iter().map(move |w| (w.start + off, w.end + off)))
-        .filter(|(s, e)| s.is_finite() && e.is_finite() && e > s)
-        .collect();
+    let backing = l.backing_words();
+    let timed = |lead: bool| -> Vec<(f64, f64)> {
+        let mut v: Vec<(f64, f64)> = l
+            .lines
+            .iter()
+            .zip(&backing)
+            .flat_map(|(line, b)| line.words.iter().zip(b).filter(move |(_, bk)| **bk != lead).map(move |(w, _)| (w.start + off, w.end + off)))
+            .filter(|(s, e)| s.is_finite() && e.is_finite() && e > s)
+            .collect();
+        v.sort_by(|a, b| a.0.total_cmp(&b.0));
+        v
+    };
+    let words = timed(true);
+    let back = timed(false);
     if words.is_empty() {
         return;
     }
-    words.sort_by(|a, b| a.0.total_cmp(&b.0));
     // The longest word bounds how far back a word that still touches a note can start.
     let longest = words.iter().map(|w| w.1 - w.0).fold(0.0, f64::max);
     doc.notes.retain_mut(|n| {
@@ -92,6 +108,18 @@ pub fn fit_to_words(doc: &mut GuideDoc, lyrics: Option<&Lyrics>, offset_ms: i64)
                 return false;
             }
             n.glide_in = n.glide_in.min(0.5 * dur(n)).max(0.0);
+        }
+        // Over a backing word: only the part on the singer's own words stays (D-282).
+        let overlaps = |w: &(f64, f64)| w.0 < n.end && w.1 > n.start;
+        if back.iter().any(overlaps) {
+            let Some(first) = words.iter().filter(|w| overlaps(w)).map(|w| w.0).reduce(f64::min) else { return false };
+            if n.start < first - WORD_PAD_S {
+                n.start = first - WORD_PAD_S;
+                if n.end - n.start < TRIMMED_MIN_S {
+                    return false;
+                }
+                n.glide_in = n.glide_in.min(0.5 * dur(n)).max(0.0);
+            }
         }
         true
     });
@@ -562,6 +590,43 @@ mod tests {
         assert_eq!(d.notes.len(), 2, "{:?}", d.notes);
         assert!((d.notes[0].end - (38.14 + WORD_TAIL_S)).abs() < 1e-9, "{}", d.notes[0].end);
         assert!((d.notes[1].start - 40.615).abs() < 1e-9 && (d.notes[1].end - 40.955).abs() < 1e-9);
+    }
+
+    #[test]
+    fn backing_vocals_in_parentheses_get_no_bars() {
+        // Owner, 2026-11-27: "(Can't help myself)" sung by the backing singers was drawn and
+        // graded as the lead's; "I get" after it is the lead's.
+        let ws = [("(Can't", 10.0, 10.4), ("help", 10.5, 10.9), ("myself)", 11.0, 11.6), ("I", 12.0, 12.2), ("get", 12.3, 12.7)];
+        let words: Vec<serde_json::Value> =
+            ws.iter().map(|&(t, s, e)| serde_json::json!({"start": s, "end": e, "chars": [[t, s, e]]})).collect();
+        let l: Lyrics = serde_json::from_value(serde_json::json!({"lines": [{"start": 10.0, "end": 12.7, "words": words}]})).expect("lyrics");
+        let mut d = doc(
+            vec![
+                n(10.05, 10.4, 62.0, "pitched", 0.8, Some((0, 0))),
+                n(10.5, 10.9, 64.0, "pitched", 0.8, Some((0, 1))),
+                n(11.0, 11.6, 62.0, "pitched", 0.8, Some((0, 2))),
+                n(12.0, 12.2, 67.0, "pitched", 0.8, Some((0, 3))),
+                n(12.3, 12.7, 65.0, "pitched", 0.8, Some((0, 4))),
+            ],
+            0.0,
+        );
+        fit_to_words(&mut d, Some(&l), 0);
+        let got: Vec<f64> = d.notes.iter().map(|x| x.start).collect();
+        assert_eq!(got, vec![12.0, 12.3], "{:?}", d.notes);
+
+        // Sung right up to the singer's word (within the 0.1 s pad): still no bar for
+        // "myself)"; a note running from "myself)" into "I" keeps only its part on "I".
+        let ws = [("(Can't", 10.0, 10.4), ("help", 10.5, 10.9), ("myself)", 11.0, 11.6), ("I", 11.65, 11.85), ("get", 11.9, 12.3)];
+        let words: Vec<serde_json::Value> =
+            ws.iter().map(|&(t, s, e)| serde_json::json!({"start": s, "end": e, "chars": [[t, s, e]]})).collect();
+        let l: Lyrics = serde_json::from_value(serde_json::json!({"lines": [{"start": 10.0, "end": 12.3, "words": words}]})).expect("lyrics");
+        let mut d = doc(vec![n(11.0, 11.6, 62.0, "pitched", 0.8, Some((0, 2))), n(11.9, 12.3, 65.0, "pitched", 0.8, Some((0, 4)))], 0.0);
+        fit_to_words(&mut d, Some(&l), 0);
+        assert_eq!(d.notes.iter().map(|x| x.start).collect::<Vec<_>>(), vec![11.9], "{:?}", d.notes);
+        let mut d = doc(vec![n(11.1, 11.85, 62.0, "pitched", 0.8, Some((0, 2)))], 0.0);
+        fit_to_words(&mut d, Some(&l), 0);
+        assert_eq!(d.notes.len(), 1, "{:?}", d.notes);
+        assert!((d.notes[0].start - 11.55).abs() < 1e-9 && (d.notes[0].end - 11.85).abs() < 1e-9, "{:?}", d.notes);
     }
 
     #[test]
